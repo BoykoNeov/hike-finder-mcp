@@ -20,6 +20,11 @@ under the ~1 req/sec public limit), and retries transient failures (429 / 5xx /
 network blips) with exponential backoff, honouring a ``Retry-After`` header when
 the server sends one. Deterministic 4xx (e.g. 400) are not retried — that would
 just burn the daily quota.
+
+The per-second throttle doesn't bound the *daily* total, so a persistent,
+cross-process counter (``DailyQuota``) tracks requests per UTC day and refuses to
+send once the day's limit is hit — degrading the route to ``n/a`` instead of
+hammering the server into bans. See ``elevation/quota.py``.
 """
 from __future__ import annotations
 
@@ -28,6 +33,7 @@ import time
 import requests
 
 from .base import Coord, ElevationError, ElevationProvider
+from .quota import DailyQuota
 
 # OpenTopoData datasets: "srtm30m" (global, 30 m), "aster30m", "mapzen", etc.
 DEFAULT_ENDPOINT = "https://api.opentopodata.org/v1/srtm30m"
@@ -48,6 +54,8 @@ class ApiElevationProvider(ElevationProvider):
         max_retries: int = 3,
         backoff_base_s: float = 2.0,
         max_backoff_s: float = 30.0,
+        daily_limit: int = 1000,
+        state_dir: str | None = None,
     ):
         self.endpoint = endpoint
         self.batch_size = batch_size
@@ -66,6 +74,9 @@ class ApiElevationProvider(ElevationProvider):
         self.max_retries = max_retries
         self.backoff_base_s = backoff_base_s
         self.max_backoff_s = max_backoff_s
+        # Persistent per-UTC-day request counter (see quota.py). The throttle
+        # bounds the per-second rate; this bounds the daily total across runs.
+        self.quota = DailyQuota(endpoint, daily_limit=daily_limit, state_dir=state_dir)
         self._last_request_t: float | None = None
         # OpenTopoData and Open-Elevation take different request bodies; pick the
         # dialect from the host so a plain endpoint override is all a user needs.
@@ -93,6 +104,14 @@ class ApiElevationProvider(ElevationProvider):
         return {"locations": [{"latitude": lat, "longitude": lon} for lat, lon in batch]}
 
     def _lookup_batch(self, batch: list[Coord]) -> list[float]:
+        # Check the daily budget BEFORE sending: an exhausted quota raises now
+        # (no sleep, no wasted call) and flows through FallbackElevationProvider
+        # to degrade the route to n/a instead of getting rejected/banned.
+        if not self.quota.has_quota():
+            raise ElevationError(
+                f"elevation API daily request limit ({self.quota.daily_limit}) "
+                "reached — skipping (route elevation degraded to n/a)"
+            )
         last_err: Exception | None = None
         for attempt in range(self.max_retries + 1):
             self._throttle()
@@ -103,11 +122,17 @@ class ApiElevationProvider(ElevationProvider):
                     timeout=self.timeout,
                 )
             except requests.RequestException as e:
-                # Connection reset / timeout / DNS — transient, worth a retry.
+                # Connection reset / timeout / DNS — no response reached us, so
+                # it doesn't count against the daily quota. Transient: retry.
                 last_err = e
                 if attempt < self.max_retries:
                     self._backoff(attempt, None)
                 continue
+
+            # We got a response, so the server counted this as a call (even a
+            # 429/5xx) — record it against the daily quota. Overcounting a
+            # retried 5xx is acceptably conservative.
+            self.quota.record()
 
             if resp.status_code in _RETRY_STATUS:
                 last_err = ElevationError(f"elevation API returned HTTP {resp.status_code}")

@@ -117,7 +117,20 @@ async function search(){
     if (!resp.ok || data.error){ status.textContent = 'Error: ' + (data.error || resp.status); return; }
     render(data);
     status.textContent = data.length + ' hike(s) found.';
+    showQuota();
   } catch (e){ status.textContent = 'Request failed: ' + e; }
+}
+
+async function showQuota(){
+  // Separate, non-blocking call so the daily-cap counter never reshapes the
+  // hikes response. Appended to the status line; silent if disabled/unavailable.
+  try {
+    const q = await (await fetch('/api/quota')).json();
+    if (q && q.enabled){
+      document.getElementById('status').textContent +=
+        '  ·  elevation API: ' + q.used + '/' + q.limit + ' requests today';
+    }
+  } catch (e){ /* counter is best-effort; ignore */ }
 }
 
 function render(hikes){
@@ -186,7 +199,27 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/hikes":
             self._api(parse_qs(parsed.query))
             return
+        if parsed.path == "/api/quota":
+            self._quota()
+            return
         self._send(404, "not found", "text/plain; charset=utf-8")
+
+    def _quota(self) -> None:
+        # Separate endpoint so we never reshape /api/hikes (a bare array the JS
+        # iterates) just to attach the counter.
+        from . import config as _config
+        from .elevation import api_quota_snapshot
+
+        used, limit = api_quota_snapshot(_config.load())
+        body = json.dumps(
+            {
+                "used": used,
+                "limit": limit,
+                "remaining": (limit - used) if limit > 0 else None,
+                "enabled": limit > 0,
+            }
+        )
+        self._send(200, body, "application/json; charset=utf-8")
 
     def _api(self, qs: dict) -> None:
         try:

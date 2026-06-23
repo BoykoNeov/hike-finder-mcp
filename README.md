@@ -47,7 +47,7 @@ elevation backend is only queried for routes that already match.
 
 | Mode | Source | Setup | Accuracy | Limits |
 |------|--------|-------|----------|--------|
-| `api` | Open-Elevation / OpenTopoData | none | coarser | rate-limited |
+| `api` | Open-Elevation / OpenTopoData | none | coarser | rate-limited (per-sec throttle + daily counter, both managed) |
 | `local` | SRTM/ASTER GeoTIFF tiles | download tiles once | high | none |
 | `auto` | local if available, else api | optional tiles | best available | graceful fallback |
 
@@ -184,6 +184,8 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 | `HIKE_API_MAX_RETRIES` | Retries on transient API errors (429 / 5xx / network), with exponential backoff honouring `Retry-After` | `3` |
 | `HIKE_API_BACKOFF` | Backoff base seconds, doubled each retry | `2.0` |
 | `HIKE_API_MAX_BACKOFF` | Cap on any single wait, seconds; a `Retry-After` above this (e.g. a daily-quota 429) makes the route degrade to `n/a` instead of stalling | `30` |
+| `HIKE_API_DAILY_LIMIT` | Max elevation-API requests per UTC day, counted in a persistent file across runs; at the cap, routes degrade to `n/a` instead of getting the IP banned. `0` disables tracking | `1000` |
+| `HIKE_API_STATE_DIR` | Directory holding the daily-counter file | per-user cache (`%LOCALAPPDATA%/hike-finder` or `~/.cache/hike-finder`) |
 | `HIKE_GAIN_THRESHOLD` | Hysteresis climb threshold, metres (must exceed peak-to-peak DEM noise) | `10` |
 | `HIKE_SAMPLE_INTERVAL` | Resample spacing along the track, metres | `25` |
 | `HIKE_SMOOTH_WINDOW` | Elevation smoothing window, samples | `3` |
@@ -205,9 +207,10 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 ## Status
 
 Core geometry, gain, access/shape math, the Overpass response parser, the
-elevation-API client (including its rate-limit throttle and transient-error
-retry/backoff), and the CLI argument/formatter layer: **implemented and
-unit-tested** (50 tests, all offline). The Overpass HTTP call **and the API
+elevation-API client (including its rate-limit throttle, transient-error
+retry/backoff, and a persistent daily-request counter that degrades to `n/a`
+before blowing the API's daily cap), and the CLI argument/formatter layer:
+**implemented and unit-tested** (58 tests, all offline). The Overpass HTTP call **and the API
 elevation backend** are **validated live** (CLI + web), with computed gain
 cross-checked against the loop invariant (gain ≈ loss). The local-DEM backend
 and the MCP entry point are **implemented; validate on a networked machine**.

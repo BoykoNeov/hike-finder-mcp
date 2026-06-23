@@ -13,6 +13,11 @@
   HIKE_API_MAX_BACKOFF  cap on any single wait, seconds; a Retry-After above this
                         (e.g. a daily-quota 429) makes us give up, not stall
                         (default 30)
+  HIKE_API_DAILY_LIMIT  max elevation-API requests per UTC day, counted across
+                        runs in a persistent file; at the limit we degrade routes
+                        to n/a instead of getting banned. 0 disables (default 1000)
+  HIKE_API_STATE_DIR    directory for the daily-counter file (default: a per-user
+                        cache dir — %LOCALAPPDATA%/hike-finder or ~/.cache/hike-finder)
   HIKE_GAIN_THRESHOLD   metres (default 10)
   HIKE_SAMPLE_INTERVAL  metres (default 25)
   HIKE_SMOOTH_WINDOW    samples (default 3)
@@ -41,6 +46,8 @@ class Config:
     api_max_retries: int = int(os.getenv("HIKE_API_MAX_RETRIES", "3"))
     api_backoff_s: float = float(os.getenv("HIKE_API_BACKOFF", "2.0"))
     api_max_backoff_s: float = float(os.getenv("HIKE_API_MAX_BACKOFF", "30.0"))
+    api_daily_limit: int = int(os.getenv("HIKE_API_DAILY_LIMIT", "1000"))
+    api_state_dir: str | None = os.getenv("HIKE_API_STATE_DIR")
     gain_threshold_m: float = float(os.getenv("HIKE_GAIN_THRESHOLD", "10"))
     sample_interval_m: float = float(os.getenv("HIKE_SAMPLE_INTERVAL", "25"))
     smooth_window: int = int(os.getenv("HIKE_SMOOTH_WINDOW", "3"))

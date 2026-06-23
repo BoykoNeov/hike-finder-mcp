@@ -16,6 +16,8 @@ import argparse
 import json
 import sys
 
+from . import config as _config
+from .elevation import api_quota_snapshot
 from .filters import Criteria
 from .format import format_hike, hike_to_dict
 from .search import search_hikes
@@ -96,10 +98,12 @@ def build_criteria(args: argparse.Namespace) -> Criteria:
 
 def run(args: argparse.Namespace) -> int:
     bbox = tuple(args.bbox)  # (south, west, north, east)
+    cfg = _config.load()
     try:
         hikes = search_hikes(
             bbox,
             build_criteria(args),
+            cfg=cfg,
             user_agent=args.user_agent,
             overpass_url=args.overpass_url,
             elevation_mode=args.elevation_mode,
@@ -114,6 +118,19 @@ def run(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
         return 1
+
+    # Show how close we are to the elevation API's daily cap (stderr, so --json
+    # stdout stays clean). Skip in local-DEM mode — the API isn't used there, so a
+    # quota line would just be confusing.
+    mode = args.elevation_mode or cfg.elevation_mode
+    if mode != "local":
+        used, limit = api_quota_snapshot(cfg)
+        if limit > 0:
+            print(
+                f"elevation API: {used}/{limit} requests used today "
+                f"({max(0, limit - used)} remaining, resets at UTC midnight)",
+                file=sys.stderr,
+            )
 
     if args.json:
         print(json.dumps([hike_to_dict(h) for h in hikes], ensure_ascii=False, indent=2))

@@ -114,11 +114,26 @@ report a 200 km "hike" and test parking/lifts at endpoints in another region.
   `max_backoff_s`). `tests/test_api.py` (mocks `requests.post`, so offline). These
   tests exist *because* the body-format bug below shipped untested.
 
+- `elevation/quota.py` — the **persistent daily-request counter**. A file-backed
+  per-UTC-day tally (keyed by API host, in a per-user cache dir) so cumulative
+  searches can't blow the API's daily cap even though each CLI run is a fresh
+  process. Check-before-send → at the limit, `_lookup_batch` raises (route
+  degrades to `n/a`) without a network call; count is incremented after each
+  response. A *process-wide* lock + atomic file replace serialise the
+  read-modify-write across the threaded web server's concurrent providers (a
+  per-instance lock would NOT — each search builds a fresh provider). `tests/
+  test_quota.py`: UTC rollover, at-limit enforcement, persistence across separate
+  instances, per-host separation, the `limit<=0` disable switch, and a 4-thread
+  concurrency test. `tests/conftest.py` isolates the counter to a tmp dir so the
+  suite never touches the real cache. Tunable via `HIKE_API_DAILY_LIMIT` (0 =
+  off) / `HIKE_API_STATE_DIR`; surfaced by the CLI (stderr line) and the web UI
+  (`/api/quota`).
+
 - `geometry.resample_by_distance` — now has a multi-segment regression
   (`tests/test_geometry.py`). The old single-segment test missed a carry bug
   that collapsed finely-vertexed real OSM lines to 2 points (see bug #3 below).
 
-Run it: `pytest` → 50 passing.
+Run it: `pytest` → 58 passing.
 
 ## What is now VALIDATED LIVE (run against real OSM, 2026-06-23)
 
@@ -202,11 +217,18 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
    us give up immediately and degrade the route to `n/a` rather than freeze the
    search (and, in the web UI, freeze that HTTP request). Tunable via
    `HIKE_API_MIN_INTERVAL` / `HIKE_API_MAX_RETRIES` / `HIKE_API_BACKOFF` /
-   `HIKE_API_MAX_BACKOFF`. Scope note: the per-second limit is *enforced*; the
-   daily limit (1000/day) isn't breachable within one search (~tens of calls) and
-   isn't tracked across searches.
-5. **Wire MCP end-to-end** and call `find_hikes` from Claude Code.
-6. **Then** add the local DEM path and the polish items below.
+   `HIKE_API_MAX_BACKOFF`.
+5. ~~Track the daily request cap across searches and show it.~~ **DONE.**
+   `elevation/quota.py` is a persistent, cross-process per-UTC-day counter (see
+   the DONE bullet above). The per-second *and* daily limits are now both managed:
+   at the daily cap we degrade routes to `n/a` instead of getting the IP banned,
+   and the count is shown (CLI stderr line; web `/api/quota`, appended to the
+   status line). `HIKE_API_DAILY_LIMIT=0` disables it. Caveats: the UTC-midnight
+   reset is *assumed* (low-stakes — misalignment only degrades early/late); the
+   enforcement path is unit-tested (mocked) but, like the retry path, not yet
+   live-exercised against a real daily-cap rejection.
+6. **Wire MCP end-to-end** and call `find_hikes` from Claude Code.
+7. **Then** add the local DEM path and the polish items below.
 
 ## Known limitations / TODOs (design notes, not bugs)
 
@@ -269,7 +291,7 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
 
 ```bash
 pip install -e .             # CLI + web UI (no LLM); extras: ".[mcp]" ".[local-dem]" ".[dev]"
-pytest -q                    # 50 tests, all offline (pure math + Overpass parser + CLI + elevation API)
+pytest -q                    # 58 tests, all offline (pure math + Overpass parser + CLI + elevation API + daily quota)
 hike-finder --bbox 50.72 15.58 50.74 15.62 --user-agent you@example.com
 hike-finder-web              # local web UI on http://127.0.0.1:8765
 hike-finder-mcp              # MCP server over stdio (needs the `mcp` extra)

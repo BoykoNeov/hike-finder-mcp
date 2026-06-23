@@ -10,9 +10,10 @@ Configure via env (see config.py) or pass explicitly.
 from __future__ import annotations
 
 from .base import Coord, ElevationError, ElevationProvider
-from .api import ApiElevationProvider
+from .api import DEFAULT_ENDPOINT, ApiElevationProvider
 from .gain import cumulative_gain_loss
 from .local_dem import LocalDemElevationProvider
+from .quota import DailyQuota
 
 __all__ = [
     "Coord",
@@ -20,8 +21,10 @@ __all__ = [
     "ElevationProvider",
     "ApiElevationProvider",
     "LocalDemElevationProvider",
+    "DailyQuota",
     "cumulative_gain_loss",
     "get_provider",
+    "api_quota_snapshot",
     "FallbackElevationProvider",
 ]
 
@@ -52,6 +55,8 @@ def get_provider(
     api_max_retries: int | None = None,
     api_backoff_s: float | None = None,
     api_max_backoff_s: float | None = None,
+    api_daily_limit: int | None = None,
+    api_state_dir: str | None = None,
 ) -> ElevationProvider:
     api_kwargs: dict = {}
     if api_endpoint:
@@ -64,6 +69,10 @@ def get_provider(
         api_kwargs["backoff_base_s"] = api_backoff_s
     if api_max_backoff_s is not None:
         api_kwargs["max_backoff_s"] = api_max_backoff_s
+    if api_daily_limit is not None:
+        api_kwargs["daily_limit"] = api_daily_limit
+    if api_state_dir is not None:
+        api_kwargs["state_dir"] = api_state_dir
     if mode == "api":
         return ApiElevationProvider(**api_kwargs)
     if mode == "local":
@@ -80,3 +89,15 @@ def get_provider(
         chain.append(ApiElevationProvider(**api_kwargs))
         return FallbackElevationProvider(chain)
     raise ValueError(f"unknown elevation mode: {mode!r}")
+
+
+def api_quota_snapshot(cfg) -> tuple[int, int]:
+    """``(used_today, limit)`` for the configured API endpoint, read straight from
+    the persisted counter — so a frontend can show it without reaching through a
+    FallbackElevationProvider for the inner ApiElevationProvider. ``(0, 0)`` when
+    daily tracking is disabled (``HIKE_API_DAILY_LIMIT=0``). Resolve the endpoint
+    exactly as the provider does so we read the same file."""
+    endpoint = cfg.api_endpoint or DEFAULT_ENDPOINT
+    return DailyQuota(
+        endpoint, daily_limit=cfg.api_daily_limit, state_dir=cfg.api_state_dir
+    ).snapshot()
