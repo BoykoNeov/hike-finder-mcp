@@ -6,6 +6,7 @@ from hike_finder.geometry import (
     resample_by_distance,
     route_cycle_count,
     stitch_ways,
+    total_way_length_m,
 )
 
 
@@ -109,3 +110,37 @@ def test_stitch_orders_and_flips():
     chain = stitch_ways([way_a, way_b])
     assert chain[0] == (50.0, 14.0)
     assert chain[-1] == (50.0, 14.02)
+
+
+def test_total_way_length_counts_members_stitch_drops():
+    # Regression: stitch_ways drops members it can't chain to the growing line's
+    # two ends, so its length under-counts. Two disconnected legs -> the stitch
+    # keeps only the first; the member-sum keeps both.
+    leg_a = [(50.0, 14.0), (50.0, 14.01)]
+    leg_b = [(50.1, 14.2), (50.1, 14.21)]  # far away, cannot chain to leg_a
+    stitched = polyline_length_m(stitch_ways([leg_a, leg_b]))
+    summed = total_way_length_m([leg_a, leg_b])
+    # the stitch saw only leg_a; the sum recovers the dropped leg_b exactly.
+    assert math.isclose(stitched, polyline_length_m(leg_a))
+    assert math.isclose(summed, stitched + polyline_length_m(leg_b))
+
+
+def test_total_way_length_matches_stitch_for_clean_linear_route():
+    # Invariant: a cleanly connected linear route stitches with nothing dropped,
+    # so the honest member-sum equals the stitched-line length. Pins that the
+    # common case is unperturbed by switching distance to the member-sum.
+    way_a = [(50.0, 14.0), (50.0, 14.01)]
+    way_b = [(50.0, 14.01), (50.0, 14.02)]  # shares the 14.01 node, chains clean
+    stitched = polyline_length_m(stitch_ways([way_a, way_b]))
+    summed = total_way_length_m([way_a, way_b])
+    assert math.isclose(summed, stitched, rel_tol=1e-9)
+
+
+def test_total_way_length_is_order_independent():
+    way_a = [(50.0, 14.0), (50.0, 14.01)]
+    way_b = [(50.0, 14.01), (50.0, 14.02)]
+    way_c = [(50.05, 14.0), (50.06, 14.0)]  # disconnected third leg
+    assert math.isclose(
+        total_way_length_m([way_a, way_b, way_c]),
+        total_way_length_m([way_c, way_b, way_a]),
+    )

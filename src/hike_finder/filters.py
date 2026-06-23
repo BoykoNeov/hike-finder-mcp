@@ -20,7 +20,13 @@ from dataclasses import dataclass
 
 from .access import car_accessible, chairlift_access, is_circular, route_endpoints
 from .elevation import ElevationError, ElevationProvider, cumulative_gain_loss
-from .geometry import Coord, haversine_m, polyline_length_m, resample_by_distance, stitch_ways
+from .geometry import (
+    Coord,
+    haversine_m,
+    resample_by_distance,
+    stitch_ways,
+    total_way_length_m,
+)
 from .overpass import AreaData
 
 
@@ -87,7 +93,12 @@ def measure_geometry(
     if len(line) < 2:
         return None
 
-    distance_km = polyline_length_m(line) / 1000.0
+    # Distance sums the member ways directly, NOT the stitched line: stitch_ways
+    # drops members it can't chain (branched/gap-split relations), so the line
+    # under-counts. The stitched line is still used below for start/endpoints and
+    # the is_circular gap fallback. (Wrong endpoint picks on branched relations
+    # remain a known limitation — see HANDOFF.)
+    distance_km = total_way_length_m(route["ways"]) / 1000.0
     circular = is_circular(route["ways"], line, route.get("tags", {}), tol_m=loop_tolerance_m)
     endpoints = route_endpoints(line)
     car = car_accessible(endpoints, parking, car_radius_m)

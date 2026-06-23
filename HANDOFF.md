@@ -88,8 +88,10 @@ report a 200 km "hike" and test parking/lifts at endpoints in another region.
 
 ## What is DONE and PROVEN (unit-tested, runs offline)
 
-- `geometry.py` — haversine distance, polyline length, way stitching (with
-  endpoint matching + flipping), distance-based resampling. `tests/test_geometry.py`.
+- `geometry.py` — haversine distance, polyline length, **`total_way_length_m`
+  (route distance = sum of member-way lengths, drops nothing)**, way stitching
+  (with endpoint matching + flipping), distance-based resampling.
+  `tests/test_geometry.py`.
 - `elevation/gain.py` — moving-average smoothing + hysteresis-threshold gain/loss.
   `tests/test_gain.py`. Verified: rejects pure noise, captures gradual climbs,
   symmetric up/down, and does NOT overcount under heavy sawtooth noise.
@@ -144,7 +146,7 @@ report a 200 km "hike" and test parking/lifts at endpoints in another region.
   (`tests/test_geometry.py`). The old single-segment test missed a carry bug
   that collapsed finely-vertexed real OSM lines to 2 points (see bug #3 below).
 
-Run it: `pytest` → 69 passing.
+Run it: `pytest` → 72 passing.
 
 ## What is now VALIDATED LIVE (run against real OSM, 2026-06-23)
 
@@ -214,6 +216,14 @@ Run it: `pytest` → 69 passing.
     covered by `tests/test_geometry.py`; the real split is pinned in
     `tests/test_closure_live.py`.
 
+- **Distance under-count from `stitch_ways` dropping members** — fixed and
+  validated live on the same Špindlerův Mlýn bbox via a per-route stitched-vs-
+  summed diff. Distance now sums member-way lengths (`total_way_length_m`); 13/15
+  routes unchanged, two fragmented relations recovered real geometry, no
+  over-count, guard verdict shifted on exactly one (correctly-dropped) route. Full
+  detail in Next-steps step 3; pinned offline by `tests/test_geometry.py`
+  (dropped-member recovery + summed==stitched invariant + order-independence).
+
 ## What is WRITTEN but UNVALIDATED (needs a networked machine)
 
 Logic is complete; you still need to exercise these live (the Overpass layer and
@@ -257,15 +267,36 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
      linear/branched read non-circular, no verdict regressed vs the pre-702c0f5
      code. Pinned by `tests/test_closure_live.py` (real fixture) +
      `tests/test_geometry.py` (lollipop / T-junction / figure-8 / no-fuzzy-weld).
-   - **Still deferred (the "robust way-stitching" half):** `stitch_ways` is still
-     greedy and silently *drops* members it can't chain (branched/disconnected
-     relations) → under-counts distance and can pick wrong endpoints. The honest
-     fix (distance = sum of member-way lengths) *raises* distances, which shifts
-     the over-length-guard baseline — do it on a networked run where the new
-     numbers can be re-verified. NB closure no longer depends on the stitch at
-     all (it reads `ways` via the vertex graph), and the live test exposed that
-     the *old* code's loop detection was partly propped by the stitch collapsing
-     to gap≈0 — the vertex graph removes that dependence.
+   - **Distance under-count — DONE and VALIDATED LIVE (2026-06-23).** `stitch_ways`
+     greedily *drops* members it can't chain (branched/disconnected relations), so
+     the stitched-line length under-counts. `measure_geometry` now takes distance
+     from `geometry.total_way_length_m(route["ways"])` — the sum of every member
+     way's length, order-independent, dropping nothing. Live-validated on the
+     Špindlerův Mlýn bbox with a **per-route stitched-vs-summed diff** (not a bare
+     before/after, which can't tell honest recovery from silent over-count): 13/15
+     routes unchanged within float noise (clean linear routes — the invariant
+     `summed≈stitched` held); two fragmented relations recovered real geometry
+     (`4207` 7.54→18.28 km, 36/70 members had been dropped; `Medvědí okruh`
+     3.37→7.98 km, 19/31 dropped). Both verified as genuine recovery, NOT
+     over-count: every member is role-empty (no `forward`/`backward` variants —
+     the realistic double-count mode), and the recovered length far exceeds the
+     kept chain so it can't be duplication of it. (An endpoint-pair check also
+     found 0 repeats, but that misses *partial* overlaps, so role-empty is the
+     load-bearing signal.) Over-length guard stayed healthy — exactly one verdict
+     change: `4207` newly dropped. Confirmed correct by an **independent
+     geographic check** (not the guard's own length metric, which would be
+     circular): 93% of `4207`'s vertices lie *outside* the query bbox and its
+     geometry protrudes 5.8 km S / 6.9 km E (own span 11.4 km) — a genuine
+     through-route. Note this means the *old* stitched 7.54 km had wrongly passed
+     it as a local hike; the fix improves recall correctness. So
+     `max_route_factor=4.0` was left as-is (no retune, no bbox-clip needed — no
+     genuine in-bbox route sits near the boundary).
+   - **Still deferred (the endpoint/`start`-pick half):** `stitch_ways` still
+     drives `start` and the car/lift endpoints, so a branched/disconnected
+     relation can still pick wrong ends. Distance no longer depends on the stitch;
+     closure never did (it reads `ways` via the vertex graph). The live test
+     earlier exposed that the *old* loop detection was partly propped by the
+     stitch collapsing to gap≈0 — the vertex graph removed that dependence.
 4. ~~Add API retry/backoff on transient 5xx / daily-cap 429.~~ **DONE.**
    `_lookup_batch` now retries 429/5xx/network up to `max_retries` (default 3)
    with exponential backoff (`backoff_base_s` × 2^attempt), honouring a
@@ -296,15 +327,20 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
   Use threshold > peak-to-peak, and lean on smoothing. Tune per elevation source
   (API data is pre-smoothed; raw SRTM is noisier → higher threshold).
 - **Way stitching is greedy** with a 30 m endpoint tolerance. Fine for simple
-  linear routes; multi-branch/disconnected relations stitch oddly and, worse,
-  `stitch_ways` silently **drops** any member it can't chain to the current
-  chain's ends → distance can *under-count* and the picked endpoints (car/lift
-  access, `start`) can be wrong. Robust fix: order members by role/sequence, or
-  reuse the **vertex graph** (`route_cycle_count` already builds one) to traverse
-  all edges; for distance specifically, sum member-way lengths. Deferred to a
-  networked run because the fix raises distances and so shifts the over-length
-  guard's baseline (see Next-steps step 3). NB: *closure* no longer depends on
-  the stitch — it reads `ways` via the vertex graph directly.
+  linear routes; multi-branch/disconnected relations stitch oddly and silently
+  **drop** any member `stitch_ways` can't chain to the current chain's ends.
+  - *Distance:* **fixed.** No longer read from the stitched line —
+    `measure_geometry` sums member-way lengths via `geometry.total_way_length_m`,
+    which drops nothing (live-validated; see Next-steps step 3). Trade-off: a
+    relation that maps a stretch as both `forward` and `backward` variants would
+    now double-count, but the public KČT relations checked live carry no such
+    members (all role-empty), so the honest member-sum strictly beats the
+    arbitrary greedy subset. Closure never depended on the stitch (vertex graph).
+  - *Endpoints / `start`:* **still greedy.** The picked ends (car/lift access,
+    `start`) still come from the stitched line, so a branched/disconnected
+    relation can pick wrong ends. Robust fix: order members by role/sequence, or
+    traverse the **vertex graph** (`route_cycle_count` already builds one) to find
+    the true termini. Deferred — it's a recall/labelling issue, not a wrong number.
 - **Closure T-junctions: handled.** `route_cycle_count` now nodes on *every*
   vertex (welded by coordinate), so a way whose endpoint lands on another way's
   interior vertex shares that exact node and the join is seen — a loop closed
@@ -371,7 +407,7 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
 
 ```bash
 pip install -e .             # CLI + web UI (no LLM); extras: ".[mcp]" ".[local-dem]" ".[dev]"
-pytest -q                    # 69 tests, all offline (pure math + Overpass parser + CLI + elevation API + daily quota + live closure fixture)
+pytest -q                    # 72 tests, all offline (pure math + Overpass parser + CLI + elevation API + daily quota + live closure fixture)
 hike-finder --bbox 50.72 15.58 50.74 15.62 --user-agent you@example.com
 hike-finder-web              # local web UI on http://127.0.0.1:8765
 hike-finder-mcp              # MCP server over stdio (needs the `mcp` extra)

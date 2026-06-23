@@ -168,10 +168,13 @@ latitude, max longitude):
 > cross-checks the whole sampling/gain pipeline. Loop detection was also
 > validated live (2026-06-23) against the real "Medvěd*" relations — which caught
 > and corrected an over-reporting bug; closure now reads the member ways as a
-> vertex graph (circuit rank), independent of way-stitching. Remaining caveats:
-> the **local DEM** backend (`mode=local`) is still untested, and distance can
-> under-count on branched relations (greedy way-stitching) — both tracked in
-> `HANDOFF.md`.
+> vertex graph (circuit rank), independent of way-stitching. Distance was also
+> hardened here (2026-06-23): it now sums every member way's length rather than
+> the greedily-stitched line, so branched relations that the stitch couldn't
+> chain no longer under-count (validated live by a per-route stitched-vs-summed
+> diff). Remaining caveat: the **local DEM** backend (`mode=local`) is still
+> untested, and the trail's **start/endpoints** (used for car/lift access) still
+> come from the greedy stitch on branched relations — both tracked in `HANDOFF.md`.
 
 ### Configuration (environment variables)
 
@@ -214,7 +217,7 @@ Core geometry, gain, access/shape math, the Overpass response parser, the
 elevation-API client (including its rate-limit throttle, transient-error
 retry/backoff, and a persistent daily-request counter that degrades to `n/a`
 before blowing the API's daily cap), and the CLI argument/formatter layer:
-**implemented and unit-tested** (59 tests, all offline). The Overpass HTTP call **and the API
+**implemented and unit-tested** (72 tests, all offline). The Overpass HTTP call **and the API
 elevation backend** are **validated live** (CLI + web), with computed gain
 cross-checked against the loop invariant (gain ≈ loss). The local-DEM backend
 and the MCP entry point are **implemented; validate on a networked machine**.

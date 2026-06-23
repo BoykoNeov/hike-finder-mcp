@@ -29,6 +29,25 @@ def polyline_length_m(points: list[Coord]) -> float:
     return sum(haversine_m(points[i], points[i + 1]) for i in range(len(points) - 1))
 
 
+def total_way_length_m(ways: list[list[Coord]]) -> float:
+    """Total mapped length of a route's member ways, in metres.
+
+    Sums each member way's own polyline length, independently of the others, so
+    it counts ALL mapped geometry regardless of member order or whether the
+    members chain into one connected line.
+
+    Use this — not ``polyline_length_m(stitch_ways(ways))`` — for route distance.
+    ``stitch_ways`` greedily chains by matching endpoints and silently *drops*
+    any member it can't connect to the growing chain's two ends, so a branched
+    or gap-split relation's stitched line omits whole legs and *under*-counts
+    distance. Summing the members drops nothing, so it can only be correct or
+    *over*-count (e.g. a relation that maps the same stretch as both a
+    ``forward`` and a ``backward`` variant counts it twice) — the opposite, and
+    the less misleading, failure direction. Order-independent by construction.
+    """
+    return sum(polyline_length_m(w) for w in ways)
+
+
 def stitch_ways(ways: list[list[Coord]]) -> list[Coord]:
     """Join an OSM route relation's member ways into one ordered polyline.
 
