@@ -28,10 +28,25 @@ runs first and filters the candidate set; the expensive elevation lookup runs
 *only on the survivors*. That's what keeps the elevation API from being hammered
 (was: elevation for every route, then filter → minutes and rate-limit bans).
 
+**Three frontends, one engine.** As of 2026-06-23 the tool runs standalone — no
+LLM required. All three frontends build the same `Criteria` and call
+`search.search_hikes`, then render via `format.format_hike` / `hike_to_dict`, so
+results are identical:
+
+- `cli.py` → `hike-finder` (primary console script; argparse). **No LLM/MCP.**
+- `web.py` → `hike-finder-web` (stdlib `http.server` + Leaflet map; pan to pick
+  the bbox). **No LLM/MCP, no web framework.**
+- `server.py` → `hike-finder-mcp` (MCP over stdio, for LLM clients). `mcp` is now
+  an **optional** extra (`pip install -e ".[mcp]"`); the base install omits it.
+
 ```
-find_hikes (MCP tool, server.py)
-  └─ overpass.fetch_area(bbox)           # routes + parking + lifts  [NETWORK]
-       ├─ overpass.parse_area(elements)  # split mixed response      [PURE, TESTED]
+frontends (pick one; cli/web need no LLM):
+  cli.py  ─┐
+  web.py  ─┼─→ search.search_hikes(bbox, criteria, cfg)   # shared orchestration
+  server.py┘     (MCP tool find_hikes; needs the optional `mcp` extra)
+       ├─ overpass.fetch_area(bbox)          # routes + parking + lifts  [NETWORK]
+       │    └─ overpass.parse_area(elements) # split mixed response      [PURE, TESTED]
+       ├─ elevation.get_provider(mode)       # api | local | auto        [NETWORK/DISK]
        └─ filters.find_hikes(area, elevation, criteria, bbox)
             ├─ CHEAP pass  → filters.measure_geometry(route, parking, lifts)
             │    ├─ geometry.stitch_ways          # join member ways  [PURE, TESTED]
@@ -43,6 +58,7 @@ find_hikes (MCP tool, server.py)
                  ├─ elevation.lookup(points)       # api/local/auto    [NETWORK/DISK]
                  └─ elevation.cumulative_gain_loss # smoothing+thresh  [PURE, TESTED]
                → apply gain filter, sort
+  → results rendered by format.format_hike / format.hike_to_dict (shared)
 ```
 
 ### The three filters added on top of gain/distance
@@ -85,7 +101,12 @@ report a 200 km "hike" and test parking/lifts at endpoints in another region.
   (loop flagged circular + lift access; point-to-point with car access; a 70 km
   through-route correctly dropped).
 
-Run it: `pytest` → 27 passing.
+- `cli.py` / `format.py` — argument parsing, the args→`Criteria` mapping
+  (including the tri-state booleans), and the shared one-line / dict rendering.
+  `tests/test_cli.py`. The CLI's *live* path is identical to the server's (both
+  call `search_hikes`), so validating one validates the other.
+
+Run it: `pytest` → 33 passing.
 
 ## What is now VALIDATED LIVE (run against real OSM, 2026-06-23)
 
@@ -113,6 +134,11 @@ above is now done):
    sampling against a known summit elevation. Watch nodata handling.
 3. `server.py` — confirm it speaks MCP over stdio with your `mcp` SDK version
    (the decorator API has shifted across versions; adjust imports if needed).
+   Now needs the optional `mcp` extra (`pip install -e ".[mcp]"`).
+4. `web.py` — the HTML page is static and the `/api/hikes` endpoint reuses
+   `search_hikes`, so it inherits the (validated) Overpass path. Still click
+   through the UI live once — pan the map, "Search this map area", confirm markers
+   appear and the Leaflet CDN loads — and run the CLI live once the same way.
 
 ## Next steps, in priority order
 
@@ -186,7 +212,9 @@ above is now done):
 ## Quick commands
 
 ```bash
-pip install -e ".[dev]"     # core; add ",local-dem" for rasterio
-pytest -q                    # 27 tests, all offline (pure math + Overpass parser)
-python -m hike_finder.server # MCP server over stdio
+pip install -e .             # CLI + web UI (no LLM); extras: ".[mcp]" ".[local-dem]" ".[dev]"
+pytest -q                    # 33 tests, all offline (pure math + Overpass parser + CLI)
+hike-finder --bbox 50.72 15.58 50.74 15.62 --user-agent you@example.com
+hike-finder-web              # local web UI on http://127.0.0.1:8765
+hike-finder-mcp              # MCP server over stdio (needs the `mcp` extra)
 ```

@@ -20,9 +20,9 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from . import config as _config
-from .elevation import get_provider
-from .filters import Criteria, Hike, find_hikes
-from .overpass import fetch_area
+from .filters import Criteria
+from .format import format_hike
+from .search import search_hikes
 
 app = Server("hike-finder")
 CFG = _config.load()
@@ -78,22 +78,6 @@ async def list_tools() -> list[Tool]:
     ]
 
 
-def _format(h: Hike) -> str:
-    flags = ["loop" if h.circular else "one-way"]
-    if h.car_access:
-        flags.append("car")
-    if h.chairlift_access:
-        flags.append(f"lift:{h.lift_type}")
-    if h.gain_m is not None:
-        elev = f"+{h.gain_m} m / -{h.loss_m} m"
-    else:
-        elev = "gain n/a"
-    return (
-        f"{h.name} — {h.distance_km} km, {elev} [{', '.join(flags)}] "
-        f"(start {h.start[0]:.4f},{h.start[1]:.4f}, OSM relation {h.osm_id})"
-    )
-
-
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     if name != "find_hikes":
@@ -105,19 +89,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         arguments["north"],
         arguments["east"],
     )
-
-    area = await asyncio.to_thread(
-        fetch_area,
-        *bbox,
-        CFG.overpass_url or "https://overpass-api.de/api/interpreter",
-        user_agent=CFG.overpass_user_agent,
-    )
-
-    provider = get_provider(
-        mode=CFG.elevation_mode,
-        dem_dir=CFG.dem_dir,
-        api_endpoint=CFG.api_endpoint,
-    )
     criteria = Criteria(
         min_gain_m=arguments.get("min_gain_m"),
         max_gain_m=arguments.get("max_gain_m"),
@@ -128,25 +99,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         chairlift_access=arguments.get("chairlift_access"),
     )
 
-    hikes = await asyncio.to_thread(
-        find_hikes,
-        area,
-        provider,
-        criteria,
-        bbox=bbox,
-        max_route_factor=CFG.max_route_factor,
-        sample_interval_m=CFG.sample_interval_m,
-        gain_threshold_m=CFG.gain_threshold_m,
-        smooth_window=CFG.smooth_window,
-        loop_tolerance_m=CFG.loop_tolerance_m,
-        car_radius_m=CFG.car_radius_m,
-        lift_radius_m=CFG.lift_radius_m,
-    )
+    # search_hikes is synchronous (network + math); run it off the event loop.
+    hikes = await asyncio.to_thread(search_hikes, bbox, criteria, CFG)
 
     if not hikes:
         return [TextContent(type="text", text="No matching hikes found in that area.")]
 
-    return [TextContent(type="text", text="\n".join(_format(h) for h in hikes))]
+    return [TextContent(type="text", text="\n".join(format_hike(h) for h in hikes))]
 
 
 def main() -> None:

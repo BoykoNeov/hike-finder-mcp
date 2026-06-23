@@ -1,9 +1,13 @@
 # hike-finder-mcp
 
-An MCP server that finds **marked hiking routes from OpenStreetMap** and filters
-them by **real, locally-computed elevation gain and distance** — not numbers
-scraped from trail-description websites — plus **shape and access**: whether a
-route is a loop, and whether you can reach it by **car** or **chairlift**.
+Find **marked hiking routes from OpenStreetMap** and filter them by **real,
+locally-computed elevation gain and distance** — not numbers scraped from
+trail-description websites — plus **shape and access**: whether a route is a loop,
+and whether you can reach it by **car** or **chairlift**.
+
+It runs three ways on one engine: a **command-line tool**, a **local web UI** (a
+map you pan to your area), or an **MCP server** for LLM clients. The CLI and web
+UI need **no LLM and no MCP client** — they're plain standalone programs.
 
 It targets OSM route *relations* (`route=hiking`/`foot`), the same signed,
 maintained trail data — including the Czech **KČT** network — that **mapy.cz**
@@ -52,22 +56,76 @@ Set via `HIKE_ELEVATION_MODE`. See `src/hike_finder/config.py`.
 ## Quickstart
 
 ```bash
-pip install -e ".[dev]"          # add ",local-dem" for the rasterio backend
-pytest                            # core math is unit-tested
-python -m hike_finder.server      # start the MCP server (stdio)
+pip install -e .                   # CLI + web UI; no LLM / MCP stack required
+
+# browser: pan a map to your area, set filters, search
+hike-finder-web                    # then open http://127.0.0.1:8765
+
+# terminal: one command, prints results
+hike-finder --bbox 50.72 15.58 50.74 15.62 --circular --user-agent you@example.com
 ```
 
 ## Using it
 
-### 1. Register the server with an MCP client
+Three frontends, one engine. **The CLI and web UI need no LLM and no MCP client.**
 
-The server speaks MCP over stdio. Register the command `python -m hike_finder.server`
-(or the installed `hike-finder` console script).
-
-**Claude Code (CLI):**
+### Install
 
 ```bash
-claude mcp add hike-finder --env HIKE_OVERPASS_UA=you@example.com -- python -m hike_finder.server
+pip install -e .                  # base: the `hike-finder` CLI and `hike-finder-web` UI
+pip install -e ".[mcp]"           # + the MCP server (`hike-finder-mcp`)
+pip install -e ".[local-dem]"     # + the local GeoTIFF DEM elevation backend (needs rasterio)
+pip install -e ".[dev]"           # + pytest
+```
+
+Extras combine: `pip install -e ".[mcp,local-dem]"`.
+
+**Set a contact for Overpass.** OSM's public server rejects the default User-Agent
+with `406`. Provide a real email/URL via `--user-agent` (CLI), the Contact field
+(web UI), or `HIKE_OVERPASS_UA=you@example.com` in the environment — per
+[OSM etiquette](https://operations.osmfoundation.org/policies/nominatim/).
+
+### Option A — Web UI (easiest; no coordinates to type)
+
+```bash
+hike-finder-web                   # serves http://127.0.0.1:8765 (--host/--port to change)
+```
+
+Open it, **pan/zoom the map to your area**, fill in the contact field, choose
+filters (shape, car/chairlift access, gain and distance ranges), then click
+**"Search this map area"**. Matches are listed and pinned at their start point —
+click one to jump to it. This is the answer to "how do I get a bounding box": you
+draw it by moving the map. Pure standard library, no web-framework dependency.
+
+### Option B — Command line
+
+```bash
+hike-finder --bbox 50.72 15.58 50.74 15.62 \
+            --circular --chairlift-access \
+            --user-agent you@example.com
+```
+
+`--bbox` is **`south west north east`** (min-lat min-lon max-lat max-lon). The
+three boolean filters are **tri-state**: omit = don't care, `--circular` = require,
+`--no-circular` = exclude (same for `--car-access` and `--chairlift-access`).
+Numeric filters: `--min-gain`/`--max-gain` (m), `--min-distance`/`--max-distance`
+(km). Add `--json` for machine-readable output. `hike-finder --help` lists all.
+
+Each match prints as one line:
+
+```text
+<name> — <km> km, +<gain> m / -<loss> m [loop, car, lift:chair_lift] (start <lat>,<lon>, OSM relation <id>)
+```
+
+The `[...]` flags: `loop`/`one-way`, then `car` and/or `lift:<type>` when access
+is mapped near an endpoint.
+
+### Option C — MCP server (drive it from an LLM client)
+
+Needs the `mcp` extra. Register the `hike-finder-mcp` command:
+
+```bash
+claude mcp add hike-finder --env HIKE_OVERPASS_UA=you@example.com -- hike-finder-mcp
 ```
 
 **`.mcp.json` / Claude Desktop config (equivalent):**
@@ -76,55 +134,36 @@ claude mcp add hike-finder --env HIKE_OVERPASS_UA=you@example.com -- python -m h
 {
   "mcpServers": {
     "hike-finder": {
-      "command": "python",
-      "args": ["-m", "hike_finder.server"],
+      "command": "hike-finder-mcp",
       "env": { "HIKE_OVERPASS_UA": "you@example.com" }
     }
   }
 }
 ```
 
-`HIKE_OVERPASS_UA` is **effectively required**: the public Overpass server rejects
-the default Python User-Agent with `406 Not Acceptable`. Set it to a real contact
-(email or project URL) per [OSM etiquette](https://operations.osmfoundation.org/policies/nominatim/).
+Then ask in plain language ("find loop hikes near Špindlerův Mlýn reachable by
+chairlift") and the client calls `find_hikes(south, west, north, east, …)` with
+the same filters as the CLI.
 
-> This is the standard MCP registration form; it isn't live-verified in this repo
-> (no `mcp` SDK installed in the build env). The SDK's decorator API has shifted
-> across versions — if the server won't start, check the imports in
-> `src/hike_finder/server.py` against your installed `mcp` version (see `HANDOFF.md`).
+> The MCP registration form isn't live-verified in this repo (the build env has no
+> `mcp` SDK). The SDK's decorator API has shifted across versions — if the server
+> won't start, check the imports in `src/hike_finder/server.py` against your
+> installed `mcp` version (see `HANDOFF.md`).
 
-### 2. Call the tool
+### Getting a bounding box (CLI / MCP)
 
-Ask your MCP client for hikes in a bounding box. For example, "find loop hikes near
-Špindlerův Mlýn reachable by chairlift" makes the client call:
-
-```text
-find_hikes(south=50.72, west=15.58, north=50.74, east=15.62,
-           circular=true, chairlift_access=true)
-```
-
-Each match comes back as one line:
-
-```text
-<name> — <km> km, +<gain> m / -<loss> m [loop, car, lift:chair_lift] (start <lat>,<lon>, OSM relation <id>)
-```
-
-The `[...]` flags are always present: `loop`/`one-way`, then `car` and/or
-`lift:<type>` when access is mapped near an endpoint.
-
-> **Validated live** (2026-06-23): this exact bbox returned 15 routes / 31 parking
-> / 5 lifts, and the route *Špindlmanova mise* came back flagged `car` +
-> `lift:chair_lift`. Gain/loss numbers depend on the elevation backend, which is
-> not yet live-validated — see `HANDOFF.md`.
-
-### 3. Getting a bounding box
-
-The tool takes four corners in the order **`south, west, north, east`**
-(min latitude, min longitude, max latitude, max longitude). To get them:
+The web UI gives you the box for free. For the CLI or MCP you supply four corners
+in the order **`south, west, north, east`** (min latitude, min longitude, max
+latitude, max longitude):
 
 - **openstreetmap.org → "Export" tab** draws a draggable box and shows its four
   edges — copy them straight in.
 - Or read the corners off **mapy.cz** for the area you're planning.
+
+> **Validated live** (2026-06-23): the bbox `50.72,15.58,50.74,15.62` (Špindlerův
+> Mlýn) returned 15 routes / 31 parking / 5 lifts, and *Špindlmanova mise* came
+> back flagged `car` + `lift:chair_lift`. Gain/loss numbers depend on the
+> elevation backend, which is not yet live-validated — see `HANDOFF.md`.
 
 ### Configuration (environment variables)
 
@@ -157,8 +196,8 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 
 ## Status
 
-Core geometry, gain, access/shape math, and the Overpass response parser:
-**implemented and unit-tested** (27 tests). The live network layers (the
-Overpass HTTP call, elevation backends) and the MCP entry point:
-**implemented, validate on a networked machine**. See `HANDOFF.md` for exactly
-what's done and what's next.
+Core geometry, gain, access/shape math, the Overpass response parser, and the
+CLI argument/formatter layer: **implemented and unit-tested** (33 tests, all
+offline). The Overpass HTTP call is **validated live**. The elevation backends,
+the web UI, and the MCP entry point are **implemented; validate on a networked
+machine**. See `HANDOFF.md` for exactly what's done and what's next.
