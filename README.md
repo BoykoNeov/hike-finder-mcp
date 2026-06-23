@@ -165,9 +165,13 @@ latitude, max longitude):
 > gain/loss for **every** one — e.g. *[Z] Richtrovy Boudy → Špindlerův mlýn* at
 > **+678 m / −251 m**. The detected loop *Špindlerův mlýn – okruh* came back
 > **+34 m / −34 m** — gain ≈ loss, exactly as a closed loop must, which
-> cross-checks the whole sampling/gain pipeline. Remaining caveats: the
-> **local DEM** backend (`mode=local`) is still untested, and a few relations
-> aren't detected as loops (greedy way-stitching) — both tracked in `HANDOFF.md`.
+> cross-checks the whole sampling/gain pipeline. Loop detection was also
+> validated live (2026-06-23) against the real "Medvěd*" relations — which caught
+> and corrected an over-reporting bug; closure now reads the member ways as a
+> vertex graph (circuit rank), independent of way-stitching. Remaining caveats:
+> the **local DEM** backend (`mode=local`) is still untested, and distance can
+> under-count on branched relations (greedy way-stitching) — both tracked in
+> `HANDOFF.md`.
 
 ### Configuration (environment variables)
 
