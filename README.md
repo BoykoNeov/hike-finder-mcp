@@ -210,7 +210,7 @@ Core geometry, gain, access/shape math, the Overpass response parser, the
 elevation-API client (including its rate-limit throttle, transient-error
 retry/backoff, and a persistent daily-request counter that degrades to `n/a`
 before blowing the API's daily cap), and the CLI argument/formatter layer:
-**implemented and unit-tested** (58 tests, all offline). The Overpass HTTP call **and the API
+**implemented and unit-tested** (59 tests, all offline). The Overpass HTTP call **and the API
 elevation backend** are **validated live** (CLI + web), with computed gain
 cross-checked against the loop invariant (gain ≈ loss). The local-DEM backend
 and the MCP entry point are **implemented; validate on a networked machine**.

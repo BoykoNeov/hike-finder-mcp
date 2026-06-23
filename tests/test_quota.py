@@ -137,3 +137,45 @@ def test_provider_records_each_request(tmp_path):
         post.return_value = FakeResp(_otd([1.0]))
         prov.lookup([(0, 0), (1, 1)])  # batch_size=1 -> 2 requests
     assert prov.quota.snapshot()[0] == 2
+
+
+def _area_with_routes(n):
+    """Minimal AreaData with `n` short linear routes (no parking/lifts)."""
+    from hike_finder.overpass import AreaData
+
+    routes = []
+    for i in range(n):
+        lon = 14.0 + i * 0.01
+        way = [(50.0, lon), (50.0, lon + 0.002), (50.0, lon + 0.004)]
+        routes.append({"id": 100 + i, "name": f"Route {i}", "ref": None, "tags": {}, "ways": [way]})
+    return AreaData(routes=routes, parking=[], lifts=[])
+
+
+def test_exhausted_quota_degrades_search_to_na_without_aborting(tmp_path):
+    # The feature's whole point: hitting the daily cap must degrade routes to n/a,
+    # NOT abort the search. This drives the real production path —
+    # FallbackElevationProvider([api]) (exactly what `auto` mode builds with no
+    # DEM) through find_hikes — with the counter pre-exhausted on disk.
+    from hike_finder.elevation import FallbackElevationProvider
+    from hike_finder.filters import Criteria, find_hikes
+
+    DailyQuota(DEFAULT_ENDPOINT, daily_limit=1, state_dir=tmp_path).record()  # at the cap
+    api = ApiElevationProvider(
+        endpoint=DEFAULT_ENDPOINT, min_interval_s=0, daily_limit=1, state_dir=str(tmp_path)
+    )
+    provider = FallbackElevationProvider([api])
+    area = _area_with_routes(2)
+
+    with patch("hike_finder.elevation.api.requests.post") as post:
+        hikes = find_hikes(area, provider, Criteria())  # no gain filter
+    # Search COMPLETED (no raise); both routes listed with gain n/a; the cap meant
+    # we never touched the network. If it aborted on route 1, route 2 wouldn't be
+    # here — so this also proves the per-route loop keeps going.
+    assert len(hikes) == 2
+    assert all(h.gain_m is None and h.loss_m is None for h in hikes)
+    assert post.call_count == 0
+
+    # With an active gain bound, n/a routes are dropped — gracefully, not an error.
+    with patch("hike_finder.elevation.api.requests.post"):
+        gained = find_hikes(area, provider, Criteria(min_gain_m=100.0))
+    assert gained == []

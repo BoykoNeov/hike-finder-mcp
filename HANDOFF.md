@@ -123,17 +123,21 @@ report a 200 km "hike" and test parking/lifts at endpoints in another region.
   read-modify-write across the threaded web server's concurrent providers (a
   per-instance lock would NOT — each search builds a fresh provider). `tests/
   test_quota.py`: UTC rollover, at-limit enforcement, persistence across separate
-  instances, per-host separation, the `limit<=0` disable switch, and a 4-thread
-  concurrency test. `tests/conftest.py` isolates the counter to a tmp dir so the
-  suite never touches the real cache. Tunable via `HIKE_API_DAILY_LIMIT` (0 =
-  off) / `HIKE_API_STATE_DIR`; surfaced by the CLI (stderr line) and the web UI
+  instances, per-host separation, the `limit<=0` disable switch, a 4-thread
+  concurrency test, and — the linchpin — an **end-to-end** test that drives a real
+  `FallbackElevationProvider([api])` (what `auto` builds with no DEM) through
+  `find_hikes` with the counter pre-exhausted, asserting the search *completes*
+  with routes at `gain_m=None` (not abort) and never touches the network.
+  `tests/conftest.py` isolates the counter to a tmp dir so the suite never touches
+  the real cache. Tunable via `HIKE_API_DAILY_LIMIT` (0 = off) /
+  `HIKE_API_STATE_DIR`; surfaced by the CLI (stderr line) and the web UI
   (`/api/quota`).
 
 - `geometry.resample_by_distance` — now has a multi-segment regression
   (`tests/test_geometry.py`). The old single-segment test missed a carry bug
   that collapsed finely-vertexed real OSM lines to 2 points (see bug #3 below).
 
-Run it: `pytest` → 58 passing.
+Run it: `pytest` → 59 passing.
 
 ## What is now VALIDATED LIVE (run against real OSM, 2026-06-23)
 
@@ -246,6 +250,13 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
   over `dem_dir` (`gdalbuildvrt`) and sample the VRT — avoids loading everything.
 - **No caching.** Overpass and elevation results should be cached (disk/SQLite)
   to respect usage policies and speed up repeat queries. Add before heavy use.
+- **CLI quota line gates on `mode != "local"`, not on "the API was actually hit
+  this run."** Today that's equivalent (no rasterio/tiles → `auto` always uses the
+  API). But once the local DEM backend is live, `auto`-with-working-tiles won't
+  touch the API yet would still print a (possibly stale) `N/1000` line. When you
+  wire up local DEM, tighten the gate to "API actually used this run" (e.g. track
+  an in-process request count on the provider and surface it) so the line only
+  shows when relevant.
 - **Round-trip vs point-to-point gain:** we report cumulative gain over the
   stitched line as-is. If a route is one-way, decide whether to report return
   gain too. Currently `loss` gives you the reverse direction's gain.
@@ -291,7 +302,7 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
 
 ```bash
 pip install -e .             # CLI + web UI (no LLM); extras: ".[mcp]" ".[local-dem]" ".[dev]"
-pytest -q                    # 58 tests, all offline (pure math + Overpass parser + CLI + elevation API + daily quota)
+pytest -q                    # 59 tests, all offline (pure math + Overpass parser + CLI + elevation API + daily quota)
 hike-finder --bbox 50.72 15.58 50.74 15.62 --user-agent you@example.com
 hike-finder-web              # local web UI on http://127.0.0.1:8765
 hike-finder-mcp              # MCP server over stdio (needs the `mcp` extra)
