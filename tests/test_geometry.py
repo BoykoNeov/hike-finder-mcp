@@ -4,6 +4,7 @@ from hike_finder.geometry import (
     haversine_m,
     polyline_length_m,
     resample_by_distance,
+    route_cycle_count,
     stitch_ways,
 )
 
@@ -58,6 +59,31 @@ def test_resample_segments_shorter_than_interval():
     gaps = [haversine_m(out[i], out[i + 1]) for i in range(len(out) - 1)]
     for g in gaps[:-1]:
         assert 20 < g < 30
+
+
+def test_route_cycle_count_topologies():
+    # Circuit rank E - V + C over the endpoint graph. >0 means the ways enclose
+    # a loop. Interior vertices are not nodes; only way endpoints are.
+    a, b, c, d = (50.0, 14.0), (50.0, 14.01), (50.01, 14.01), (50.01, 14.0)
+    # Clean loop: V2 E2 C1 -> 1.
+    assert route_cycle_count([[a, b, c], [c, d, a]]) == 1
+    # Open path: V3 E2 C1 -> 0.
+    assert route_cycle_count([[a, b], [b, c]]) == 0
+    # Lollipop (loop + stem): V4 E4 C1 -> 1.
+    spur = (50.02, 14.02)
+    assert route_cycle_count([[a, b], [b, c], [c, a], [c, spur]]) == 1
+    # Figure-8: two loops on a shared node, two independent cycles -> 2.
+    assert route_cycle_count([[a, b], [b, a], [a, c], [c, a]]) == 2
+    # Empty / sub-two-point members contribute nothing.
+    assert route_cycle_count([]) == 0
+    assert route_cycle_count([[a]]) == 0
+
+
+def test_route_cycle_count_snaps_near_endpoints():
+    # Endpoints within snap_m but not bit-identical must still close the loop.
+    a, b = (50.0, 14.0), (50.01, 14.01)
+    a2 = (50.00005, 14.0)  # ~5.5 m from a, inside the 30 m snap
+    assert route_cycle_count([[a, b], [b, a2]]) == 1
 
 
 def test_stitch_orders_and_flips():

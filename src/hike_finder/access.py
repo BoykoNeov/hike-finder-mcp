@@ -19,7 +19,7 @@ convention.
 """
 from __future__ import annotations
 
-from .geometry import Coord, haversine_m
+from .geometry import Coord, haversine_m, route_cycle_count
 
 # Aerialways you can ride UP sitting/standing in a cabin — the realistic
 # "let the lift do the climbing" set. Excludes drag/T-bar/platter/rope_tow
@@ -33,33 +33,17 @@ _FALSE = {"no", "false", "0"}
 
 
 def endpoints_closed(ways: list[list[Coord]], snap_m: float = 30.0) -> bool:
-    """True if the member ways form a closed structure (a loop).
+    """True if the member ways enclose at least one loop.
 
-    Stitch-order independent — unlike comparing the stitched line's first/last
-    point, which inherits greedy-stitch fragility (a loop-with-spur can stitch
-    to end on the spur tip). We instead look at the *degree* of every way
-    endpoint: in a single closed loop every endpoint is shared by an even
-    number of way-ends; an open path has exactly two odd-degree termini.
+    Delegates to the route's circuit rank (``geometry.route_cycle_count``): the
+    endpoint graph contains a cycle iff ``E - V + C > 0``. Stitch-order
+    independent — and, unlike the old "every endpoint has even degree" test,
+    this counts a *lollipop* (a loop reached by an approach stem) as closed,
+    which is the shape most real KČT okruh relations take. The even-degree test
+    demanded a full Eulerian circuit and so reported those one-way. See
+    ``route_cycle_count`` for the T-junction caveat.
     """
-    ends: list[Coord] = []
-    for w in ways:
-        if len(w) >= 2:
-            ends.append(w[0])
-            ends.append(w[-1])
-    if not ends:
-        return False
-
-    # Cluster nearby endpoints (different ways rarely share the exact float).
-    clusters: list[list] = []  # each: [representative_coord, count]
-    for p in ends:
-        for c in clusters:
-            if haversine_m(p, c[0]) <= snap_m:
-                c[1] += 1
-                break
-        else:
-            clusters.append([p, 1])
-
-    return all(count % 2 == 0 for _, count in clusters)
+    return route_cycle_count(ways, snap_m=snap_m) > 0
 
 
 def is_circular(

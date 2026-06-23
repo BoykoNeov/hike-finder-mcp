@@ -35,11 +35,35 @@ def test_endpoints_open_path():
     assert endpoints_closed(ways) is False
 
 
-def test_endpoints_loop_with_spur_not_closed():
-    # Loop a-b-c-a plus a dead-end spur c-d. The spur tip is odd-degree.
+def test_endpoints_lollipop_is_closed():
+    # Loop a-b-c-a plus a dead-end approach stem c-d. This is the lollipop
+    # ("okruh with a spur") that most real KČT loop relations take. The old
+    # even-degree test reported it one-way (the stem tip is odd-degree); circuit
+    # rank counts the loop and ignores the stem, so it is correctly circular.
     a, b, c, d = (50.0, 14.0), (50.0, 14.01), (50.01, 14.01), (50.02, 14.02)
     ways = [[a, b], [b, c], [c, a], [c, d]]
-    assert endpoints_closed(ways) is False
+    assert endpoints_closed(ways) is True
+
+
+def test_endpoints_closed_independent_of_member_order():
+    # Same lollipop, members shuffled and individually reversed: the answer must
+    # not depend on order or orientation (the greedy-stitch fragility we fixed).
+    a, b, c, d = (50.0, 14.0), (50.0, 14.01), (50.01, 14.01), (50.02, 14.02)
+    ways = [[d, c], [a, b], [c, a], [c, b]]
+    assert endpoints_closed(ways) is True
+
+
+def test_endpoints_figure_eight_is_closed():
+    # Two loops sharing a central node — both are real cycles.
+    center, p1, p2 = (50.0, 14.0), (50.0, 14.01), (50.01, 14.0)
+    ways = [[center, p1], [p1, center], [center, p2], [p2, center]]
+    assert endpoints_closed(ways) is True
+
+
+def test_endpoints_single_ring_way_is_closed():
+    # A single way whose own ends coincide is already a loop.
+    a, b, c = (50.0, 14.0), (50.0, 14.01), (50.01, 14.01)
+    assert endpoints_closed([[a, b, c, a]]) is True
 
 
 def test_is_circular_roundtrip_tag_authoritative():
@@ -58,6 +82,18 @@ def test_is_circular_geometry_fallback_start_near_end():
     line = [(50.0, 14.0), (50.01, 14.01), (50.0001, 14.0)]  # end ~11 m from start
     ways = [[(50.0, 14.0), (50.01, 14.01)], [(50.01, 14.01), (50.0001, 14.0)]]
     assert is_circular(ways, line, {}, tol_m=150.0) is True
+
+
+def test_is_circular_lollipop_no_tag():
+    # The reported symptom: an untagged okruh that is a loop plus an approach
+    # stem. is_circular must report it circular off geometry alone now that
+    # closure uses circuit rank. The stitched line ends on the stem tip, far
+    # from the start, so the start-near-end fallback would NOT catch it — the
+    # circuit-rank closure test is what makes this pass.
+    a, b, c, d = (50.0, 14.0), (50.0, 14.01), (50.01, 14.01), (50.02, 14.02)
+    ways = [[a, b], [b, c], [c, a], [c, d]]
+    line = [d, c, a, b, c]  # walked: stem tip -> loop -> around
+    assert is_circular(ways, line, {}) is True
 
 
 def test_is_circular_point_to_point_false():

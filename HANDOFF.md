@@ -65,9 +65,11 @@ frontends (pick one; cli/web need no LLM):
 
 - **`circular`** (loop vs point-to-point) — `access.is_circular`. Order:
   the OSM `roundtrip` tag is authoritative; else the member ways are tested for
-  closure by *endpoint degree* (stitch-order independent — a loop has no
-  odd-degree endpoint); else the stitched line returning within `HIKE_LOOP_TOLERANCE`
-  of its start. High confidence.
+  closure by *circuit rank* — `geometry.route_cycle_count`, the endpoint graph's
+  `E - V + C` (>0 ⇒ a loop exists; stitch-order independent, and counts a
+  *lollipop* loop-plus-stem, which the old even-degree test reported one-way);
+  else the stitched line returning within `HIKE_LOOP_TOLERANCE` of its start.
+  High confidence.
 - **`car_access`** — `access.car_accessible`. A mapped `amenity=parking` within
   `HIKE_CAR_RADIUS` of a trail *endpoint*. Parking-only by design (roads are dense
   and tag-fragile; revisit if recall complaints surface). Best-effort confidence.
@@ -89,9 +91,10 @@ report a 200 km "hike" and test parking/lifts at endpoints in another region.
 - `elevation/gain.py` — moving-average smoothing + hysteresis-threshold gain/loss.
   `tests/test_gain.py`. Verified: rejects pure noise, captures gradual climbs,
   symmetric up/down, and does NOT overcount under heavy sawtooth noise.
-- `access.py` — circular detection (closed loop / open path / loop-with-spur),
-  car & chairlift proximity (just-inside vs just-outside a radius), and tri-state
-  `Criteria` acceptance. `tests/test_access.py`.
+- `access.py` — circular detection via circuit rank (closed loop / open path /
+  lollipop / figure-8 / single ring way, order-independent — see
+  `geometry.route_cycle_count`), car & chairlift proximity (just-inside vs
+  just-outside a radius), and tri-state `Criteria` acceptance. `tests/test_access.py`.
 - `overpass.parse_area` — the mixed-response parser (routes vs parking-node vs
   parking-area-via-`center` vs aerialway, with drag-lifts excluded). Tested on a
   hand-built element list, so the failure-prone parsing is covered *offline* even
@@ -137,7 +140,7 @@ report a 200 km "hike" and test parking/lifts at endpoints in another region.
   (`tests/test_geometry.py`). The old single-segment test missed a carry bug
   that collapsed finely-vertexed real OSM lines to 2 points (see bug #3 below).
 
-Run it: `pytest` → 59 passing.
+Run it: `pytest` → 65 passing.
 
 ## What is now VALIDATED LIVE (run against real OSM, 2026-06-23)
 
@@ -205,13 +208,29 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
    LIVE"). Every route now gets a computed gain/loss; gain tracks the profile.
    Defaults (threshold 10 m, interval 25 m) left as-is — *not* tuned to one
    route (that would overfit); revisit once several known-profile trails exist.
-3. **Loop-closure detection + robust way-stitching.** With resampling fixed, the
-   gains are trustworthy; the remaining geometry gap is *shape*: `stitch_ways` is
-   greedy/order-dependent, so a few relations that are loops in reality come back
-   `circular=false` (e.g. "Medvědí okruh" — *okruh* = circuit — listed one-way).
-   Fix: build an endpoint graph, extract the longest path / detect closure by
-   endpoint degree (see "Known limitations"). Lower priority than it looked — it
-   no longer corrupts gain, only the `circular` flag for some relations.
+3. **Loop-closure detection** — **DONE (closure half; offline, validation
+   pending).** The reported symptom was loops reported `circular=false` (e.g.
+   "Medvědí okruh" — *okruh* = circuit). Root cause: closure used an
+   *every-endpoint-even-degree* test, which demands a full Eulerian circuit and
+   so misses a *lollipop* (a loop reached by an approach stem) — the shape most
+   KČT okruh relations take. Replaced with **circuit rank** `E - V + C` over the
+   endpoint graph (`geometry.route_cycle_count`): >0 ⇒ a loop exists. Nodes are
+   clustered way-endpoints (union-find, order-independent); a separate
+   connectivity pass gives C. Topologies covered by unit tests: clean loop, open
+   path, lollipop, figure-8, single ring way, near-snap endpoints, member-order
+   independence. Operates on `ways`, **not** the stitched line, so it can't move
+   the live-validated distance/gain/endpoint numbers. *Caveat:* the specific
+   Medvědí okruh relation can't be observed offline — this fixes the
+   *hypothesized* topology; confirm against real OSM on a networked run (same
+   "validation pending" status the Overpass/API layers carried before 2026-06-23).
+   **Still deferred (the "robust way-stitching" half):** `stitch_ways` is still
+   greedy and silently *drops* members it can't chain (branched/disconnected
+   relations) → under-counts distance and can pick wrong endpoints. The honest
+   fix (distance = sum of member-way lengths) *raises* distances, which shifts
+   the over-length-guard baseline — don't change it blind offline; do it on a
+   networked run where the new numbers can be re-verified. T-junctions (a way
+   endpoint meeting another way's interior vertex) still aren't seen as joined —
+   needs vertex-splitting; see "Known limitations".
 4. ~~Add API retry/backoff on transient 5xx / daily-cap 429.~~ **DONE.**
    `_lookup_batch` now retries 429/5xx/network up to `max_retries` (default 3)
    with exponential backoff (`backoff_base_s` × 2^attempt), honouring a
@@ -242,10 +261,21 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
   Use threshold > peak-to-peak, and lean on smoothing. Tune per elevation source
   (API data is pre-smoothed; raw SRTM is noisier → higher threshold).
 - **Way stitching is greedy** with a 30 m endpoint tolerance. Fine for simple
-  linear routes; multi-branch relations or loops with spurs may stitch oddly.
-  Robust fix: order members by the relation's role/sequence, or build a graph and
-  extract the longest path. Until then, distance is reliable; stitched *order*
-  may not be for complex relations.
+  linear routes; multi-branch/disconnected relations stitch oddly and, worse,
+  `stitch_ways` silently **drops** any member it can't chain to the current
+  chain's ends → distance can *under-count* and the picked endpoints (car/lift
+  access, `start`) can be wrong. Robust fix: order members by role/sequence, or
+  reuse the endpoint graph (`route_cycle_count` already builds one) to traverse
+  all edges; for distance specifically, sum member-way lengths. Deferred to a
+  networked run because the fix raises distances and so shifts the over-length
+  guard's baseline (see Next-steps step 3). NB: *closure* no longer depends on
+  the stitch — it uses circuit rank on `ways` directly.
+- **Closure misses T-junctions.** `route_cycle_count` makes nodes only from way
+  *endpoints*, so a way whose endpoint lands on another way's *interior* vertex
+  (a T-junction) isn't seen as joined there, and a loop closed only through such
+  a junction reads as open. Robust fix needs vertex-splitting (split the through
+  way at the touch point). Rare for clean KČT relations; the old code missed it
+  too. A `roundtrip=yes` tag still wins regardless.
 - **Local DEM merges tiles in memory.** For large regions, switch to a GDAL VRT
   over `dem_dir` (`gdalbuildvrt`) and sample the VRT — avoids loading everything.
 - **No caching.** Overpass and elevation results should be cached (disk/SQLite)
@@ -278,9 +308,10 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
   long loop in a small bbox, and it doesn't *clip* a route to the area (distance is
   still the whole stitched line). Real fix is clipping member ways to the bbox —
   a larger change, deliberately deferred.
-- **Loop-with-spur:** the endpoint-degree test reports a loop with a dead-end spur
-  as non-circular (the spur tip is odd-degree). A `roundtrip=yes` tag still wins.
-  Acceptable; same family as the greedy-stitch caveat above.
+- **Loop-with-spur (lollipop):** now reported **circular** — circuit rank counts
+  the loop and ignores the dangling stem, where the old even-degree test reported
+  it one-way. This was the headline fix of step 3. (A bare out-and-back with no
+  loop has circuit rank 0 and is still correctly non-circular.)
 - **Loops are genuinely sparse in the raw data** (observed live: 1 of 12 around
   Špindl). Most KČT `route=hiking` relations are *linear* marked segments (a
   coloured trail A→B); circular day-hikes are usually ad-hoc *combinations* of
@@ -302,7 +333,7 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
 
 ```bash
 pip install -e .             # CLI + web UI (no LLM); extras: ".[mcp]" ".[local-dem]" ".[dev]"
-pytest -q                    # 59 tests, all offline (pure math + Overpass parser + CLI + elevation API + daily quota)
+pytest -q                    # 65 tests, all offline (pure math + Overpass parser + CLI + elevation API + daily quota)
 hike-finder --bbox 50.72 15.58 50.74 15.62 --user-agent you@example.com
 hike-finder-web              # local web UI on http://127.0.0.1:8765
 hike-finder-mcp              # MCP server over stdio (needs the `mcp` extra)
