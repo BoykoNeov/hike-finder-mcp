@@ -106,7 +106,12 @@ report a 200 km "hike" and test parking/lifts at endpoints in another region.
   `tests/test_cli.py`. The CLI's *live* path is identical to the server's (both
   call `search_hikes`), so validating one validates the other.
 
-Run it: `pytest` → 33 passing.
+- `elevation/api.py` — the request body PER endpoint (OpenTopoData pipe-string
+  vs Open-Elevation dict-list), shared response parsing, nodata forward-fill,
+  and the cross-request throttle. `tests/test_api.py` (mocks `requests.post`, so
+  offline). These tests exist *because* the body-format bug below shipped untested.
+
+Run it: `pytest` → 41 passing.
 
 ## What is now VALIDATED LIVE (run against real OSM, 2026-06-23)
 
@@ -122,35 +127,56 @@ Run it: `pytest` → 33 passing.
   504/429/502/503 that the public instance throws under load. Without the UA,
   every request fails — this also affected the original `fetch_routes`.
 
+- `elevation/api.py` (the **API elevation backend**) — validated against
+  OpenTopoData `srtm30m`. CLI run on the Špindlerův Mlýn bbox now returns a
+  computed gain/loss for **every** route (0 nulls); the gain math tracks the
+  profile (e.g. 740 m elevation spread → +765 m gain). **Two bugs found & fixed
+  here:**
+  1. **Wrong request body.** The provider POSTed Open-Elevation's
+     `[{latitude, longitude}]` shape to OpenTopoData, which 400s every call
+     (`INVALID_REQUEST`) → caught as `ElevationError` → gain silently `n/a`.
+     `_encode_locations` now picks the dialect from the endpoint host
+     (OpenTopoData wants one `"lat,lon|lat,lon"` string).
+  2. **429 across routes.** The old code slept only *between batches within one
+     route*; back-to-back routes breached OpenTopoData's ~1 req/s and got
+     **429** → `n/a` for the later routes. One provider instance is reused per
+     search, so it now throttles *all* requests via `_throttle` (≥1.1 s apart).
+     Also: nodata elevations are forward-filled (fail only if every point is
+     nodata), so a stray `null` no longer escapes as an uncaught `TypeError`.
+
 ## What is WRITTEN but UNVALIDATED (needs a networked machine)
 
-Logic is complete; you still need to exercise these live (the Overpass layer
-above is now done):
+Logic is complete; you still need to exercise these live (the Overpass layer and
+the API elevation backend above are now done):
 
-1. `elevation/api.py` — hit OpenTopoData/Open-Elevation for real; confirm batch
-   size, rate limit (sleep), and response shape. Add retry/backoff on 429/5xx
-   (the same transient handling `overpass.fetch_area` now has).
-2. `elevation/local_dem.py` — needs `rasterio`. Confirm tile merge + `rowcol`
+1. `elevation/local_dem.py` — needs `rasterio`. Confirm tile merge + `rowcol`
    sampling against a known summit elevation. Watch nodata handling.
-3. `server.py` — confirm it speaks MCP over stdio with your `mcp` SDK version
+2. `server.py` — confirm it speaks MCP over stdio with your `mcp` SDK version
    (the decorator API has shifted across versions; adjust imports if needed).
    Now needs the optional `mcp` extra (`pip install -e ".[mcp]"`).
-4. `web.py` — the HTML page is static and the `/api/hikes` endpoint reuses
-   `search_hikes`, so it inherits the (validated) Overpass path. Still click
-   through the UI live once — pan the map, "Search this map area", confirm markers
-   appear and the Leaflet CDN loads — and run the CLI live once the same way.
+
+(`web.py` is now validated live too — `/` serves the page, `/api/hikes` reuses
+the validated `search_hikes` path and returns correct UTF-8 JSON.)
 
 ## Next steps, in priority order
 
 1. **Validate Overpass live** — DONE (2026-06-23, see "VALIDATED LIVE" above).
    Špindlerův Mlýn bbox returned 15 routes / 31 parking / 5 lifts; guard + filters
    sane. The User-Agent bug was found and fixed here.
-2. **Validate one elevation backend** (start with `api` — zero setup). Compare a
-   known trail's computed gain against mapy.cz/Komoot; tune `HIKE_GAIN_THRESHOLD`
-   and `HIKE_SAMPLE_INTERVAL` until numbers are sane. Expect to land threshold
-   ~8–12 m, interval ~20–30 m.
-3. **Wire MCP end-to-end** and call `find_hikes` from Claude Code.
-4. **Then** add the local DEM path and the polish items below.
+2. **Validate the `api` elevation backend** — DONE (2026-06-23, see "VALIDATED
+   LIVE"). Every route now gets a computed gain/loss; gain tracks the profile.
+   Defaults (threshold 10 m, interval 25 m) left as-is — *not* tuned to one
+   route (that would overfit); revisit once several known-profile trails exist.
+3. **Robust way-stitching — the real next quality issue (surfaced during the
+   elevation validation).** `geometry.stitch_ways` is greedy and order-dependent,
+   so some relations stitch to a **2-point stub** instead of the full line — those
+   routes then report an endpoint-only gain (e.g. `gain 0 / loss 354`, and the
+   short town loop as `0 / 0`). Distance and gain are only as good as the stitch.
+   Fix: build an endpoint graph and extract the longest path / proper loop (see
+   "Known limitations" below). This now gates gain *accuracy* per route, not just
+   presence.
+4. **Wire MCP end-to-end** and call `find_hikes` from Claude Code.
+5. **Then** add the local DEM path and the polish items below.
 
 ## Known limitations / TODOs (design notes, not bugs)
 
@@ -213,7 +239,7 @@ above is now done):
 
 ```bash
 pip install -e .             # CLI + web UI (no LLM); extras: ".[mcp]" ".[local-dem]" ".[dev]"
-pytest -q                    # 33 tests, all offline (pure math + Overpass parser + CLI)
+pytest -q                    # 41 tests, all offline (pure math + Overpass parser + CLI + elevation API)
 hike-finder --bbox 50.72 15.58 50.74 15.62 --user-agent you@example.com
 hike-finder-web              # local web UI on http://127.0.0.1:8765
 hike-finder-mcp              # MCP server over stdio (needs the `mcp` extra)

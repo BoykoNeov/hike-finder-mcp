@@ -162,8 +162,12 @@ latitude, max longitude):
 
 > **Validated live** (2026-06-23): the bbox `50.72,15.58,50.74,15.62` (Špindlerův
 > Mlýn) returned 15 routes / 31 parking / 5 lifts, and *Špindlmanova mise* came
-> back flagged `car` + `lift:chair_lift`. Gain/loss numbers depend on the
-> elevation backend, which is not yet live-validated — see `HANDOFF.md`.
+> back flagged `car` + `lift:chair_lift`. The **API elevation backend is now
+> live-validated** too — every returned route gets a computed gain/loss (e.g. a
+> 740 m-relief climb → +765 m). Two caveats remain: the **local DEM** backend
+> (`mode=local`) is still untested, and a few routes whose member ways don't
+> stitch cleanly report a 2-point gain (under-counted) — both tracked in
+> `HANDOFF.md`.
 
 ### Configuration (environment variables)
 
@@ -196,8 +200,9 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 
 ## Status
 
-Core geometry, gain, access/shape math, the Overpass response parser, and the
-CLI argument/formatter layer: **implemented and unit-tested** (33 tests, all
-offline). The Overpass HTTP call is **validated live**. The elevation backends,
-the web UI, and the MCP entry point are **implemented; validate on a networked
-machine**. See `HANDOFF.md` for exactly what's done and what's next.
+Core geometry, gain, access/shape math, the Overpass response parser, the
+elevation-API client, and the CLI argument/formatter layer: **implemented and
+unit-tested** (41 tests, all offline). The Overpass HTTP call **and the API
+elevation backend** are **validated live** (CLI + web). The local-DEM backend
+and the MCP entry point are **implemented; validate on a networked machine**.
+See `HANDOFF.md` for exactly what's done and what's next.
