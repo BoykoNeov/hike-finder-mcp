@@ -45,6 +45,7 @@ def search_hikes(
         api_min_interval_s=cfg.api_min_interval_s,
         api_max_retries=cfg.api_max_retries,
         api_backoff_s=cfg.api_backoff_s,
+        api_max_backoff_s=cfg.api_max_backoff_s,
     )
     return find_hikes(
         area,

@@ -51,6 +51,7 @@ def get_provider(
     api_min_interval_s: float | None = None,
     api_max_retries: int | None = None,
     api_backoff_s: float | None = None,
+    api_max_backoff_s: float | None = None,
 ) -> ElevationProvider:
     api_kwargs: dict = {}
     if api_endpoint:
@@ -61,6 +62,8 @@ def get_provider(
         api_kwargs["max_retries"] = api_max_retries
     if api_backoff_s is not None:
         api_kwargs["backoff_base_s"] = api_backoff_s
+    if api_max_backoff_s is not None:
+        api_kwargs["max_backoff_s"] = api_max_backoff_s
     if mode == "api":
         return ApiElevationProvider(**api_kwargs)
     if mode == "local":

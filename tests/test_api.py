@@ -177,6 +177,23 @@ def test_honors_retry_after_header():
     assert sleep.call_args.args[0] == 5.0
 
 
+def test_large_retry_after_gives_up_instead_of_stalling():
+    # A daily-quota 429 carries Retry-After = seconds-until-reset (can be an
+    # hour). Honouring it unbounded would freeze the search (and a web request).
+    # Above max_backoff_s we stop and degrade to n/a — no multi-minute sleep.
+    prov = ApiElevationProvider(
+        endpoint=DEFAULT_ENDPOINT, min_interval_s=0, max_retries=3, max_backoff_s=30.0
+    )
+    with patch("hike_finder.elevation.api.requests.post") as post, \
+            patch("hike_finder.elevation.api.time.sleep") as sleep:
+        post.return_value = FakeResp(None, status_code=429, headers={"Retry-After": "3600"})
+        with pytest.raises(ElevationError):
+            prov.lookup([(0, 0)])
+    # Gave up on the first 429 — no extra rejected calls, no hour-long sleep.
+    assert post.call_count == 1
+    assert sleep.call_count == 0
+
+
 def test_gives_up_after_max_retries_on_persistent_429():
     prov = ApiElevationProvider(
         endpoint=DEFAULT_ENDPOINT, min_interval_s=0, max_retries=2, backoff_base_s=2.0

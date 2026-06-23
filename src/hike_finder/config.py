@@ -10,6 +10,9 @@
                         keeps us under the public ~1 req/sec limit)
   HIKE_API_MAX_RETRIES  retries on transient API errors 429/5xx/network (default 3)
   HIKE_API_BACKOFF      backoff base seconds, doubled each retry (default 2.0)
+  HIKE_API_MAX_BACKOFF  cap on any single wait, seconds; a Retry-After above this
+                        (e.g. a daily-quota 429) makes us give up, not stall
+                        (default 30)
   HIKE_GAIN_THRESHOLD   metres (default 10)
   HIKE_SAMPLE_INTERVAL  metres (default 25)
   HIKE_SMOOTH_WINDOW    samples (default 3)
@@ -37,6 +40,7 @@ class Config:
     api_min_interval_s: float = float(os.getenv("HIKE_API_MIN_INTERVAL", "1.1"))
     api_max_retries: int = int(os.getenv("HIKE_API_MAX_RETRIES", "3"))
     api_backoff_s: float = float(os.getenv("HIKE_API_BACKOFF", "2.0"))
+    api_max_backoff_s: float = float(os.getenv("HIKE_API_MAX_BACKOFF", "30.0"))
     gain_threshold_m: float = float(os.getenv("HIKE_GAIN_THRESHOLD", "10"))
     sample_interval_m: float = float(os.getenv("HIKE_SAMPLE_INTERVAL", "25"))
     smooth_window: int = int(os.getenv("HIKE_SMOOTH_WINDOW", "3"))

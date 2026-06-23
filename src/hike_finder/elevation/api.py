@@ -47,6 +47,7 @@ class ApiElevationProvider(ElevationProvider):
         timeout_s: float = 30.0,
         max_retries: int = 3,
         backoff_base_s: float = 2.0,
+        max_backoff_s: float = 30.0,
     ):
         self.endpoint = endpoint
         self.batch_size = batch_size
@@ -58,9 +59,13 @@ class ApiElevationProvider(ElevationProvider):
         self.timeout = timeout_s
         # Retry transient failures (429 / 5xx / network) up to max_retries times
         # with exponential backoff (backoff_base_s * 2**attempt), bounded by the
-        # server's Retry-After when present. See _lookup_batch / _backoff.
+        # server's Retry-After when present. max_backoff_s caps any single wait:
+        # a Retry-After longer than that (e.g. a daily-quota 429 saying "come back
+        # in an hour") means we stop and degrade to n/a rather than freeze the
+        # search — see _lookup_batch / _backoff.
         self.max_retries = max_retries
         self.backoff_base_s = backoff_base_s
+        self.max_backoff_s = max_backoff_s
         self._last_request_t: float | None = None
         # OpenTopoData and Open-Elevation take different request bodies; pick the
         # dialect from the host so a plain endpoint override is all a user needs.
@@ -106,8 +111,14 @@ class ApiElevationProvider(ElevationProvider):
 
             if resp.status_code in _RETRY_STATUS:
                 last_err = ElevationError(f"elevation API returned HTTP {resp.status_code}")
+                retry_after = self._retry_after(resp)
+                if retry_after is not None and retry_after > self.max_backoff_s:
+                    # A cooldown longer than our ceiling (typically a daily-quota
+                    # 429): retrying soon just gets rejected again, so stop now and
+                    # degrade to n/a instead of stalling the search for minutes.
+                    break
                 if attempt < self.max_retries:
-                    self._backoff(attempt, self._retry_after(resp))
+                    self._backoff(attempt, retry_after)
                 continue
 
             # Non-transient outcome (2xx, or a 4xx we shouldn't retry): commit.
@@ -133,10 +144,13 @@ class ApiElevationProvider(ElevationProvider):
 
     def _backoff(self, attempt: int, retry_after: float | None) -> None:
         """Sleep before the next retry: exponential, but never less than the
-        server's Retry-After when it sent one."""
+        server's Retry-After when it sent one — and never more than max_backoff_s
+        (a long Retry-After is handled by giving up in _lookup_batch, so this cap
+        is just a backstop)."""
         delay = self.backoff_base_s * (2 ** attempt)
         if retry_after is not None:
             delay = max(delay, retry_after)
+        delay = min(delay, self.max_backoff_s)
         if delay > 0:
             time.sleep(delay)
 

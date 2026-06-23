@@ -110,14 +110,15 @@ report a 200 km "hike" and test parking/lifts at endpoints in another region.
   vs Open-Elevation dict-list), shared response parsing, nodata forward-fill,
   the cross-request throttle, and transient-error retry/backoff (retries on
   429/5xx/network, honours `Retry-After`, does NOT retry deterministic 4xx, gives
-  up after `max_retries`). `tests/test_api.py` (mocks `requests.post`, so
-  offline). These tests exist *because* the body-format bug below shipped untested.
+  up after `max_retries`, and gives up rather than stall on a `Retry-After` above
+  `max_backoff_s`). `tests/test_api.py` (mocks `requests.post`, so offline). These
+  tests exist *because* the body-format bug below shipped untested.
 
 - `geometry.resample_by_distance` — now has a multi-segment regression
   (`tests/test_geometry.py`). The old single-segment test missed a carry bug
   that collapsed finely-vertexed real OSM lines to 2 points (see bug #3 below).
 
-Run it: `pytest` → 49 passing.
+Run it: `pytest` → 50 passing.
 
 ## What is now VALIDATED LIVE (run against real OSM, 2026-06-23)
 
@@ -195,10 +196,15 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
 4. ~~Add API retry/backoff on transient 5xx / daily-cap 429.~~ **DONE.**
    `_lookup_batch` now retries 429/5xx/network up to `max_retries` (default 3)
    with exponential backoff (`backoff_base_s` × 2^attempt), honouring a
-   `Retry-After` header; deterministic 4xx are not retried. Tunable via
-   `HIKE_API_MIN_INTERVAL` / `HIKE_API_MAX_RETRIES` / `HIKE_API_BACKOFF`.
-   *Caveat:* a persistent **daily-quota** 429 (1000/day) is not fixable by
-   retrying — after `max_retries` the route degrades gracefully to `n/a`.
+   `Retry-After` header; deterministic 4xx are not retried. Any single wait is
+   capped at `max_backoff_s` (default 30 s): a `Retry-After` above that — the
+   shape a **daily-quota** 429 takes (seconds-until-reset, often an hour) — makes
+   us give up immediately and degrade the route to `n/a` rather than freeze the
+   search (and, in the web UI, freeze that HTTP request). Tunable via
+   `HIKE_API_MIN_INTERVAL` / `HIKE_API_MAX_RETRIES` / `HIKE_API_BACKOFF` /
+   `HIKE_API_MAX_BACKOFF`. Scope note: the per-second limit is *enforced*; the
+   daily limit (1000/day) isn't breachable within one search (~tens of calls) and
+   isn't tracked across searches.
 5. **Wire MCP end-to-end** and call `find_hikes` from Claude Code.
 6. **Then** add the local DEM path and the polish items below.
 
@@ -263,7 +269,7 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
 
 ```bash
 pip install -e .             # CLI + web UI (no LLM); extras: ".[mcp]" ".[local-dem]" ".[dev]"
-pytest -q                    # 49 tests, all offline (pure math + Overpass parser + CLI + elevation API)
+pytest -q                    # 50 tests, all offline (pure math + Overpass parser + CLI + elevation API)
 hike-finder --bbox 50.72 15.58 50.74 15.62 --user-agent you@example.com
 hike-finder-web              # local web UI on http://127.0.0.1:8765
 hike-finder-mcp              # MCP server over stdio (needs the `mcp` extra)
