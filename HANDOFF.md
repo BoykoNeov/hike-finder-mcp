@@ -108,14 +108,16 @@ report a 200 km "hike" and test parking/lifts at endpoints in another region.
 
 - `elevation/api.py` — the request body PER endpoint (OpenTopoData pipe-string
   vs Open-Elevation dict-list), shared response parsing, nodata forward-fill,
-  and the cross-request throttle. `tests/test_api.py` (mocks `requests.post`, so
+  the cross-request throttle, and transient-error retry/backoff (retries on
+  429/5xx/network, honours `Retry-After`, does NOT retry deterministic 4xx, gives
+  up after `max_retries`). `tests/test_api.py` (mocks `requests.post`, so
   offline). These tests exist *because* the body-format bug below shipped untested.
 
 - `geometry.resample_by_distance` — now has a multi-segment regression
   (`tests/test_geometry.py`). The old single-segment test missed a carry bug
   that collapsed finely-vertexed real OSM lines to 2 points (see bug #3 below).
 
-Run it: `pytest` → 43 passing.
+Run it: `pytest` → 49 passing.
 
 ## What is now VALIDATED LIVE (run against real OSM, 2026-06-23)
 
@@ -190,10 +192,13 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
    Fix: build an endpoint graph, extract the longest path / detect closure by
    endpoint degree (see "Known limitations"). Lower priority than it looked — it
    no longer corrupts gain, only the `circular` flag for some relations.
-4. **Add API retry/backoff on transient 5xx / daily-cap 429.** `_throttle`
-   prevents *self-inflicted* 429s, but a public-endpoint 5xx or daily-quota 429
-   still drops one route back to `n/a` (degrades gracefully). Mirror the
-   transient-retry that `overpass.fetch_area` already has.
+4. ~~Add API retry/backoff on transient 5xx / daily-cap 429.~~ **DONE.**
+   `_lookup_batch` now retries 429/5xx/network up to `max_retries` (default 3)
+   with exponential backoff (`backoff_base_s` × 2^attempt), honouring a
+   `Retry-After` header; deterministic 4xx are not retried. Tunable via
+   `HIKE_API_MIN_INTERVAL` / `HIKE_API_MAX_RETRIES` / `HIKE_API_BACKOFF`.
+   *Caveat:* a persistent **daily-quota** 429 (1000/day) is not fixable by
+   retrying — after `max_retries` the route degrades gracefully to `n/a`.
 5. **Wire MCP end-to-end** and call `find_hikes` from Claude Code.
 6. **Then** add the local DEM path and the polish items below.
 
@@ -258,7 +263,7 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
 
 ```bash
 pip install -e .             # CLI + web UI (no LLM); extras: ".[mcp]" ".[local-dem]" ".[dev]"
-pytest -q                    # 41 tests, all offline (pure math + Overpass parser + CLI + elevation API)
+pytest -q                    # 49 tests, all offline (pure math + Overpass parser + CLI + elevation API)
 hike-finder --bbox 50.72 15.58 50.74 15.62 --user-agent you@example.com
 hike-finder-web              # local web UI on http://127.0.0.1:8765
 hike-finder-mcp              # MCP server over stdio (needs the `mcp` extra)

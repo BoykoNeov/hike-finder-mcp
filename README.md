@@ -180,6 +180,9 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 | `HIKE_ELEVATION_MODE` | `api` \| `local` \| `auto` | `auto` |
 | `HIKE_DEM_DIR` | GeoTIFF DEM tile directory (for `local`/`auto`) | — |
 | `HIKE_API_ENDPOINT` | Override the elevation API endpoint | provider default |
+| `HIKE_API_MIN_INTERVAL` | Min seconds between elevation-API requests (keeps you under the public ~1 req/sec limit) | `1.1` |
+| `HIKE_API_MAX_RETRIES` | Retries on transient API errors (429 / 5xx / network), with exponential backoff honouring `Retry-After` | `3` |
+| `HIKE_API_BACKOFF` | Backoff base seconds, doubled each retry | `2.0` |
 | `HIKE_GAIN_THRESHOLD` | Hysteresis climb threshold, metres (must exceed peak-to-peak DEM noise) | `10` |
 | `HIKE_SAMPLE_INTERVAL` | Resample spacing along the track, metres | `25` |
 | `HIKE_SMOOTH_WINDOW` | Elevation smoothing window, samples | `3` |
@@ -201,8 +204,9 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 ## Status
 
 Core geometry, gain, access/shape math, the Overpass response parser, the
-elevation-API client, and the CLI argument/formatter layer: **implemented and
-unit-tested** (43 tests, all offline). The Overpass HTTP call **and the API
+elevation-API client (including its rate-limit throttle and transient-error
+retry/backoff), and the CLI argument/formatter layer: **implemented and
+unit-tested** (49 tests, all offline). The Overpass HTTP call **and the API
 elevation backend** are **validated live** (CLI + web), with computed gain
 cross-checked against the loop invariant (gain ≈ loss). The local-DEM backend
 and the MCP entry point are **implemented; validate on a networked machine**.

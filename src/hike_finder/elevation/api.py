@@ -13,6 +13,13 @@ Open-Elevation has a similar shape. Both POST JSON and return
 So the request body is keyed off the endpoint host (see ``_encode_locations``);
 response parsing is shared. Validated live 2026-06-23 against OpenTopoData
 (srtm30m): the Špindlerův Mlýn point returned 794 m.
+
+Rate limiting and resilience: one provider instance is reused for every route in
+a search, so it throttles ALL requests to >= ``min_interval_s`` apart (keeps us
+under the ~1 req/sec public limit), and retries transient failures (429 / 5xx /
+network blips) with exponential backoff, honouring a ``Retry-After`` header when
+the server sends one. Deterministic 4xx (e.g. 400) are not retried — that would
+just burn the daily quota.
 """
 from __future__ import annotations
 
@@ -26,6 +33,10 @@ from .base import Coord, ElevationError, ElevationProvider
 DEFAULT_ENDPOINT = "https://api.opentopodata.org/v1/srtm30m"
 OPEN_ELEVATION_ENDPOINT = "https://api.open-elevation.com/api/v1/lookup"
 
+# Transient HTTP statuses worth retrying: 429 (rate limit) + the usual 5xx server
+# hiccups. A 400/404 is deterministic, so retrying it only wastes the daily quota.
+_RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
+
 
 class ApiElevationProvider(ElevationProvider):
     def __init__(
@@ -34,6 +45,8 @@ class ApiElevationProvider(ElevationProvider):
         batch_size: int = 100,
         min_interval_s: float = 1.1,
         timeout_s: float = 30.0,
+        max_retries: int = 3,
+        backoff_base_s: float = 2.0,
     ):
         self.endpoint = endpoint
         self.batch_size = batch_size
@@ -43,6 +56,11 @@ class ApiElevationProvider(ElevationProvider):
         # _throttle. A hair over 1 s absorbs jitter.
         self.min_interval_s = min_interval_s
         self.timeout = timeout_s
+        # Retry transient failures (429 / 5xx / network) up to max_retries times
+        # with exponential backoff (backoff_base_s * 2**attempt), bounded by the
+        # server's Retry-After when present. See _lookup_batch / _backoff.
+        self.max_retries = max_retries
+        self.backoff_base_s = backoff_base_s
         self._last_request_t: float | None = None
         # OpenTopoData and Open-Elevation take different request bodies; pick the
         # dialect from the host so a plain endpoint override is all a user needs.
@@ -70,25 +88,69 @@ class ApiElevationProvider(ElevationProvider):
         return {"locations": [{"latitude": lat, "longitude": lon} for lat, lon in batch]}
 
     def _lookup_batch(self, batch: list[Coord]) -> list[float]:
-        self._throttle()
-        try:
-            resp = requests.post(
-                self.endpoint,
-                json=self._encode_locations(batch),
-                timeout=self.timeout,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except (requests.RequestException, ValueError) as e:
-            raise ElevationError(f"elevation API request failed: {e}") from e
+        last_err: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            self._throttle()
+            try:
+                resp = requests.post(
+                    self.endpoint,
+                    json=self._encode_locations(batch),
+                    timeout=self.timeout,
+                )
+            except requests.RequestException as e:
+                # Connection reset / timeout / DNS — transient, worth a retry.
+                last_err = e
+                if attempt < self.max_retries:
+                    self._backoff(attempt, None)
+                continue
 
-        results = data.get("results")
-        if not results or len(results) != len(batch):
-            raise ElevationError("elevation API returned unexpected result count")
+            if resp.status_code in _RETRY_STATUS:
+                last_err = ElevationError(f"elevation API returned HTTP {resp.status_code}")
+                if attempt < self.max_retries:
+                    self._backoff(attempt, self._retry_after(resp))
+                continue
+
+            # Non-transient outcome (2xx, or a 4xx we shouldn't retry): commit.
+            try:
+                resp.raise_for_status()
+                data = resp.json()
+            except (requests.RequestException, ValueError) as e:
+                raise ElevationError(f"elevation API request failed: {e}") from e
+
+            results = data.get("results")
+            if not results or len(results) != len(batch):
+                raise ElevationError("elevation API returned unexpected result count")
+            try:
+                return self._parse_elevations(results)
+            except (KeyError, TypeError, ValueError) as e:
+                raise ElevationError(
+                    f"elevation API returned unparseable elevations: {e}"
+                ) from e
+
+        raise ElevationError(
+            f"elevation API failed after {self.max_retries + 1} attempt(s): {last_err}"
+        )
+
+    def _backoff(self, attempt: int, retry_after: float | None) -> None:
+        """Sleep before the next retry: exponential, but never less than the
+        server's Retry-After when it sent one."""
+        delay = self.backoff_base_s * (2 ** attempt)
+        if retry_after is not None:
+            delay = max(delay, retry_after)
+        if delay > 0:
+            time.sleep(delay)
+
+    @staticmethod
+    def _retry_after(resp) -> float | None:
+        """Parse a Retry-After header in delta-seconds form. The HTTP-date form
+        is ignored (we fall back to exponential backoff) — these APIs use seconds."""
+        val = resp.headers.get("Retry-After")
+        if val is None:
+            return None
         try:
-            return self._parse_elevations(results)
-        except (KeyError, TypeError, ValueError) as e:
-            raise ElevationError(f"elevation API returned unparseable elevations: {e}") from e
+            return float(val)
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _parse_elevations(results: list[dict]) -> list[float]:

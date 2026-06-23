@@ -10,6 +10,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
+import requests
 
 from hike_finder.elevation.api import (
     DEFAULT_ENDPOINT,
@@ -20,11 +21,14 @@ from hike_finder.elevation.base import ElevationError
 
 
 class FakeResp:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200, headers=None):
         self._payload = payload
+        self.status_code = status_code
+        self.headers = headers or {}
 
     def raise_for_status(self):
-        pass
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {self.status_code}")
 
     def json(self):
         return self._payload
@@ -119,3 +123,94 @@ def test_no_throttle_when_interval_zero():
         post.return_value = FakeResp(_otd_payload([1.0]))
         prov.lookup([(0, 0), (1, 1)])
     assert sleep.call_count == 0
+
+
+# --- retry / backoff -------------------------------------------------------
+# min_interval_s=0 in these so the only sleeps are backoff sleeps (the throttle
+# is exercised separately above), and time.sleep is mocked so they're instant.
+
+
+def test_retries_on_429_then_succeeds():
+    prov = ApiElevationProvider(
+        endpoint=DEFAULT_ENDPOINT, min_interval_s=0, max_retries=3, backoff_base_s=2.0
+    )
+    with patch("hike_finder.elevation.api.requests.post") as post, \
+            patch("hike_finder.elevation.api.time.sleep") as sleep:
+        post.side_effect = [
+            FakeResp(None, status_code=429),
+            FakeResp(_otd_payload([1.0, 2.0])),
+        ]
+        out = prov.lookup([(0, 0), (1, 1)])
+    assert out == [1.0, 2.0]
+    assert post.call_count == 2
+    # One backoff between the two attempts: backoff_base * 2**0 = 2.0.
+    assert sleep.call_count == 1
+    assert sleep.call_args.args[0] == 2.0
+
+
+def test_retries_on_503_then_succeeds():
+    prov = ApiElevationProvider(endpoint=DEFAULT_ENDPOINT, min_interval_s=0)
+    with patch("hike_finder.elevation.api.requests.post") as post, \
+            patch("hike_finder.elevation.api.time.sleep"):
+        post.side_effect = [
+            FakeResp(None, status_code=503),
+            FakeResp(_otd_payload([1.0])),
+        ]
+        out = prov.lookup([(0, 0)])
+    assert out == [1.0]
+    assert post.call_count == 2
+
+
+def test_honors_retry_after_header():
+    prov = ApiElevationProvider(
+        endpoint=DEFAULT_ENDPOINT, min_interval_s=0, max_retries=1, backoff_base_s=1.0
+    )
+    with patch("hike_finder.elevation.api.requests.post") as post, \
+            patch("hike_finder.elevation.api.time.sleep") as sleep:
+        post.side_effect = [
+            FakeResp(None, status_code=429, headers={"Retry-After": "5"}),
+            FakeResp(_otd_payload([1.0])),
+        ]
+        out = prov.lookup([(0, 0)])
+    assert out == [1.0]
+    # Retry-After (5 s) wins over the smaller exponential delay (1 s).
+    assert sleep.call_args.args[0] == 5.0
+
+
+def test_gives_up_after_max_retries_on_persistent_429():
+    prov = ApiElevationProvider(
+        endpoint=DEFAULT_ENDPOINT, min_interval_s=0, max_retries=2, backoff_base_s=2.0
+    )
+    with patch("hike_finder.elevation.api.requests.post") as post, \
+            patch("hike_finder.elevation.api.time.sleep") as sleep:
+        post.return_value = FakeResp(None, status_code=429)
+        with pytest.raises(ElevationError):
+            prov.lookup([(0, 0)])
+    # max_retries=2 -> 3 attempts; backoff only BETWEEN attempts (not after last).
+    assert post.call_count == 3
+    assert [c.args[0] for c in sleep.call_args_list] == [2.0, 4.0]
+
+
+def test_does_not_retry_on_400():
+    prov = ApiElevationProvider(endpoint=DEFAULT_ENDPOINT, min_interval_s=0)
+    with patch("hike_finder.elevation.api.requests.post") as post, \
+            patch("hike_finder.elevation.api.time.sleep") as sleep:
+        post.return_value = FakeResp(None, status_code=400)
+        with pytest.raises(ElevationError):
+            prov.lookup([(0, 0)])
+    # 400 is deterministic: fail immediately, no retry, no backoff.
+    assert post.call_count == 1
+    assert sleep.call_count == 0
+
+
+def test_retries_on_network_error_then_succeeds():
+    prov = ApiElevationProvider(endpoint=DEFAULT_ENDPOINT, min_interval_s=0)
+    with patch("hike_finder.elevation.api.requests.post") as post, \
+            patch("hike_finder.elevation.api.time.sleep"):
+        post.side_effect = [
+            requests.ConnectionError("boom"),
+            FakeResp(_otd_payload([1.0])),
+        ]
+        out = prov.lookup([(0, 0)])
+    assert out == [1.0]
+    assert post.call_count == 2
