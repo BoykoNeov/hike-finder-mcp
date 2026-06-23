@@ -81,18 +81,24 @@ def resample_by_distance(points: list[Coord], interval_m: float = 25.0) -> list[
         return list(points)
 
     out: list[Coord] = [points[0]]
-    carry = 0.0
+    # Distance walked along the polyline since the last emitted sample. We emit
+    # whenever it reaches `interval_m` partway through a segment, then carry the
+    # remainder forward. The invariant `since_last < interval_m` holds at every
+    # segment boundary, so fine sub-interval vertices ACCUMULATE toward the next
+    # sample instead of being skipped. (The previous version grew its carry
+    # without ever emitting, collapsing finely-vertexed OSM lines to 2 points.)
+    since_last = 0.0
     for i in range(len(points) - 1):
         a, b = points[i], points[i + 1]
         seg = haversine_m(a, b)
         if seg == 0:
             continue
-        dist = carry
-        while dist + interval_m <= seg:
-            dist += interval_m
-            t = dist / seg
+        pos = interval_m - since_last  # offset into THIS segment of the next sample
+        while pos <= seg:
+            t = pos / seg
             out.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
-        carry = (dist + interval_m) - seg
+            pos += interval_m
+        since_last = seg - (pos - interval_m)  # leftover from last sample to b
     if out[-1] != points[-1]:
         out.append(points[-1])
     return out

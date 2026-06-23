@@ -161,13 +161,13 @@ latitude, max longitude):
 - Or read the corners off **mapy.cz** for the area you're planning.
 
 > **Validated live** (2026-06-23): the bbox `50.72,15.58,50.74,15.62` (Špindlerův
-> Mlýn) returned 15 routes / 31 parking / 5 lifts, and *Špindlmanova mise* came
-> back flagged `car` + `lift:chair_lift`. The **API elevation backend is now
-> live-validated** too — every returned route gets a computed gain/loss (e.g. a
-> 740 m-relief climb → +765 m). Two caveats remain: the **local DEM** backend
-> (`mode=local`) is still untested, and a few routes whose member ways don't
-> stitch cleanly report a 2-point gain (under-counted) — both tracked in
-> `HANDOFF.md`.
+> Mlýn) returned 12 routes (each flagged for `car`/`lift`/shape), with a computed
+> gain/loss for **every** one — e.g. *[Z] Richtrovy Boudy → Špindlerův mlýn* at
+> **+678 m / −251 m**. The detected loop *Špindlerův mlýn – okruh* came back
+> **+34 m / −34 m** — gain ≈ loss, exactly as a closed loop must, which
+> cross-checks the whole sampling/gain pipeline. Remaining caveats: the
+> **local DEM** backend (`mode=local`) is still untested, and a few relations
+> aren't detected as loops (greedy way-stitching) — both tracked in `HANDOFF.md`.
 
 ### Configuration (environment variables)
 
@@ -202,7 +202,8 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 
 Core geometry, gain, access/shape math, the Overpass response parser, the
 elevation-API client, and the CLI argument/formatter layer: **implemented and
-unit-tested** (41 tests, all offline). The Overpass HTTP call **and the API
-elevation backend** are **validated live** (CLI + web). The local-DEM backend
+unit-tested** (43 tests, all offline). The Overpass HTTP call **and the API
+elevation backend** are **validated live** (CLI + web), with computed gain
+cross-checked against the loop invariant (gain ≈ loss). The local-DEM backend
 and the MCP entry point are **implemented; validate on a networked machine**.
 See `HANDOFF.md` for exactly what's done and what's next.

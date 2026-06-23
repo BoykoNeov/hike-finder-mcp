@@ -111,7 +111,11 @@ report a 200 km "hike" and test parking/lifts at endpoints in another region.
   and the cross-request throttle. `tests/test_api.py` (mocks `requests.post`, so
   offline). These tests exist *because* the body-format bug below shipped untested.
 
-Run it: `pytest` → 41 passing.
+- `geometry.resample_by_distance` — now has a multi-segment regression
+  (`tests/test_geometry.py`). The old single-segment test missed a carry bug
+  that collapsed finely-vertexed real OSM lines to 2 points (see bug #3 below).
+
+Run it: `pytest` → 43 passing.
 
 ## What is now VALIDATED LIVE (run against real OSM, 2026-06-23)
 
@@ -127,11 +131,15 @@ Run it: `pytest` → 41 passing.
   504/429/502/503 that the public instance throws under load. Without the UA,
   every request fails — this also affected the original `fetch_routes`.
 
-- `elevation/api.py` (the **API elevation backend**) — validated against
-  OpenTopoData `srtm30m`. CLI run on the Špindlerův Mlýn bbox now returns a
-  computed gain/loss for **every** route (0 nulls); the gain math tracks the
-  profile (e.g. 740 m elevation spread → +765 m gain). **Two bugs found & fixed
-  here:**
+- `elevation/api.py` + `geometry.resample_by_distance` (the **gain pipeline**) —
+  validated against OpenTopoData `srtm30m`. CLI run on the Špindlerův Mlýn bbox
+  now returns a computed gain/loss for **every** one of the 12 returned routes
+  (0 nulls, 0 stubs). Accuracy cross-checked two ways: a returned climb
+  *[Z] Richtrovy Boudy → Špindlerův mlýn* = **+678 / −251 m**, and — decisively —
+  the detected loop *Špindlerův mlýn – okruh* = **+34 / −34 m**, i.e. gain ≈ loss
+  exactly as a closed loop must (a closed line returns to its start elevation).
+  That invariant exercises sampling + alignment + the gain math end-to-end.
+  **Three bugs found & fixed here:**
   1. **Wrong request body.** The provider POSTed Open-Elevation's
      `[{latitude, longitude}]` shape to OpenTopoData, which 400s every call
      (`INVALID_REQUEST`) → caught as `ElevationError` → gain silently `n/a`.
@@ -143,6 +151,14 @@ Run it: `pytest` → 41 passing.
      search, so it now throttles *all* requests via `_throttle` (≥1.1 s apart).
      Also: nodata elevations are forward-filled (fail only if every point is
      nodata), so a stray `null` no longer escapes as an uncaught `TypeError`.
+  3. **Resampling collapsed real tracks to 2 points** (the accuracy killer).
+     `resample_by_distance`'s carry term accumulated without ever emitting a
+     sample when segments were shorter than the interval — and real OSM vertices
+     sit ~5–10 m apart, well under the 25 m interval. So multi-km lines sampled
+     to `[start, end]`, giving endpoint-only "gain" (the loop read 0/0). With the
+     fixed carry logic, sample counts now match `length / interval` (ratios
+     1.00–1.04) and gains are trustworthy. This bug was invisible because the
+     only resample test used a single long segment.
 
 ## What is WRITTEN but UNVALIDATED (needs a networked machine)
 
@@ -167,16 +183,19 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
    LIVE"). Every route now gets a computed gain/loss; gain tracks the profile.
    Defaults (threshold 10 m, interval 25 m) left as-is — *not* tuned to one
    route (that would overfit); revisit once several known-profile trails exist.
-3. **Robust way-stitching — the real next quality issue (surfaced during the
-   elevation validation).** `geometry.stitch_ways` is greedy and order-dependent,
-   so some relations stitch to a **2-point stub** instead of the full line — those
-   routes then report an endpoint-only gain (e.g. `gain 0 / loss 354`, and the
-   short town loop as `0 / 0`). Distance and gain are only as good as the stitch.
-   Fix: build an endpoint graph and extract the longest path / proper loop (see
-   "Known limitations" below). This now gates gain *accuracy* per route, not just
-   presence.
-4. **Wire MCP end-to-end** and call `find_hikes` from Claude Code.
-5. **Then** add the local DEM path and the polish items below.
+3. **Loop-closure detection + robust way-stitching.** With resampling fixed, the
+   gains are trustworthy; the remaining geometry gap is *shape*: `stitch_ways` is
+   greedy/order-dependent, so a few relations that are loops in reality come back
+   `circular=false` (e.g. "Medvědí okruh" — *okruh* = circuit — listed one-way).
+   Fix: build an endpoint graph, extract the longest path / detect closure by
+   endpoint degree (see "Known limitations"). Lower priority than it looked — it
+   no longer corrupts gain, only the `circular` flag for some relations.
+4. **Add API retry/backoff on transient 5xx / daily-cap 429.** `_throttle`
+   prevents *self-inflicted* 429s, but a public-endpoint 5xx or daily-quota 429
+   still drops one route back to `n/a` (degrades gracefully). Mirror the
+   transient-retry that `overpass.fetch_area` already has.
+5. **Wire MCP end-to-end** and call `find_hikes` from Claude Code.
+6. **Then** add the local DEM path and the polish items below.
 
 ## Known limitations / TODOs (design notes, not bugs)
 

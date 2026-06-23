@@ -36,6 +36,30 @@ def test_resample_even_spacing():
     assert out[0] == pts[0] and out[-1] == pts[-1]
 
 
+def test_resample_many_fine_vertices():
+    # Regression: real OSM tracks have vertices every few metres. The old carry
+    # logic accumulated without ever emitting, collapsing this 1 km line to 2
+    # points. A 1 km line resampled at 25 m must give ~40 evenly spaced points.
+    line = [(50.0, 14.0 + i * 0.0001) for i in range(141)]  # ~7 m spacing, ~1 km
+    total = polyline_length_m(line)
+    out = resample_by_distance(line, interval_m=25.0)
+    assert abs(len(out) - round(total / 25.0)) <= 2
+    gaps = [haversine_m(out[i], out[i + 1]) for i in range(len(out) - 1)]
+    for g in gaps[:-1]:
+        assert 20 < g < 30  # interior gaps ~25 m
+    assert out[0] == line[0] and out[-1] == line[-1]
+
+
+def test_resample_segments_shorter_than_interval():
+    # Every segment is far below the interval; samples must still land ~interval
+    # apart, not be dropped.
+    line = [(50.0, 14.0 + i * 0.00002) for i in range(50)]  # ~1.4 m spacing
+    out = resample_by_distance(line, interval_m=25.0)
+    gaps = [haversine_m(out[i], out[i + 1]) for i in range(len(out) - 1)]
+    for g in gaps[:-1]:
+        assert 20 < g < 30
+
+
 def test_stitch_orders_and_flips():
     # Two ways given tail-first / reversed; should chain into one line.
     way_a = [(50.0, 14.0), (50.0, 14.01)]
