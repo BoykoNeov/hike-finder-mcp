@@ -32,18 +32,19 @@ _TRUE = {"yes", "true", "1"}
 _FALSE = {"no", "false", "0"}
 
 
-def endpoints_closed(ways: list[list[Coord]], snap_m: float = 30.0) -> bool:
+def endpoints_closed(ways: list[list[Coord]], weld_m: float = 1.0) -> bool:
     """True if the member ways enclose at least one loop.
 
-    Delegates to the route's circuit rank (``geometry.route_cycle_count``): the
-    endpoint graph contains a cycle iff ``E - V + C > 0``. Stitch-order
-    independent — and, unlike the old "every endpoint has even degree" test,
-    this counts a *lollipop* (a loop reached by an approach stem) as closed,
-    which is the shape most real KČT okruh relations take. The even-degree test
-    demanded a full Eulerian circuit and so reported those one-way. See
-    ``route_cycle_count`` for the T-junction caveat.
+    Delegates to the route's circuit rank over the full vertex graph
+    (``geometry.route_cycle_count``): the ways contain a cycle iff
+    ``E - V + C > 0``. Stitch-order independent, counts a *lollipop* (a loop
+    reached by an approach stem) as closed, and — because nodes are exact shared
+    vertices, not endpoints clustered within a tolerance — sees T-junction
+    closures while NOT inventing cycles from piled-up endpoints in dense
+    relations (the bug that mislabelled linear KČT routes as loops; validated
+    live, see HANDOFF). ``weld_m`` is the small same-node tolerance.
     """
-    return route_cycle_count(ways, snap_m=snap_m) > 0
+    return route_cycle_count(ways, weld_m=weld_m) > 0
 
 
 def is_circular(
@@ -52,20 +53,21 @@ def is_circular(
     tags: dict,
     *,
     tol_m: float = 150.0,
-    snap_m: float = 30.0,
+    weld_m: float = 1.0,
 ) -> bool:
     """Decide whether a route is a loop.
 
     Priority: an explicit ``roundtrip`` tag is authoritative (respects the
-    mapper's intent). Otherwise fall back to geometry: closed endpoint degree,
-    or the stitched line returning to within ``tol_m`` of its start.
+    mapper's intent). Otherwise fall back to geometry: the member ways enclose a
+    loop (circuit rank), or the stitched line returns to within ``tol_m`` of its
+    start (catches a loop left open only by a digitization gap).
     """
     rt = (tags or {}).get("roundtrip", "").strip().lower()
     if rt in _TRUE:
         return True
     if rt in _FALSE:
         return False
-    if endpoints_closed(ways, snap_m=snap_m):
+    if endpoints_closed(ways, weld_m=weld_m):
         return True
     if len(line) >= 2 and haversine_m(line[0], line[-1]) <= tol_m:
         return True

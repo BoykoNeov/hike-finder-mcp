@@ -92,71 +92,61 @@ class _UnionFind:
         return len({self.find(i) for i in range(len(self._parent))})
 
 
-def _cluster_points(points: list[Coord], snap_m: float) -> list[int]:
-    """Cluster nearby points; return a contiguous node id (0-based) per point.
+def route_cycle_count(ways: list[list[Coord]], weld_m: float = 1.0) -> int:
+    """Independent cycles in a route's member ways (its circuit rank), built from
+    the FULL vertex graph.
 
-    Transitive single-linkage within ``snap_m`` via union-find, so the clustering
-    is independent of the order the points arrive in — unlike greedy first-match,
-    which can split or mis-merge endpoints depending on member order.
+    Models the members as a multigraph whose nodes are every distinct *vertex*
+    (welded by coordinate) and whose edges are the consecutive-vertex segments of
+    each way. Returns the first Betti number ``E - V + C`` (edges - nodes +
+    connected components) — the number of independent loops; ``> 0`` means the
+    route closes into at least one loop, independent of member order/orientation.
+
+    Why the full vertex graph and not just way *endpoints*: OSM ways that connect
+    share the *identical* node, so two ways meeting at a T-junction share an
+    interior vertex. Keying on every vertex therefore detects T-junction closures
+    that an endpoint-only graph misses. Just as important, it does NOT cluster
+    distinct endpoints within a tolerance: on dense real relations a 30 m endpoint
+    cluster over-merges piled-up endpoints and *invents* cycles, which mislabelled
+    linear KČT routes as loops (validated live against the "Medvěd*" relations —
+    see HANDOFF). Exact vertex sharing has neither failure mode.
+
+    ``weld_m`` is a small coincidence tolerance (metres) that merges vertices
+    representing the same node despite float noise; it sits well below trail
+    vertex spacing (~5–15 m), so it never fuses genuinely distinct points. A loop
+    closed only by a digitization *gap* wider than ``weld_m`` reads as open here —
+    ``access.is_circular`` catches that with its start≈end line fallback.
     """
-    n = len(points)
-    uf = _UnionFind(n)
-    for i in range(n):
-        for j in range(i + 1, n):
-            if haversine_m(points[i], points[j]) <= snap_m:
-                uf.union(i, j)
-    root_to_id: dict[int, int] = {}
-    node_of: list[int] = []
-    for i in range(n):
-        r = uf.find(i)
-        if r not in root_to_id:
-            root_to_id[r] = len(root_to_id)
-        node_of.append(root_to_id[r])
-    return node_of
+    # Grid-weld on latitude metres: identical OSM nodes hash to the same cell,
+    # while distinct vertices (metres apart) do not. O(V) — no pairwise scan.
+    cell = weld_m / 111_320.0 if weld_m > 0 else 0.0
 
+    def key(pt: Coord):
+        if cell <= 0:
+            return pt
+        return (round(pt[0] / cell), round(pt[1] / cell))
 
-def route_cycle_count(ways: list[list[Coord]], snap_m: float = 30.0) -> int:
-    """Independent cycles enclosed by a route's member ways (its circuit rank).
+    node_id: dict = {}
+    edges: list[tuple[int, int]] = []
+    for w in ways:
+        if len(w) < 2:
+            continue
+        for a, b in zip(w, w[1:]):
+            ka, kb = key(a), key(b)
+            if ka == kb:
+                continue  # zero-length or sub-weld segment contributes no edge
+            u = node_id.setdefault(ka, len(node_id))
+            v = node_id.setdefault(kb, len(node_id))
+            edges.append((u, v))
 
-    Models the members as a multigraph: nodes are clustered way *endpoints*
-    (heads/tails), edges are the ways. Returns the first Betti number
-    ``E - V + C`` (edges - nodes + connected components) — the number of
-    independent loops. ``> 0`` means the route closes into at least one loop, no
-    matter what order or orientation the members arrive in.
-
-    Why circuit rank and not "every endpoint has even degree": the even-degree
-    test demands a full Eulerian circuit, so it misses a *lollipop* (a loop
-    reached by an approach stem) — exactly the okruh-with-a-spur shape most real
-    KČT loop relations take. Circuit rank counts the loop and ignores the stem.
-
-    Order-independent by construction (endpoints clustered by proximity, not
-    greedy first-match). Limitation: only way *endpoints* are nodes, so a way
-    whose endpoint touches another way's *interior* vertex (a T-junction) is not
-    seen as joined there — fixing that needs vertex-splitting; the old code
-    missed it too.
-    """
-    segs = [w for w in ways if len(w) >= 2]
-    e = len(segs)
+    e = len(edges)
     if e == 0:
         return 0
-
-    # Pass 1 (geometry): cluster the 2E raw endpoints into nodes. endpoints[2i]
-    # and endpoints[2i+1] are way i's head and tail.
-    endpoints: list[Coord] = []
-    for w in segs:
-        endpoints.append(w[0])
-        endpoints.append(w[-1])
-    node_of = _cluster_points(endpoints, snap_m)
-    v = len(set(node_of))
-
-    # Pass 2 (topology): join the two nodes each way connects, then count the
-    # connected components of the node graph. This is graph connectivity, a
-    # separate question from the geometric clustering that produced the nodes.
+    v = len(node_id)  # only vertices that carry an edge are registered
     comp = _UnionFind(v)
-    for i in range(e):
-        comp.union(node_of[2 * i], node_of[2 * i + 1])
+    for u, w_ in edges:
+        comp.union(u, w_)
     c = comp.num_components()
-
     return e - v + c
 
 

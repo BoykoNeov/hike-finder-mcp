@@ -62,10 +62,10 @@ def test_resample_segments_shorter_than_interval():
 
 
 def test_route_cycle_count_topologies():
-    # Circuit rank E - V + C over the endpoint graph. >0 means the ways enclose
-    # a loop. Interior vertices are not nodes; only way endpoints are.
+    # Circuit rank E - V + C over the FULL vertex graph. >0 means the ways
+    # enclose a loop. Nodes are distinct vertices welded by coordinate.
     a, b, c, d = (50.0, 14.0), (50.0, 14.01), (50.01, 14.01), (50.01, 14.0)
-    # Clean loop: V2 E2 C1 -> 1.
+    # Clean loop: V4 E4 C1 -> 1.
     assert route_cycle_count([[a, b, c], [c, d, a]]) == 1
     # Open path: V3 E2 C1 -> 0.
     assert route_cycle_count([[a, b], [b, c]]) == 0
@@ -79,11 +79,27 @@ def test_route_cycle_count_topologies():
     assert route_cycle_count([[a]]) == 0
 
 
-def test_route_cycle_count_snaps_near_endpoints():
-    # Endpoints within snap_m but not bit-identical must still close the loop.
+def test_route_cycle_count_closes_through_t_junction():
+    # A way passes THROUGH j as an interior vertex; a second way runs from b back
+    # to that same node j. They share the exact node j, closing a loop. An
+    # endpoint-only graph (j is not an endpoint of the through way) would miss it
+    # and report 0 — capturing the T-junction is the point of the vertex graph.
+    a, j, b = (50.0, 14.0), (50.0, 14.01), (50.0, 14.02)
+    m = (50.005, 14.015)
+    through = [a, j, b]
+    back = [b, m, j]  # b -> m -> j, ending on the shared interior node j
+    assert route_cycle_count([through, back]) == 1
+
+
+def test_route_cycle_count_ignores_unshared_near_endpoints():
+    # Two ways whose ends are ~5.5 m apart but are NOT the same node do not form
+    # a loop: a gap is not a closure. (The previous endpoint-clustering version
+    # welded anything within 30 m and so invented cycles on dense real relations,
+    # mislabelling linear KČT routes as circular.) A genuinely near-closed loop
+    # is handled by is_circular's start-near-end line fallback, not here.
     a, b = (50.0, 14.0), (50.01, 14.01)
-    a2 = (50.00005, 14.0)  # ~5.5 m from a, inside the 30 m snap
-    assert route_cycle_count([[a, b], [b, a2]]) == 1
+    a2 = (50.00005, 14.0)  # ~5.5 m from a, a distinct node (well over weld_m)
+    assert route_cycle_count([[a, b], [b, a2]]) == 0
 
 
 def test_stitch_orders_and_flips():
