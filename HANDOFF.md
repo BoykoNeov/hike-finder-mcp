@@ -146,7 +146,7 @@ report a 200 km "hike" and test parking/lifts at endpoints in another region.
   (`tests/test_geometry.py`). The old single-segment test missed a carry bug
   that collapsed finely-vertexed real OSM lines to 2 points (see bug #3 below).
 
-Run it: `pytest` → 72 passing.
+Run it: `pytest` → 95 passing.
 
 ## What is now VALIDATED LIVE (run against real OSM, 2026-06-23)
 
@@ -223,6 +223,31 @@ Run it: `pytest` → 72 passing.
   over-count, guard verdict shifted on exactly one (correctly-dropped) route. Full
   detail in Next-steps step 3; pinned offline by `tests/test_geometry.py`
   (dropped-member recovery + summed==stitched invariant + order-independence).
+
+- **Start-coupling** (`filters._route_start` aiming `start` at the terminus nearest
+  a matched parking/lift) — validated live 2026-06-24 on the Špindlerův Mlýn bbox,
+  the gap the closure fixture (no parking) had left. One Overpass round-trip saved
+  as `tests/fixtures/spindl_area.json` (15 routes / 31 parking / 5 lifts). Findings:
+  - **iff holds on all 15 routes:** `car_access or chairlift_access` ⟺
+    `matched_access_points` non-empty — the "verdict and start can't disagree"
+    guarantee, now on real data, not just synthetic.
+  - **Fires on 14/15** (every route with termini ∧ matched access); the lone
+    abstainer is the pure loop *[Z] Špindlerův mlýn – okruh* (0 termini), correctly
+    **not** coupled — start stays at the head even with ring parking matched (the
+    documented loop limitation, now pinned live).
+  - **Discriminates on 10 routes** (coupled `start` ≠ old fallback), so the branch
+    isn't a no-op on this data. Two cross-checked against real geography:
+    *Špindlmanova mise* (point-to-point) couples onto the **Medvědín chairlift
+    base, ~31 m away, ~1.9 km from the fallback head**; the branched *Medvědí okruh*
+    (4 termini, stitch covers ~42%) couples onto the **Horní Mísečky–Medvědín lift,
+    ~29 m**, at a terminus the greedy stitch can't even reach. Both land on a named,
+    real trailhead you drive/ride to — exactly the intent.
+  - Pinned by `tests/test_coupling_live.py` (iff on all routes, both headline
+    couplings, the pure-loop non-coupling, and a ≥5-routes-moved no-op guard).
+  - **Residual synthetic-only gaps (no live case in this bbox):** a *lollipop* with
+    parking on the ring (start should stay at the stem tip — unit-tested only) and
+    *zero-churn on a no-access route* (every route in this dense resort bbox has
+    some access, so the live check was vacuous — unit-tested in `test_access.py`).
 
 ## What is WRITTEN but UNVALIDATED (needs a networked machine)
 
@@ -314,10 +339,15 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
      smallest terminus). Candidates are termini ONLY, so a lollipop's start stays at
      the stem tip even with parking on the ring; a **pure loop has no terminus, so
      its start is never coupled** (stays at the arbitrary head — known limitation,
-     loop start is geometrically arbitrary anyway). Live-gate caveat: the "Medvěd*"
-     fixture carries no parking/lift data, so the coupling branch can't be exercised
-     there — it's safe only because `start` is a label-only field (no filter reads
-     it; `add_elevation` uses `line`), so the synthetic tests carry the weight.
+     loop start is geometrically arbitrary anyway). Live-gate caveat (now closed):
+     the "Medvěd*" fixture carries no parking/lift data, so the coupling branch
+     couldn't be exercised there — it was **validated separately 2026-06-24 on the
+     parking-bearing Špindlerův Mlýn bbox** (`tests/fixtures/spindl_area.json`,
+     `tests/test_coupling_live.py`): iff on all 15 routes, the start couples onto the
+     Medvědín / Horní Mísečky lift trailheads (point-to-point + branched), the pure
+     loop stays uncoupled, 10 routes move vs the fallback. See the start-coupling
+     bullet under "VALIDATED LIVE". (`start` is also a label-only field — no filter
+     reads it; `add_elevation` uses `line` — so a mis-couple is low-stakes regardless.)
      Validated live on the fixture for the termini themselves: the branched
      *Medvědí okruh* (rel 6285306, only 42% stitch coverage) recovers **4 genuine
      termini ~2.46 km apart** (the old code tested 2 ends, only 1 a real terminus);
@@ -383,8 +413,11 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
     arbitrary head even when parking is matched; low-stakes, loop start is
     geometrically arbitrary. Live-validated on the "Medvěd*" fixture for the termini
     (branched *Medvědí okruh* recovers all 4 real trailheads; see Next-steps); the
-    coupling itself is synthetic-tested only — the fixture has no parking/lift data,
-    and that is safe because `start` is a label-only field (no filter reads it).
+    coupling itself is now **live-validated** on the parking-bearing Špindlerův Mlýn
+    bbox (`tests/test_coupling_live.py`) — start couples onto the Medvědín / Horní
+    Mísečky lift trailheads, pure loop stays uncoupled. Residual synthetic-only
+    gaps: a lollipop with ring parking, and zero-churn on a no-access route (no such
+    case exists in that dense-resort bbox).
 - **Closure T-junctions: handled.** `route_cycle_count` now nodes on *every*
   vertex (welded by coordinate), so a way whose endpoint lands on another way's
   interior vertex shares that exact node and the join is seen — a loop closed
@@ -451,7 +484,7 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
 
 ```bash
 pip install -e .             # CLI + web UI (no LLM); extras: ".[mcp]" ".[local-dem]" ".[dev]"
-pytest -q                    # 72 tests, all offline (pure math + Overpass parser + CLI + elevation API + daily quota + live closure fixture)
+pytest -q                    # 95 tests, all offline (pure math + Overpass parser + CLI + elevation API + daily quota + live closure & coupling fixtures)
 hike-finder --bbox 50.72 15.58 50.74 15.62 --user-agent you@example.com
 hike-finder-web              # local web UI on http://127.0.0.1:8765
 hike-finder-mcp              # MCP server over stdio (needs the `mcp` extra)
