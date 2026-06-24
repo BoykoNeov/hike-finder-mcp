@@ -71,7 +71,7 @@ hike-finder --help
 
 You should see the usage block (`usage: hike-finder [-h] --bbox SOUTH WEST NORTH
 EAST ...`). If that prints, the install worked. If you want deeper assurance,
-`pip install -e ".[dev]"` then `pytest` runs the full **offline** suite (108
+`pip install -e ".[dev]"` then `pytest` runs the full **offline** suite (114
 tests) — all green means the engine is sound on your machine.
 
 ---
@@ -105,6 +105,55 @@ it's right when searches return data instead of a `406` error.
 **Read it** — if you ever see `406 Not Acceptable` or "every Overpass request
 fails", this is the cause: the contact wasn't set or wasn't picked up. Set it and
 retry.
+
+---
+
+## Shortcut — launcher scripts (one per interface)
+
+Don't want to set the contact (Step 2) every time? There's one small launcher
+per interface in [`scripts/`](scripts/), in both shells.
+
+**Do** — run the launcher for the frontend you want:
+
+```bash
+# Linux / macOS
+./scripts/cli.sh --bbox 50.72 15.58 50.74 15.62   # CLI (forwards all args)
+./scripts/web.sh                                   # Web UI
+./scripts/mcp.sh                                   # MCP server (stdio)
+```
+
+```powershell
+# Windows PowerShell
+.\scripts\cli.ps1 --bbox 50.72 15.58 50.74 15.62
+.\scripts\web.ps1
+.\scripts\mcp.ps1
+```
+
+**Why** — each launcher does two things and nothing more: it sets a **default
+Overpass contact** (only if you haven't set `HIKE_OVERPASS_UA` yourself — so Step
+2 becomes optional), then hands every argument straight to the real entry point
+(`hike-finder` / `hike-finder-web` / `hike-finder-mcp`). They're deliberately
+*thin* wrappers, not re-implementations, so when the tool changes they stay
+correct for free.
+
+**Expect** — identical output to running the entry point directly: `cli.*` prints
+the same result lines, `web.*` prints `hike-finder web UI on http://127.0.0.1:8765`
+and serves the map, `mcp.*` produces **nothing on stdout** and waits to speak the
+MCP protocol to a client.
+
+**Read it**
+
+- **Override the contact** any time by setting it first — the launcher won't
+  clobber your value:
+  ```powershell
+  $env:HIKE_OVERPASS_UA = "you@example.com"; .\scripts\cli.ps1 --bbox ...
+  ```
+- **Point an MCP client at the launcher** instead of the bare command, so the
+  contact is always set: `claude mcp add hike-finder -- /abs/path/to/scripts/mcp.sh`
+  (on Windows, `-- powershell -NoProfile -ExecutionPolicy Bypass -File C:\path\to\scripts\mcp.ps1`).
+  The MCP launcher is silent on stdout on purpose — stdout is the JSON-RPC
+  channel, and any banner there would corrupt the handshake.
+- All three are regression-pinned by `tests/test_launchers.py`.
 
 ---
 

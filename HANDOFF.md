@@ -40,6 +40,13 @@ results are identical:
   an **optional** extra (`pip install -e ".[mcp]"`); the base install omits it.
   **Validated live over stdio and pinned by `tests/test_server.py`** (2026-06-24).
 
+Each frontend also has a **thin launcher** in `scripts/` (`cli`/`web`/`mcp`, in
+`.sh` + `.ps1`): it sets a default `HIKE_OVERPASS_UA` (only if unset) and forwards
+args to the entry point — no logic, so it can't drift. The MCP launcher writes
+NOTHING to stdout (that's the JSON-RPC channel). `.gitattributes` pins `*.sh` to
+LF so the bash launchers survive a Windows (`autocrlf=true`) checkout. All three
+are pinned by `tests/test_launchers.py` (MCP via a real stdio handshake).
+
 ```
 frontends (pick one; cli/web need no LLM):
   cli.py  ─┐
@@ -554,8 +561,13 @@ validated `search_hikes` path and returns correct UTF-8 JSON.)
 
 ```bash
 pip install -e .             # CLI + web UI (no LLM); extras: ".[mcp]" ".[local-dem]" ".[dev]"
-pytest -q                    # 108 tests, all offline (pure math + Overpass parser + CLI + MCP server (incl. a real-stdio subprocess) + elevation API + daily quota + local-DEM synthetic tiles + live closure & coupling fixtures); MCP tests skip without the `mcp` extra
+pytest -q                    # 114 tests, all offline (pure math + Overpass parser + CLI + MCP server (incl. a real-stdio subprocess) + elevation API + daily quota + local-DEM synthetic tiles + live closure & coupling fixtures + launcher scripts); MCP tests skip without the `mcp` extra
 hike-finder --bbox 50.72 15.58 50.74 15.62 --user-agent you@example.com
 hike-finder-web              # local web UI on http://127.0.0.1:8765
 hike-finder-mcp              # MCP server over stdio (needs the `mcp` extra)
+
+# Launcher scripts (one per interface; set a default HIKE_OVERPASS_UA, forward args):
+./scripts/cli.sh ... | .\scripts\cli.ps1 ...     # -> hike-finder
+./scripts/web.sh     | .\scripts\web.ps1         # -> hike-finder-web
+./scripts/mcp.sh     | .\scripts\mcp.ps1         # -> hike-finder-mcp (stdout kept clean for JSON-RPC)
 ```

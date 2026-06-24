@@ -95,7 +95,7 @@ hike-finder --help                 # prints usage → the entry points resolve
 ```
 
 For deeper assurance, `pip install -e ".[dev]"` then `pytest` runs the full
-offline suite (108 tests). From here, pick a frontend: the **Web UI** (Option A),
+offline suite (114 tests). From here, pick a frontend: the **Web UI** (Option A),
 **command line** (Option B), or **MCP server** (Option C) below.
 
 Want the slower, fully-explained version of all of this — with sample output and
@@ -202,6 +202,30 @@ the same filters as the CLI.
 > shifted across versions — if the server won't start, check the imports in
 > `src/hike_finder/server.py` against your installed `mcp` version.
 
+### Launcher scripts (one file per interface)
+
+Thin wrappers in [`scripts/`](scripts/) start each frontend with a default
+Overpass contact already set, then forward your arguments to the entry point
+above — so they never go stale. Override the contact by exporting
+`HIKE_OVERPASS_UA` first. One file per interface, both shells:
+
+| Interface | Linux / macOS | Windows |
+|-----------|---------------|---------|
+| CLI | `./scripts/cli.sh --bbox 50.72 15.58 50.74 15.62` | `.\scripts\cli.ps1 --bbox 50.72 15.58 50.74 15.62` |
+| Web UI | `./scripts/web.sh` | `.\scripts\web.ps1` |
+| MCP server | `./scripts/mcp.sh` | `.\scripts\mcp.ps1` |
+
+The MCP launcher keeps **stdout clean** (stdout is the JSON-RPC channel), so a
+client can point straight at it instead of `hike-finder-mcp`:
+
+```bash
+claude mcp add hike-finder -- /abs/path/to/scripts/mcp.sh
+# Windows: ... -- powershell -NoProfile -ExecutionPolicy Bypass -File C:\path\to\scripts\mcp.ps1
+```
+
+All three are pinned by `tests/test_launchers.py` (the MCP one via a real stdio
+handshake — the check that proves nothing leaked to stdout).
+
 ### Getting a bounding box (CLI / MCP)
 
 The web UI gives you the box for free. For the CLI or MCP you supply four corners
@@ -284,7 +308,7 @@ retry/backoff, and a persistent daily-request counter that degrades to `n/a`
 before blowing the API's daily cap), the CLI argument/formatter layer, **and the
 MCP server's tool schema / argument-mapping / rendering glue** (driven through
 the real MCP protocol over an in-memory session): **implemented and unit-tested**
-(108 tests, all offline). The Overpass HTTP call, the API elevation backend,
+(114 tests, all offline). The Overpass HTTP call, the API elevation backend,
 **the local-DEM backend, and the MCP server over real stdio** are all
 **validated live** (CLI + web + MCP), with computed gain cross-checked against
 the loop invariant (gain ≈ loss) — the local DEM read Sněžka at 1601 m vs the

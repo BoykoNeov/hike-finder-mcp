@@ -1,0 +1,7 @@
+# Launcher line endings. The repo is developed on Windows (core.autocrlf=true),
+# which would otherwise check .sh out with CRLF — a CRLF shebang/`exec` line
+# breaks the bash launchers on Linux/macOS. Pin them to LF; pin .ps1 to CRLF for
+# native Windows editing (PowerShell accepts either). Scoped to scripts only so
+# the rest of the tree keeps its existing, working behaviour.
+*.sh  text eol=lf
+*.ps1 text eol=crlf
