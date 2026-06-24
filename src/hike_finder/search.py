@@ -21,9 +21,15 @@ import logging
 
 from . import cache as _cache
 from . import config as _config
-from .compose import build_trail_graph, clip_routes_to_bbox, find_loops
+from .compose import (
+    assemble_loop_series,
+    build_trail_graph,
+    clip_routes_to_bbox,
+    find_loops,
+    resample_segments,
+)
 from .config import Config
-from .elevation import get_provider
+from .elevation import ElevationError, get_provider
 from .filters import Criteria, Hike, find_hikes
 from .overpass import AreaData, DEFAULT_OVERPASS_URL, build_query, fetch_area
 from .snapshot import AreaSnapshot, RecordingElevationProvider, SnapshotElevationProvider
@@ -215,10 +221,52 @@ def compose_loops(
             result.distinct, min_km, max_km, len(graph.segments), truncated, capped_note,
         )
 
+    provider = _provider(cfg, elevation_mode, dem_dir, cache)
+
+    # Segment-level shared elevation sampling. Composed loops overlap — several share
+    # the same marked-trail segments — so resampling and looking up each WHOLE loop
+    # (the obvious `find_hikes` reuse) pays for a shared climb once per loop that uses
+    # it. Instead, resample each DISTINCT used segment once on its own canonical grid
+    # and look the WHOLE distinct-point set up in ONE provider call, then slice the
+    # results back per segment. Loops then assemble their elevation series from those
+    # shared per-segment results (`assemble_loop_series`). This dedups within the run
+    # (measured ~2-3x fewer points -> the same factor fewer batched API requests on a
+    # real bbox, since the request count is what the throttle and daily quota meter) AND
+    # makes the points cache-hot across runs, because a segment's canonical samples are
+    # identical regardless of which loop enters it where — whereas a whole-loop resample
+    # seam shifts per loop, so today's cross-run cache barely helps compose.
+    #
+    # One combined lookup (not one per segment) is deliberate: the API batches 100
+    # points/request, so packing all distinct points into a single call costs
+    # ~ceil(total/100) requests instead of >= one per segment. It is all-or-nothing on
+    # failure — a mid-run quota exhaustion fails the whole batch and every loop degrades
+    # to gain n/a (graceful, never a ban) — but that is rare (a default run is tens of
+    # requests, far under the daily cap) and a quota-dead compose is mostly n/a anyway.
+    used_segs = (
+        sorted(set().union(*(L.seg_ids for L in result.loops))) if result.loops else []
+    )
+    seg_points = resample_segments(graph, used_segs, cfg.sample_interval_m)
+    flat: list = []
+    spans: dict[int, tuple[int, int]] = {}
+    for sid in used_segs:
+        pts = seg_points[sid]
+        spans[sid] = (len(flat), len(flat) + len(pts))
+        flat.extend(pts)
+    seg_elev: dict[int, list[float] | None]
+    try:
+        all_elev = provider.lookup(flat) if flat else []
+        seg_elev = {sid: all_elev[lo:hi] for sid, (lo, hi) in spans.items()}
+    except ElevationError:
+        seg_elev = {sid: None for sid in used_segs}
+
     # Wrap each loop as a synthetic route and run the SAME engine. The negative id keys
     # the loop back to its provenance after find_hikes (which preserves osm_id per Hike).
+    # Each loop's elevation series is pre-assembled from the shared per-segment lookups
+    # above and handed to find_hikes, so its elevation pass skips the redundant whole-
+    # loop resample/lookup and just runs the (unchanged) gain math on the series.
     loop_by_id: dict[int, object] = {}
     syn_routes: list[dict] = []
+    pre_elev_by_id: dict[int, list[float]] = {}
     for i, loop in enumerate(result.loops):
         sid = -(i + 1)
         loop_by_id[sid] = loop
@@ -232,8 +280,10 @@ def compose_loops(
                 "ways": [loop.coords],
             }
         )
+        series = assemble_loop_series(graph, loop, seg_elev)
+        if series is not None:
+            pre_elev_by_id[sid] = series
     syn_area = AreaData(routes=syn_routes, parking=area.parking, lifts=area.lifts)
-    provider = _provider(cfg, elevation_mode, dem_dir, cache)
     hikes = find_hikes(
         syn_area,
         provider,
@@ -250,6 +300,7 @@ def compose_loops(
         car_radius_m=cfg.car_radius_m,
         lift_radius_m=cfg.lift_radius_m,
         near_miss=near_miss,
+        pre_elevations_by_id=pre_elev_by_id,
         **_near_miss_kwargs(cfg),
     )
     for h in hikes:

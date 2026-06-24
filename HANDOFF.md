@@ -732,25 +732,44 @@ validated `search_hikes` path and returns correct UTF-8 JSON.)
     parallel-trails loop can still pass), true geometric bbox-clipping (vs vertex-
     granularity), and **access-anchored loops** ("a 12 km loop from where I park" —
     seed/close the cycle at a matched parking/lift), the natural v2.
-  - **Elevation cost — compose is effectively a LOCAL-DEM feature (known, documented).**
-    `compose_loops` reuses `find_hikes`, which resamples each loop's whole line at 25 m
-    *from that loop's own start vertex* and looks up elevation per point. Composed loops
-    are long (8–15 km → ~320–600 pts each) and — measured, not assumed — barely share
-    sample points across loops: on the broader-Krkonoše 15-loop set, 5943 total resampled
-    points collapsed to only **5716 distinct 7-decimal cache keys (4% overlap)**, because
-    two loops sharing a segment enter it at different cumulative offsets so the
-    interpolated points differ. At the public API's ~1 req/point that's ~5716 requests —
-    ~5.7× the 1000/day quota — so a dense-area compose run on `api`/`auto`-without-tiles
-    **exhausts the quota and the later loops degrade to `gain n/a`** (graceful, via the
-    existing quota fail-safe — never an IP ban). It is fast/free on a **local DEM**, which
-    is the recommended backend for compose (documented in README/GUIDE). The cap doesn't
-    fix this (no cap value makes a dense API run fit the quota); it only bounds it. The
-    real future optimization is **segment-level shared sampling**: resample each graph
-    *segment* once on a canonical grid and assemble loop elevation from shared per-segment
-    points, so overlapping loops dedup (5716→~the area's distinct trail points, and
-    cache-hot across searches). Deferred — it diverges from the clean `find_hikes` reuse
-    and risks per-segment-vs-whole-line gain drift, and even then a very dense cold run
-    still exceeds the public quota, so local DEM stays the answer.
+  - **Elevation cost — segment-level shared sampling — DONE (2026-06-24).** Earlier this
+    bullet claimed a dense compose run "exhausts the 1000/day quota" by assuming **~1 API
+    request per point** (~5716 points → ~5716 requests). That was WRONG: `ApiElevationProvider`
+    batches `batch_size=100` points/POST and `DailyQuota.record()` fires **once per POST**,
+    so ~5716 points ≈ **58 requests**, and a default `max_loops=15` compose run is ~55
+    requests — comfortably under the cap. Compose was never quota-bound on the API; it is
+    *throttle*-bound (~1.1 s/request → ~60 s cold). The genuine inefficiency was redundancy:
+    `find_hikes` resampled each loop's WHOLE line *from that loop's own start vertex*, so a
+    trail segment shared by several loops was looked up once **per loop**, and the seam
+    shifted per loop so the SQLite point cache barely hit across runs.
+    The fix (now implemented): `search.compose_loops` resamples each **distinct used
+    segment** once on its own canonical `a→b` grid (`compose.resample_segments`), looks it
+    up once through the provider, and assembles each loop's elevation **series** from those
+    shared per-segment results (`compose.assemble_loop_series`), handing it to `find_hikes`
+    via the new `pre_elevations_by_id` / `add_elevation(use_presampled=…)` hook — which
+    skips the redundant whole-loop resample/lookup and runs the *unchanged*
+    `cumulative_gain_loss` on the series. The assembled series is closed (first = last =
+    start-node sample), so **gain ≈ loss still holds**; only the sample positions move
+    (segment-anchored vs loop-anchored), which **shifts published composed-loop gain values
+    (magnitude NOT yet live-measured)** — a deliberate behavior change. On smooth synthetic
+    terrain the shift is tiny, but on real noisy DEM the per-junction phase reset could move
+    gain more; unlike the original compose feature this change is **offline-tested only, not
+    yet live-validated** — a future live pass should diff composed gains against the old
+    Špindl +114/−112 m. Smoothing/hysteresis are preserved because the *series* (not
+    per-segment gains) is assembled, then gain is taken once. Dedup is **intrinsic** (each segment looked up once regardless of the cache, so
+    `--no-cache` benefits too) and makes the points **cache-hot across runs** (segment-
+    canonical points recur; loop-anchored ones don't). Measured on the Špindl fixture
+    (offline, pure): default 3–15 km band / 14 loops → **2.12×** fewer points (4865→2298,
+    ~55→23 requests); wider 2–20 km / 15 loops → **2.85×**. The factor is ~2–3×, not the
+    ~6× once implied, because `find_loops`' near-dup collapse (`overlap_frac=0.6`) selects
+    for *diverse* loops, capping segment reuse among the shown 15. Pinned by
+    `tests/test_compose.py` (`resample_segments`/`assemble_loop_series`: closed series,
+    a→b grid, ramp gain≈loss, missing-segment → n/a, self-loop) and
+    `tests/test_compose_live.py::test_compose_looks_up_each_shared_segment_once_not_per_loop`
+    (counting provider, cache off: the run requests **exactly** the distinct-segment point
+    count, strictly fewer than the per-loop total). **Local DEM remains the recommended
+    compose backend** — it's already fast/free, so it gains ~nothing here; this optimization
+    helps the API backend (fewer requests, faster, cache-hot re-runs).
 
 ## Conventions
 

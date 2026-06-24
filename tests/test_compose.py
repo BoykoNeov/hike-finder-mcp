@@ -9,11 +9,14 @@ Coordinates are spaced ~0.001-0.01° apart (≈ 100 m – 1 km at 50° N), far a
 1 m weld tolerance, so distinct vertices never fuse.
 """
 from hike_finder.compose import (
+    assemble_loop_series,
     build_trail_graph,
     clip_routes_to_bbox,
     find_loops,
+    resample_segments,
 )
-from hike_finder.geometry import polyline_length_m
+from hike_finder.elevation import cumulative_gain_loss
+from hike_finder.geometry import polyline_length_m, resample_by_distance
 
 
 def _route(ref, ways, rid=1):
@@ -250,6 +253,86 @@ def test_no_anchors_leaves_start_untagged():
     g = build_trail_graph([_route("near", [_SQUARE_A], rid=1)])
     res = find_loops(g, min_m=0, max_m=1e9)
     assert res.loops[0].anchor is None
+
+
+# ------------------------------------------------------ segment-level shared sampling
+
+
+# A bigon: junctions P,Q joined by two distinct paths -> one loop using TWO segments,
+# each shared by no other loop here but exercising the per-segment resample + assembly.
+_BIGON = [
+    _route("path1", [[(50.00, 15.00), (50.01, 15.01), (50.00, 15.02)]], rid=1),
+    _route("path2", [[(50.00, 15.00), (49.99, 15.01), (50.00, 15.02)]], rid=2),
+    _route("stubP", [[(50.00, 15.00), (50.00, 14.99)]], rid=3),
+    _route("stubQ", [[(50.00, 15.02), (50.00, 15.03)]], rid=4),
+]
+
+
+def test_resample_segments_resamples_each_distinct_segment_once():
+    # The dedup primitive: resample_segments returns ONE entry per distinct segment id,
+    # each sampled in that segment's own a->b order (first/last == the segment's ends).
+    g = build_trail_graph(_BIGON)
+    loop = find_loops(g, min_m=0, max_m=1e9).loops[0]
+    seg_pts = resample_segments(g, loop.seg_ids, interval_m=25.0)
+    assert set(seg_pts) == set(loop.seg_ids)          # exactly the distinct segments
+    for sid, pts in seg_pts.items():
+        s = g.segments[sid]
+        assert pts[0] == s.coords[0] and pts[-1] == s.coords[-1]   # canonical a->b grid
+
+
+def test_assemble_loop_series_is_closed_and_segment_anchored():
+    # Assembling the per-segment COORD lists along the loop's traversal reproduces a
+    # closed polyline (first == last), and it is segment-anchored: every segment's two
+    # junction endpoints appear as exact sample points (the cross-run-cache property).
+    g = build_trail_graph(_BIGON)
+    loop = find_loops(g, min_m=0, max_m=1e9).loops[0]
+    seg_pts = resample_segments(g, loop.seg_ids, interval_m=25.0)
+    series = assemble_loop_series(g, loop, seg_pts)
+    assert series[0] == series[-1]                    # genuinely closed
+    for sid in loop.seg_ids:
+        s = g.segments[sid]
+        assert s.coords[0] in series and s.coords[-1] in series
+
+
+def test_assemble_loop_series_gain_matches_loss_on_a_ramp():
+    # A closed loop over a monotonic-in-latitude elevation ramp must read gain ~ loss,
+    # because the assembled series starts and ends at the same start-node sample. This is
+    # the invariant that makes the per-segment path a safe substitute for whole-loop
+    # resampling — it preserves the gain/loss balance. Checked in the low-hysteresis
+    # limit (threshold/smoothing ~off) so the equality is crisp; a larger threshold adds
+    # only the usual threshold-scale up-vs-down asymmetry, not an imbalance from assembly.
+    g = build_trail_graph(_BIGON)
+    loop = find_loops(g, min_m=0, max_m=1e9).loops[0]
+    seg_pts = resample_segments(g, loop.seg_ids, interval_m=25.0)
+    seg_elev = {sid: [(lat - 50.0) * 5000.0 for lat, _ in pts] for sid, pts in seg_pts.items()}
+    series = assemble_loop_series(g, loop, seg_elev)
+    gain, loss = cumulative_gain_loss(series, threshold_m=1.0, smooth_window=1)
+    assert abs(gain - loss) <= 2.0
+
+
+def test_assemble_loop_series_missing_segment_degrades_to_none():
+    # If any segment the loop needs is absent (its elevation lookup failed / quota ran
+    # out), the whole series is None so the loop degrades to n/a — never stitched w/ a gap.
+    g = build_trail_graph(_BIGON)
+    loop = find_loops(g, min_m=0, max_m=1e9).loops[0]
+    seg_pts = resample_segments(g, loop.seg_ids, interval_m=25.0)
+    a_segment = next(iter(loop.seg_ids))
+    seg_pts.pop(a_segment)                            # simulate one failed segment
+    assert assemble_loop_series(g, loop, seg_pts) is None
+
+
+def test_self_loop_series_is_closed():
+    # A single-relation ring (self-loop segment, a == b): its series is one segment's
+    # samples, already closed, and assembles without a junction to orient against.
+    ring = [(50.00, 15.00), (50.00, 15.02), (50.02, 15.02), (50.02, 15.00), (50.00, 15.00)]
+    g = build_trail_graph([_route("R", [ring])])
+    loop = find_loops(g, min_m=0, max_m=1e9).loops[0]
+    (sid,) = loop.seg_ids
+    seg_pts = resample_segments(g, loop.seg_ids, interval_m=25.0)
+    series = assemble_loop_series(g, loop, seg_pts)
+    assert series[0] == series[-1]
+    # The lone segment, verbatim — no junction to orient against or dedup.
+    assert series == resample_by_distance(g.segments[sid].coords, 25.0)
 
 
 # --------------------------------------------------------------------------- clipping

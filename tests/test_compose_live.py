@@ -15,11 +15,13 @@ import json
 from collections import Counter
 from pathlib import Path
 
+from hike_finder import config as _config
 from hike_finder import search as S
 from hike_finder.compose import build_trail_graph, clip_routes_to_bbox, find_loops
 from hike_finder.elevation.base import ElevationProvider
 from hike_finder.filters import Criteria
 from hike_finder.format import hike_to_dict
+from hike_finder.geometry import resample_by_distance
 from hike_finder.overpass import parse_area
 
 FIXTURE = Path(__file__).parent / "fixtures" / "spindl_area.json"
@@ -133,3 +135,72 @@ def test_compose_loops_car_access_anchors_start_at_parking(monkeypatch):
     radius = _config.load().car_radius_m
     assert min(haversine_m(a.start, pk["coord"]) for pk in area.parking) <= radius
     assert a.start != p.start
+
+
+# A bbox large enough to contain the whole fixture's geometry, so compose's internal
+# clip is a no-op and the full multi-loop trail graph composes — the realistic scenario
+# where several loops overlap and segment-level sharing actually pays off.
+_WIDE_BBOX = (50.0, 15.0, 51.0, 16.0)
+
+
+class _CountingProvider(ElevationProvider):
+    """Records every point passed to lookup AND every call, so a test can assert both how
+    many distinct elevation points the run requested and how many provider calls it made
+    (the call count maps to batched API requests — the metric the throttle/quota meter)."""
+
+    def __init__(self):
+        self.seen = []
+        self.calls = []
+
+    def lookup(self, points):
+        self.calls.append(len(points))
+        self.seen.extend(points)
+        return [(lat - 50.0) * 5000.0 for lat, _ in points]
+
+
+def test_compose_looks_up_each_shared_segment_once_not_per_loop(monkeypatch):
+    # The headline of segment-level shared sampling: with several overlapping loops,
+    # the run looks up each DISTINCT trail segment's points exactly once — not once per
+    # loop that traverses it. Cache OFF, so the provider sees exactly what compose sends
+    # (proving the dedup is INTRINSIC, not a side effect of the SQLite point cache).
+    area = _area()
+    counter = _CountingProvider()
+    monkeypatch.setattr(S, "_fetch_area", lambda *a, **k: area)
+    monkeypatch.setattr(S, "_provider", lambda *a, **k: counter)
+    monkeypatch.setattr(S._cache, "from_config", lambda cfg: None)
+
+    cfg = _config.load()
+    hikes = S.compose_loops(_WIDE_BBOX, Criteria())  # default 3-15 km band, max_loops=15
+    assert len(hikes) > 1                            # genuinely a multi-loop scenario
+
+    # Reconstruct the exact loop set compose searched (deterministic), then compute both
+    # the segment-level point count (what we DO look up) and the whole-loop point count
+    # (what looking each loop up separately WOULD have cost).
+    graph = build_trail_graph(clip_routes_to_bbox(area.routes, _WIDE_BBOX))
+    res = find_loops(
+        graph, min_m=cfg.compose_min_km * 1000, max_m=cfg.compose_max_km * 1000,
+        max_segments=cfg.compose_max_segments, max_loops=cfg.compose_max_loops,
+        overlap_frac=cfg.compose_overlap_frac,
+    )
+    used = set().union(*(L.seg_ids for L in res.loops))
+    distinct_pts = sum(
+        len(resample_by_distance(graph.segments[i].coords, cfg.sample_interval_m)) for i in used
+    )
+    whole_loop_pts = sum(
+        len(resample_by_distance(L.coords, cfg.sample_interval_m)) for L in res.loops
+    )
+
+    # Exactly the distinct-segment points were requested — no segment looked up twice,
+    # no whole-loop re-sampling — and that is a real reduction over the per-loop cost.
+    assert len(counter.seen) == distinct_pts
+    assert distinct_pts < whole_loop_pts
+    # And in ONE combined provider call, not one per loop or per segment — so the real
+    # (100-point-batched) API request count is ~ceil(distinct_pts/100), the metric the
+    # throttle and daily quota actually meter, not the raw point count.
+    assert len(counter.calls) == 1
+    # Closed series preserved end-to-end: every composed loop still reads gain ≈ loss
+    # (within the usual hysteresis-threshold-scale up-vs-down asymmetry, which grows with
+    # loop size — so a relative tolerance, not a fixed 5 m that only fits tiny loops).
+    for h in hikes:
+        assert h.gain_m is not None
+        assert abs(h.gain_m - h.loss_m) <= 0.2 * max(h.gain_m, h.loss_m) + 5

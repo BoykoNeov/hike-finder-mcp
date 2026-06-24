@@ -359,13 +359,32 @@ def add_elevation(
     sample_interval_m: float = 25.0,
     gain_threshold_m: float = 10.0,
     smooth_window: int = 3,
+    pre_elevations: list[float] | None = None,
+    use_presampled: bool = False,
 ) -> None:
-    """Expensive pass: fill gain/loss in place. Leaves them None on failure."""
-    sampled = resample_by_distance(line, sample_interval_m)
-    try:
-        elevations = elevation.lookup(sampled)
-    except ElevationError:
-        return  # gain/loss stay None; the route is still listed unless gain-filtered
+    """Expensive pass: fill gain/loss in place. Leaves them None on failure.
+
+    Normally this resamples ``line`` and looks the points up through ``elevation``.
+    When ``use_presampled`` is set, it instead uses the caller-supplied
+    ``pre_elevations`` series directly — skipping BOTH the resample and the provider
+    call — and only runs the smoothing + hysteresis gain math on it. Composed loops
+    use this: their elevation is pre-assembled from per-segment samples in
+    ``search.compose_loops`` so a trail segment shared by several loops is looked up
+    once, not once per loop (see HANDOFF "segment-level shared sampling"). A
+    ``pre_elevations`` of ``None`` under ``use_presampled`` means the series was
+    unavailable (e.g. a segment's lookup failed / quota ran out), so gain/loss stay
+    None and the loop degrades to n/a — exactly as a failed direct lookup would.
+    """
+    if use_presampled:
+        if pre_elevations is None:
+            return  # series unavailable -> gain/loss stay None (degraded to n/a)
+        elevations = pre_elevations
+    else:
+        sampled = resample_by_distance(line, sample_interval_m)
+        try:
+            elevations = elevation.lookup(sampled)
+        except ElevationError:
+            return  # gain/loss stay None; the route is still listed unless gain-filtered
     gain, loss = cumulative_gain_loss(
         elevations, threshold_m=gain_threshold_m, smooth_window=smooth_window
     )
@@ -396,6 +415,7 @@ def find_hikes(
     near_miss_dist_km: float = 2.0,
     near_miss_radius_frac: float = 0.5,
     near_miss_trigger: int = 1,
+    pre_elevations_by_id: dict[int, list[float]] | None = None,
 ) -> list[Hike]:
     """Run the two-pass filter and return matches, optionally with near-misses.
 
@@ -413,7 +433,16 @@ def find_hikes(
     "close" route for a match. The relaxed pool's extra elevation lookups happen
     ONLY when near-misses are actually engaged, keeping the API economy intact when
     strict matches already exist.
+
+    ``pre_elevations_by_id`` (used only by ``search.compose_loops``) maps a route's
+    id to a pre-computed elevation series. When supplied, the elevation pass uses
+    that series for each route instead of resampling + querying the provider — see
+    ``add_elevation``'s ``use_presampled``. This lets compose look each shared trail
+    segment up once (not once per loop). A route absent from the map (or mapped to a
+    failed series) keeps gain/loss None. ``None`` (the default) leaves the ordinary
+    path byte-for-byte unchanged.
     """
+    use_pre = pre_elevations_by_id is not None
     want_band = near_miss is True or near_miss == "auto"
     # Cap the nearest-feature scan at the relaxed radius so an access near-miss can
     # report a feature just past the limit; None disables the scan on the plain path.
@@ -470,6 +499,8 @@ def find_hikes(
             sample_interval_m=sample_interval_m,
             gain_threshold_m=gain_threshold_m,
             smooth_window=smooth_window,
+            pre_elevations=pre_elevations_by_id.get(hike.osm_id) if use_pre else None,
+            use_presampled=use_pre,
         )
 
     matches = [h for h, _ in strict_survivors if criteria.accepts_gain(h)]
@@ -487,6 +518,8 @@ def find_hikes(
                 sample_interval_m=sample_interval_m,
                 gain_threshold_m=gain_threshold_m,
                 smooth_window=smooth_window,
+                pre_elevations=pre_elevations_by_id.get(hike.osm_id) if use_pre else None,
+                use_presampled=use_pre,
             )
         # Candidates: strict survivors that failed only on gain, plus the relaxed
         # pool. Each gets notes (or is dropped if it misses too hard — gain only).

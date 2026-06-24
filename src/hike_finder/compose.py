@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import NamedTuple
 
 from .access import _bbox_pad
-from .geometry import Coord, haversine_m
+from .geometry import Coord, haversine_m, resample_by_distance
 
 # Same coincidence tolerance as geometry._vertex_graph: merges vertices that are
 # the same OSM node despite float noise, well below trail vertex spacing so it
@@ -263,6 +263,14 @@ class ComposedLoop:
     # loop's start, since a pure loop has no natural terminus. ``None`` when anchoring
     # is off (the start then stays at the loop's arbitrary geometric head).
     anchor: Coord | None = None
+    # The loop's traversal, retained so its elevation can be assembled per-segment
+    # (``assemble_loop_series``): ``start_node`` is the junction the walk begins at and
+    # ``ordered_segs`` is the ordered list of segment ids visited — the same sequence
+    # ``_assemble`` walked to build ``coords``. Unlike the ``seg_ids`` frozenset (which
+    # is direction/rotation-free, for dedup), this preserves order and start so the
+    # per-segment elevation lists concatenate in exactly the loop's geometric order.
+    start_node: int = -1
+    ordered_segs: tuple[int, ...] = ()
 
 
 class ComposeResult(NamedTuple):
@@ -339,7 +347,57 @@ def _assemble(graph: TrailGraph, start: int, seg_ids: list[int]) -> ComposedLoop
         segment_count=len(seg_ids),
         compactness=_compactness(coords),
         seg_ids=frozenset(seg_ids),
+        start_node=start,
+        ordered_segs=tuple(seg_ids),
     )
+
+
+def resample_segments(
+    graph: TrailGraph, seg_ids, interval_m: float = 25.0
+) -> dict[int, list[Coord]]:
+    """Resample each segment in ``seg_ids`` to even spacing, ONCE per distinct segment.
+
+    The key to segment-level shared sampling: a trail segment shared by several
+    composed loops is resampled (and, by the caller, elevation-looked-up) exactly
+    once, keyed by segment id, instead of once per loop that traverses it. Each
+    segment is sampled in its own ``a -> b`` direction (the order of ``Segment.coords``)
+    so the points are identical regardless of which loop, or which direction, uses it
+    — which is what makes them dedup within a run and recur across runs (cache-hot).
+    """
+    return {
+        i: resample_by_distance(graph.segments[i].coords, interval_m) for i in seg_ids
+    }
+
+
+def assemble_loop_series(graph: TrailGraph, loop: "ComposedLoop", per_segment: dict):
+    """Concatenate per-segment values into one series following the loop's traversal.
+
+    Walks ``loop.ordered_segs`` from ``loop.start_node`` exactly as :func:`_assemble`
+    walked them to build ``loop.coords`` — orienting each segment's value list to
+    continue from the current node (reversed when traversed ``b -> a``) and dropping the
+    shared junction value between consecutive segments. ``per_segment`` maps segment id
+    to a value list in that segment's ``a -> b`` order (e.g. its resampled points, or the
+    elevations of those points).
+
+    Returns the assembled list, or ``None`` if any segment the loop needs is missing
+    from ``per_segment`` (e.g. its elevation lookup failed) — so the caller degrades the
+    whole loop to n/a rather than stitching a gap. Because the first and last values of
+    the assembled series are the same (closed-loop) start-node sample, an elevation
+    series assembled this way is closed, so gain ≈ loss holds just as for a whole-line
+    resample.
+    """
+    out: list = []
+    cur = loop.start_node
+    for idx in loop.ordered_segs:
+        s = graph.segments[idx]
+        vals = per_segment.get(idx)
+        if vals is None:
+            return None
+        oriented = vals if s.a == cur else list(reversed(vals))
+        nxt = s.b if s.a == cur else s.a
+        out.extend(oriented[1:] if out else oriented)
+        cur = nxt
+    return out
 
 
 def _anchor_vertex(
