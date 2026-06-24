@@ -750,19 +750,33 @@ validated `search_hikes` path and returns correct UTF-8 JSON.)
     skips the redundant whole-loop resample/lookup and runs the *unchanged*
     `cumulative_gain_loss` on the series. The assembled series is closed (first = last =
     start-node sample), so **gain ≈ loss still holds**; only the sample positions move
-    (segment-anchored vs loop-anchored), which **shifts published composed-loop gain values
-    (magnitude NOT yet live-measured)** — a deliberate behavior change. On smooth synthetic
-    terrain the shift is tiny, but on real noisy DEM the per-junction phase reset could move
-    gain more; unlike the original compose feature this change is **offline-tested only, not
-    yet live-validated** — a future live pass should diff composed gains against the old
-    Špindl +114/−112 m. Smoothing/hysteresis are preserved because the *series* (not
+    (segment-anchored vs loop-anchored), which **shifts published composed-loop gain values**
+    — a deliberate behavior change. **LIVE-VALIDATED 2026-06-24** (controlled A/B against the
+    real OpenTopoData API via a one-off harness — not committed; one live fetch → identical
+    geometry, only the sampling grid differing): the OLD whole-loop path re-measured the documented
+    Špindl loop at **+114/−112 m exactly** (harness gate PASS — live geometry matches the
+    fixture), and the NEW segment-level path reads **+115/−109 m** there (Δ +1/−3 m; the
+    shipped `hike-finder --compose-loops` CLI prints the same +115/−109, confirming the full
+    wiring). On a wider real Krkonoše bbox (`50.68 15.52 50.80 15.70`, 15 loops) the per-loop
+    shift ranges **−15…+19 m** (mostly single-digit; the largest are ~3–5 % on 300–500 m / 8–12 km
+    loops) and **gain ≈ loss holds on all 15** (max |gain−loss| = 13 m) — i.e. the live shift is
+    exactly the expected per-junction resampling noise, with no asymmetric or symmetric
+    inflation. Smoothing/hysteresis are preserved because the *series* (not
     per-segment gains) is assembled, then gain is taken once. Dedup is **intrinsic** (each segment looked up once regardless of the cache, so
     `--no-cache` benefits too) and makes the points **cache-hot across runs** (segment-
     canonical points recur; loop-anchored ones don't). Measured on the Špindl fixture
-    (offline, pure): default 3–15 km band / 14 loops → **2.12×** fewer points (4865→2298,
-    ~55→23 requests); wider 2–20 km / 15 loops → **2.85×**. The factor is ~2–3×, not the
-    ~6× once implied, because `find_loops`' near-dup collapse (`overlap_frac=0.6`) selects
-    for *diverse* loops, capping segment reuse among the shown 15. Pinned by
+    (offline, pure, on the **unclipped** fixture geometry): default 3–15 km band / 14 loops →
+    **2.12×** fewer points (4865→2298, ~55→23 requests); wider 2–20 km / 15 loops → **2.85×**.
+    The factor is ~2–3×, not the ~6× once implied, because `find_loops`' near-dup collapse
+    (`overlap_frac=0.6`) selects for *diverse* loops, capping segment reuse among the shown 15.
+    **Measured LIVE** on the wider real Krkonoše bbox above (15 loops, a real *clipped* search —
+    `compose_loops` always clips to bbox): whole-loop 4624 pts over **15** lookup calls
+    (~55 batched requests) → segment-level 2782 pts in **one** combined call (~28 requests),
+    i.e. **1.66× fewer points / 55→28 ≈ 2.0× fewer API requests** (the request ratio beats the
+    point ratio because the single combined call also saves each loop's per-batch tail waste).
+    This sits *below* the offline 2.1–2.9×, and the live number is the **representative** one:
+    the offline band was on unclipped fixture geometry, which holds more — and more overlapping —
+    loops than any real (clipped) search returns. Pinned by
     `tests/test_compose.py` (`resample_segments`/`assemble_loop_series`: closed series,
     a→b grid, ramp gain≈loss, missing-segment → n/a, self-loop) and
     `tests/test_compose_live.py::test_compose_looks_up_each_shared_segment_once_not_per_loop`
