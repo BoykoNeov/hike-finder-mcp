@@ -82,7 +82,9 @@ def build_parser() -> argparse.ArgumentParser:
         "reporting each OSM relation as-is — finds day-loops that aren't mapped as a "
         "single relation. Target length comes from --min-distance/--max-distance "
         "(default 3-15 km). Each result is stitched from several trails (shown as "
-        "'composed of ...'). Loops are kept inside the --bbox area.",
+        "'composed of ...'). Loops are kept inside the --bbox area. Combine with "
+        "--car-access / --chairlift-access to get only loops reachable from a parking "
+        "lot / lift, each started at that trailhead ('a loop from where I park').",
     )
 
     s = p.add_argument_group("saved areas (fetch once, then search offline)")
@@ -266,12 +268,19 @@ def run(args: argparse.Namespace) -> int:
         return 1
 
     _quota_line(cfg, used_before)
-    empty_msg = (
-        "No loops could be composed in that area — try a wider --bbox or a wider "
-        "--min-distance/--max-distance band."
-        if getattr(args, "compose_loops", False)
-        else "No matching hikes found in that area."
-    )
+    if getattr(args, "compose_loops", False):
+        # When access is required, an empty result may mean "loops exist but none come near
+        # a parking/lift" rather than "no loops at all" — say so, so the filter isn't silent.
+        anchored = args.car_access is True or args.chairlift_access is True
+        empty_msg = (
+            "No loops could be composed reachable from a parking lot / lift in that area "
+            "— drop --car-access/--chairlift-access, or try a wider --bbox or distance band."
+            if anchored
+            else "No loops could be composed in that area — try a wider --bbox or a wider "
+            "--min-distance/--max-distance band."
+        )
+    else:
+        empty_msg = "No matching hikes found in that area."
     _emit(hikes, args.json, empty_msg)
     return 0
 

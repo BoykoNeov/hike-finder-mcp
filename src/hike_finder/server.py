@@ -183,12 +183,24 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
         hikes = await asyncio.to_thread(search, bbox, criteria, CFG, near_miss=near_miss)
 
     if not hikes:
-        msg = (
-            "No loops could be composed in that area — try a wider bounding box or a "
-            "wider min/max_distance_km band."
-            if arguments.get("compose_loops") and not area_path
-            else "No matching hikes found in that area."
+        composing = arguments.get("compose_loops") and not area_path
+        # When access is required, "nothing" may mean "loops exist, none near a parking/
+        # lift" rather than "no loops at all" — say so, matching the CLI/web frontends.
+        anchored = composing and (
+            arguments.get("car_access") is True or arguments.get("chairlift_access") is True
         )
+        if anchored:
+            msg = (
+                "No loops could be composed reachable from a parking lot / lift in that "
+                "area — drop car_access/chairlift_access, or widen the bbox or distance band."
+            )
+        elif composing:
+            msg = (
+                "No loops could be composed in that area — try a wider bounding box or a "
+                "wider min/max_distance_km band."
+            )
+        else:
+            msg = "No matching hikes found in that area."
         return [TextContent(type="text", text=msg)]
     return [TextContent(type="text", text="\n".join(format_hike(h) for h in hikes))]
 

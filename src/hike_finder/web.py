@@ -166,8 +166,12 @@ async function search(){
     render(data);
     const near = data.filter(h => h.near_miss).length;
     const composing = !area && document.getElementById('compose_loops').checked;
+    const anchored = composing && (document.getElementById('car_access').value === 'true'
+                                || document.getElementById('chairlift_access').value === 'true');
     if (composing && data.length === 0){
-      status.textContent = 'No loops could be composed here — widen the map or the min/max distance.';
+      status.textContent = anchored
+        ? 'No loops here reachable from a parking lot / lift — clear the car/lift requirement, or widen the map or distance band.'
+        : 'No loops could be composed here — widen the map or the min/max distance.';
     } else {
       status.textContent = (data.length - near) + (composing ? ' loop(s)' : ' match(es)')
         + (near ? (' + ' + near + ' near miss(es)') : '') + (area ? ' [offline]' : '');

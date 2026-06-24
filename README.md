@@ -137,6 +137,12 @@ computed exactly as for a real route, and a composed loop is circular by constru
 (gain ≈ loss). The web UI exposes this as a **"Compose loops from connected trails"**
 checkbox; MCP via a `compose_loops` argument on `find_hikes`.
 
+Add `--car-access` (or `--chairlift-access`) to get **"a loop from where I park"**: only
+loops reachable from a mapped parking lot / lift survive, each started at that trailhead.
+The reachability test runs *before* the compactness cap, so the returned loops are ones
+you can actually drive/ride to (otherwise the cap can fill with compact loops far from any
+trailhead). The loop geometry — and its gain/loss — is unchanged; only the start moves.
+
 > **Honesty note:** a composed loop is a *suggestion* — it asserts only that these
 > connected marked segments form a loop of that length, not that anyone signs or walks it
 > as one route. Loop closure itself is high-confidence (exact shared OSM nodes); the

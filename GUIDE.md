@@ -550,6 +550,23 @@ ranked by how round/compact they are, so thin out-and-back shapes sink to the bo
 drop off — and tells you how many distinct loops it found in total. Want more? Raise
 `HIKE_COMPOSE_MAX_LOOPS`.
 
+**"A loop from where I park."** Add `--car-access` (or `--chairlift-access`) to a compose
+search and you get only loops that come within reach of a mapped parking lot / lift station,
+each **started at that trailhead** — the on-loop point nearest the parking or lift, instead
+of an arbitrary spot on the ring:
+
+```bash
+hike-finder --bbox 50.72 15.58 50.74 15.62 --compose-loops --car-access \
+            --min-distance 8 --max-distance 12
+```
+
+This isn't just the access *filter* applied afterwards: the reachability test runs **before**
+the 15-loop cap, so the cap is spent on loops you can actually drive/ride to — without it a
+busy area's most-compact loops can all be far from any trailhead and you'd get nothing back.
+Require both `--car-access` and `--chairlift-access` and a loop must come near *both*; the
+start then sits **where you park** (parking wins over the lift). The loop's geometry — and
+so its gain/loss — is unchanged; only the start marker moves.
+
 **In the Web UI** it's the **"Compose loops from connected trails"** checkbox (live map
 only — it needs the fetched trail network); over MCP, a `compose_loops: true` argument on
 `find_hikes`. The same `--min/--max-distance` (or `min/max_distance_km`) set the band.

@@ -102,3 +102,34 @@ def test_compose_loops_pipeline_offline(monkeypatch):
     assert hike_to_dict(h)["osm_id"] is None                       # no fake relation id
     # Access is computed along the loop line (real parking/lift in the fixture).
     assert h.car_access is True and h.chairlift_access is True
+
+
+def test_compose_loops_car_access_anchors_start_at_parking(monkeypatch):
+    # Access-anchored loops on real data: requiring car access starts the loop at the
+    # trailhead you drive to (a real parking lot), not the loop's arbitrary head — while
+    # leaving the loop's geometry (and thus its gain/loss) byte-identical.
+    from hike_finder import config as _config
+    from hike_finder.geometry import haversine_m
+
+    area = _area()
+    monkeypatch.setattr(S, "_fetch_area", lambda *a, **k: area)
+    monkeypatch.setattr(S, "_provider", lambda *a, **k: _RampProvider())
+    monkeypatch.setattr(S._cache, "from_config", lambda cfg: None)
+
+    plain = S.compose_loops(BBOX, Criteria(min_distance_km=2, max_distance_km=14))
+    anchored = S.compose_loops(
+        BBOX, Criteria(min_distance_km=2, max_distance_km=14, car_access=True)
+    )
+    assert len(plain) == 1 and len(anchored) == 1
+    p, a = plain[0], anchored[0]
+
+    # Same loop, same provenance, same elevation — anchoring only moves the start marker
+    # (coords are not rotated, so the gain/loss seam is unchanged).
+    assert set(a.composed_of) == set(p.composed_of)
+    assert a.gain_m == p.gain_m and a.loss_m == p.loss_m
+
+    # The anchored start lies on the loop within the car-access radius of a real parking
+    # lot, and it actually moved off the unanchored geometric head.
+    radius = _config.load().car_radius_m
+    assert min(haversine_m(a.start, pk["coord"]) for pk in area.parking) <= radius
+    assert a.start != p.start

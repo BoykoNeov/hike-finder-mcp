@@ -30,6 +30,7 @@ import math
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
+from .access import _bbox_pad
 from .geometry import Coord, haversine_m
 
 # Same coincidence tolerance as geometry._vertex_graph: merges vertices that are
@@ -257,6 +258,11 @@ class ComposedLoop:
     # sliver. Used to rank/cap loops so the roundest (most loop-like) ones come first.
     compactness: float = 0.0
     seg_ids: frozenset[int] = frozenset()
+    # When the loop is access-anchored (see ``find_loops``' ``anchors``), the on-loop
+    # vertex nearest the trailhead (parking/lift) you start from — rendered as the
+    # loop's start, since a pure loop has no natural terminus. ``None`` when anchoring
+    # is off (the start then stays at the loop's arbitrary geometric head).
+    anchor: Coord | None = None
 
 
 class ComposeResult(NamedTuple):
@@ -336,6 +342,51 @@ def _assemble(graph: TrailGraph, start: int, seg_ids: list[int]) -> ComposedLoop
     )
 
 
+def _anchor_vertex(
+    coords: list[Coord],
+    anchors: list[tuple[list[Coord], float]],
+) -> Coord | None:
+    """Decide whether a loop is reachable from the requested access, and where to start.
+
+    ``anchors`` is a list of ``(access_points, radius_m)`` requirements that must ALL be
+    met — a loop asked to have car *and* lift access has to come within range of both.
+    The test is exactly the one ``access.car_accessible`` / ``chairlift_access`` run on
+    the synthesised route in ``find_hikes`` (``haversine <= radius`` against every loop
+    vertex), over the same whole-loop point set, so a loop kept here is precisely one
+    ``find_hikes`` will accept — no loop is anchored-then-filtered or kept-then-dropped.
+
+    Returns the on-loop vertex to use as the start: the loop vertex nearest the closest
+    access point of the *first* requirement, so callers that order requirements
+    parking-first get a start "where you park" even when a lift is also in range.
+    Returns ``None`` when any requirement is unmet (the loop is then dropped).
+    """
+    start_vtx: Coord | None = None
+    for ai, (points, radius) in enumerate(anchors):
+        # Skip access points that provably can't be within `radius` of ANY loop vertex,
+        # before the O(vertices) inner scan — the exact same EXACT prune access.py uses on
+        # the whole-line scan (it only drops points too far to ever match). Without it the
+        # pre-collapse pool × every access point × every vertex is seconds on a dense area
+        # (the 24× whole-line regression all over again); with it, ~unchanged.
+        lo_lat, hi_lat, lo_lon, hi_lon = _bbox_pad(coords, radius)
+        best_d = float("inf")
+        best_vtx: Coord | None = None
+        for ap in points:
+            if not (lo_lat <= ap[0] <= hi_lat and lo_lon <= ap[1] <= hi_lon):
+                continue
+            for v in coords:
+                d = haversine_m(v, ap)
+                # Tie-break by coordinate (not iteration order) so the start is member-
+                # order independent — the same discipline as _route_start / matched_access.
+                if d <= radius and (best_vtx is None or (d, v) < (best_d, best_vtx)):
+                    best_d = d
+                    best_vtx = v
+        if best_vtx is None:
+            return None  # this access type isn't reachable from the loop -> drop it
+        if ai == 0:
+            start_vtx = best_vtx
+    return start_vtx
+
+
 def find_loops(
     graph: TrailGraph,
     *,
@@ -345,6 +396,7 @@ def find_loops(
     max_loops: int | None = None,
     budget: int = 500_000,
     overlap_frac: float = 0.6,
+    anchors: list[tuple[list[Coord], float]] | None = None,
 ) -> ComposeResult:
     """Search the contracted graph for loops with total length in ``[min_m, max_m]``.
 
@@ -372,6 +424,16 @@ def find_loops(
         (72 loops were observed on a 13×14 km box) would break the two-pass economy
         and blow the elevation API quota. ``ComposeResult.distinct`` reports the
         pre-cap count so a truncation is never silent.
+
+    **Access anchoring** (``anchors``, optional): a list of ``(access_points,
+    radius_m)`` requirements (see :func:`_anchor_vertex`). When given, only loops
+    reachable from *every* requirement survive — and crucially this filter runs
+    BEFORE the collapse and the cap, so both spend their budget on the accessible
+    subset. Without it the compactness cap can fill up with compact-but-unreachable
+    loops that ``find_hikes`` then filters out, hiding genuine "loops from where I
+    park" behind the cap. Each surviving loop is tagged with its start vertex
+    (:attr:`ComposedLoop.anchor`). ``found`` still counts every in-band cycle, so the
+    accessible-vs-found funnel stays visible (never a silent filter).
 
     Determinism: neighbours are visited in sorted order and segment ids are stable
     (sorted node pairs in ``build_trail_graph``), so the output is identical run to
@@ -426,10 +488,24 @@ def find_loops(
     for start in sorted(inc):
         dfs(start, start, [], 0.0, {start})
 
+    # Access anchoring (optional): keep only loops reachable from a requested access
+    # feature, tagging each with its on-loop start vertex. Done BEFORE collapse and the
+    # cap so both operate on the accessible subset (see the `anchors` note above).
+    pool: list[ComposedLoop] = found + selfloops
+    in_band = len(pool)
+    if anchors:
+        anchored: list[ComposedLoop] = []
+        for L in pool:
+            vtx = _anchor_vertex(L.coords, anchors)
+            if vtx is not None:
+                L.anchor = vtx
+                anchored.append(L)
+        pool = anchored
+
     # Near-duplicate collapse: keep shortest first; drop a loop that re-uses more
     # than `overlap_frac` of its own length from an already-kept loop.
     seg_len = {i: graph.segments[i].length_m for i in active}
-    candidates = sorted(found + selfloops, key=lambda L: (round(L.length_m, 3), L.coords))
+    candidates = sorted(pool, key=lambda L: (round(L.length_m, 3), L.coords))
     kept: list[ComposedLoop] = []
     for L in candidates:
         dup = False
@@ -448,7 +524,7 @@ def find_loops(
     shown = ranked if max_loops is None else ranked[:max_loops]
     return ComposeResult(
         loops=shown,
-        found=len(found) + len(selfloops),
+        found=in_band,
         distinct=len(kept),
         capped=state["capped"],
     )

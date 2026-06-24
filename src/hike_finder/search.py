@@ -163,6 +163,23 @@ def compose_loops(
         if criteria.max_distance_km is not None
         else max(cfg.compose_max_km, min_km)
     )
+
+    # Access anchoring: when the search requires car/lift access, restrict the composed
+    # loops to those reachable from a matched parking lot / lift station BEFORE the cap,
+    # and start each at that trailhead — "a 12 km loop from where I park". The
+    # requirement set mirrors find_hikes (the SAME radii and access-point sets, AND-ed
+    # across the requested types), so the loops kept here are exactly the ones find_hikes
+    # accepts. Parking is listed first, so a loop with both car and lift access starts
+    # where you park, not at the lift.
+    anchors: list[tuple[list, float]] = []
+    if criteria.car_access is True:
+        anchors.append(([p["coord"] for p in area.parking], cfg.car_radius_m))
+    if criteria.chairlift_access is True:
+        anchors.append(
+            ([s for lift in area.lifts for s in lift.get("stations", [])], cfg.lift_radius_m)
+        )
+    anchored = bool(anchors)
+
     result = find_loops(
         graph,
         min_m=min_km * 1000.0,
@@ -170,20 +187,33 @@ def compose_loops(
         max_segments=cfg.compose_max_segments,
         max_loops=cfg.compose_max_loops,
         overlap_frac=cfg.compose_overlap_frac,
+        anchors=anchors or None,
     )
     # Logged, never silent: how many distinct loops exist vs how many we elevation+show,
     # and whether the bounded search hit its budget — so a truncated/capped result is
-    # never mistaken for "that's all there is".
+    # never mistaken for "that's all there is". When anchoring, also surface the
+    # accessible-vs-found funnel, so a filtered-down result isn't read as "that's all
+    # the loops there are".
     truncated = (
         f" (showing the {len(result.loops)} most loop-like; raise HIKE_COMPOSE_MAX_LOOPS for more)"
         if result.distinct > len(result.loops) else ""
     )
-    _log.warning(
-        "compose: %d distinct loop(s) in %.0f-%.0f km from %d trail segments%s%s",
-        result.distinct, min_km, max_km, len(graph.segments), truncated,
+    capped_note = (
         " [cycle search capped — results may be incomplete; narrow the distance band]"
-        if result.capped else "",
+        if result.capped else ""
     )
+    if anchored:
+        _log.warning(
+            "compose: %d loop(s) in %.0f-%.0f km reachable from the requested "
+            "car/lift access, of %d cycle(s) found in band from %d trail segments%s%s",
+            result.distinct, min_km, max_km, result.found, len(graph.segments),
+            truncated, capped_note,
+        )
+    else:
+        _log.warning(
+            "compose: %d distinct loop(s) in %.0f-%.0f km from %d trail segments%s%s",
+            result.distinct, min_km, max_km, len(graph.segments), truncated, capped_note,
+        )
 
     # Wrap each loop as a synthetic route and run the SAME engine. The negative id keys
     # the loop back to its provenance after find_hikes (which preserves osm_id per Hike).
@@ -227,6 +257,14 @@ def compose_loops(
         if loop is not None:
             h.composed = True
             h.composed_of = loop.refs
+            if loop.anchor is not None:
+                # Access-anchored: put the start at the trailhead you drive/ride to (the
+                # on-loop point nearest your parking/lift), not the loop's arbitrary
+                # geometric head. We override the label only — the loop's `coords` stay
+                # unrotated, so the elevation resample seam, and thus gain/loss, is
+                # byte-identical to an unanchored run (a loop's start is just a marker;
+                # no filter reads it).
+                h.start = loop.anchor
     return hikes
 
 

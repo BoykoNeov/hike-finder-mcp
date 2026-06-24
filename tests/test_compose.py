@@ -184,6 +184,74 @@ def test_loops_ranked_by_compactness_round_before_thin():
     assert res.loops[0].compactness > 0.5 and res.loops[1].compactness < 0.3
 
 
+# --------------------------------------------------------------------------- access anchoring
+
+
+# A compact square at (50,15) and a thin rectangle / second square far away at (52,16)
+# — disjoint components (no shared node), so each is its own self-loop.
+_SQUARE_A = [(50.00, 15.00), (50.00, 15.01), (50.01, 15.01), (50.01, 15.00), (50.00, 15.00)]
+_SQUARE_B = [(52.00, 16.00), (52.00, 16.01), (52.01, 16.01), (52.01, 16.00), (52.00, 16.00)]
+# Long thin ring near (50,15): ~1.4 km wide, ~55 m tall -> low compactness.
+_THIN = [(50.00, 15.00), (50.00, 15.02), (50.0005, 15.02), (50.0005, 15.00), (50.00, 15.00)]
+# Parking ~11 m north of the (50.00, 15.00) corner — within the 300 m car radius, and
+# unambiguously closest to that corner on every ring below.
+_PARK_NEAR = (50.0001, 15.00)
+
+
+def test_anchor_filters_to_reachable_loops_and_tags_the_start():
+    # Two disjoint rings; parking sits next to the (50,15) one only. Anchoring keeps that
+    # loop, drops the far one, and tags the kept loop's start with the on-loop vertex
+    # nearest the parking. `found` still counts BOTH in-band cycles (the funnel is visible).
+    g = build_trail_graph([_route("near", [_SQUARE_A], rid=1), _route("far", [_SQUARE_B], rid=2)])
+    res = find_loops(g, min_m=0, max_m=1e9, anchors=[([_PARK_NEAR], 300.0)])
+    assert res.found == 2 and res.distinct == 1
+    assert len(res.loops) == 1
+    assert res.loops[0].refs == ("near",)
+    assert res.loops[0].anchor == (50.00, 15.00)  # the corner nearest the parking
+
+
+def test_anchor_keeps_reachable_loop_past_the_compactness_cap():
+    # The regression-defining test (the starvation bug): the MOST COMPACT loop is the
+    # UNREACHABLE one. With max_loops=1 and no anchoring the cap returns the compact-but-
+    # unreachable loop, which find_hikes would then filter to nothing. Anchoring runs
+    # BEFORE the cap, so the reachable (less compact) loop survives instead.
+    routes = [_route("compact", [_SQUARE_B], rid=1), _route("thin", [_THIN], rid=2)]
+    g = build_trail_graph(routes)
+    plain = find_loops(g, min_m=0, max_m=1e9, max_loops=1)
+    assert plain.loops[0].refs == ("compact",)  # cap picks the round, far loop
+    anchored = find_loops(g, min_m=0, max_m=1e9, max_loops=1, anchors=[([_PARK_NEAR], 300.0)])
+    assert len(anchored.loops) == 1
+    assert anchored.loops[0].refs == ("thin",)  # reachable loop survives the cap
+    assert anchored.loops[0].anchor == (50.00, 15.00)
+
+
+def test_anchor_requires_every_access_type_and_starts_at_the_first():
+    # AND semantics: a loop near parking but far from any lift is kept when only car
+    # access is required, dropped when both car AND lift are required. And the start
+    # couples to the FIRST requirement (callers pass parking first -> "where you park").
+    g = build_trail_graph([_route("near", [_SQUARE_A], rid=1)])
+    park = ([_PARK_NEAR], 300.0)
+    lift_far = ([(52.0, 16.0)], 400.0)
+    assert len(find_loops(g, min_m=0, max_m=1e9, anchors=[park]).loops) == 1
+    assert len(find_loops(g, min_m=0, max_m=1e9, anchors=[park, lift_far]).loops) == 0
+
+    # Both reachable, near DIFFERENT corners: the start follows whichever requirement is
+    # listed first, so parking-first yields a park-side start (not the lift corner).
+    lift_near = ([(50.011, 15.011)], 400.0)  # ~near the (50.01, 15.01) corner
+    res_park_first = find_loops(g, min_m=0, max_m=1e9, anchors=[park, lift_near])
+    res_lift_first = find_loops(g, min_m=0, max_m=1e9, anchors=[lift_near, park])
+    assert res_park_first.loops[0].anchor == (50.00, 15.00)
+    assert res_lift_first.loops[0].anchor == (50.01, 15.01)
+
+
+def test_no_anchors_leaves_start_untagged():
+    # Default path: no anchoring -> every loop's `anchor` stays None (the start falls back
+    # to the loop's geometric head downstream), byte-for-byte the pre-feature behaviour.
+    g = build_trail_graph([_route("near", [_SQUARE_A], rid=1)])
+    res = find_loops(g, min_m=0, max_m=1e9)
+    assert res.loops[0].anchor is None
+
+
 # --------------------------------------------------------------------------- clipping
 
 
