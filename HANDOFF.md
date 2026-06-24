@@ -122,6 +122,13 @@ and "show close results, especially when 0 match":
       radii/`loop_tolerance` tunable; the over-length guard reuses the snapshot bbox.
   Coords round-trip JSON as lists and are restored to **tuples** on load (the vertex
   graph / `dict.fromkeys` need hashable points).
+    - **Fail-safe, never wrong:** a snapshot lookup is all-or-nothing per route, so any
+      key that doesn't match degrades that whole route to `n/a` — it can never return a
+      *wrong* elevation. Same-machine the resample is bit-identical (validated), so this
+      never fires. The only edge is *cross-machine* sharing: a coordinate on a 7th-decimal
+      rounding boundary that two platforms round oppositely would degrade that one route
+      to `n/a`. Harmless for the real use case (download then search offline on the same
+      laptop); revisit the rounding only if snapshots are ever shared between machines.
 - **Near-misses (`filters.find_hikes(near_miss=…)`).** Tri-state `False | True |
   "auto"`. `"auto"` (the frontend default) shows near-misses only when there are
   **zero** strict matches. A relaxed cheap gate (`Criteria.accepts_geometry_relaxed`)

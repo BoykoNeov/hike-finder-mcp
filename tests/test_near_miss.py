@@ -66,7 +66,7 @@ def test_near_miss_note_access_parking_just_past_limit():
     c = Criteria(car_access=True)
     h = _hike(car_access=False, car_distance_m=380.0)
     notes = c.near_miss_notes(h, gain_frac=0.2, car_radius_m=300, lift_radius_m=400)
-    assert notes == ("nearest parking 380 m from an end — just past the 300 m limit",)
+    assert notes == ("nearest parking 380 m away — just past the 300 m limit",)
 
 
 def test_near_miss_combines_multiple_reasons():

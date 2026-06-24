@@ -202,12 +202,12 @@ class Criteria:
             )
         if self.car_access is True and not h.car_access and h.car_distance_m is not None:
             notes.append(
-                f"nearest parking {round(h.car_distance_m)} m from an end — "
+                f"nearest parking {round(h.car_distance_m)} m away — "
                 f"just past the {round(car_radius_m)} m limit"
             )
         if self.chairlift_access is True and not h.chairlift_access and h.lift_distance_m is not None:
             notes.append(
-                f"nearest lift {round(h.lift_distance_m)} m from an end — "
+                f"nearest lift {round(h.lift_distance_m)} m away — "
                 f"just past the {round(lift_radius_m)} m limit"
             )
         return tuple(notes) if notes else None

@@ -60,7 +60,7 @@ route is never mistaken for a match:
 
 A route qualifies when it is within tolerance of a numeric bound (gain within a
 percentage, distance within a few km) **or** has parking/a lift just past its
-access radius (`nearest parking 380 m from an end — just past the 300 m limit`).
+access radius (`nearest parking 380 m away — just past the 300 m limit`).
 Shape is never relaxed — a loop is not "almost point-to-point" — and an *excluded*
 access stays strict, so near-misses always share the shape and exclusions you
 asked for. By default they appear **only when nothing matches** (`auto`); you can

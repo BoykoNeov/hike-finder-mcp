@@ -366,7 +366,7 @@ you'd actually drive or ride to.
 
 **`~` and `[near miss: …]`** mark a route that does **not** meet your filters but
 is close — and the note says exactly how (`gain 709 m — 41 m below the 750 m
-minimum`, or `nearest parking 380 m from an end — just past the 300 m limit`). By
+minimum`, or `nearest parking 380 m away — just past the 300 m limit`). By
 default these appear only when nothing matches, so an empty result still gives you
 the next-best options instead of a blank. Treat them as "almost, but check the
 note" — they keep the shape and exclusions you asked for, only the numbers/access

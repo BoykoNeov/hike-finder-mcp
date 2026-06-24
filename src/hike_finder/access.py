@@ -163,7 +163,7 @@ def nearest_parking_m(
     A *measuring* sibling of ``car_accessible`` for the near-miss path: where the
     boolean asks "is parking within the access radius?", this answers "and how far
     is the closest one?" so a result just past the threshold can be reported
-    ("parking 380 m from an end, just past the 300 m limit"). Same radius-padded
+    ("parking 380 m away, just past the 300 m limit"). Same radius-padded
     bbox prune (here padded by ``max_m``, the *relaxed* radius) keeps it cheap, and
     it never scans past ``max_m`` so the cost stays bounded on a whole-loop endpoint
     set. Returns the distance only — the boolean verdict stays with ``car_accessible``
