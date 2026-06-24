@@ -28,16 +28,22 @@ HANDOFF.md). This module needs the optional ``mcp`` extra; it is skipped without
 """
 import asyncio
 import json
+import sys
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
 pytest.importorskip("mcp")  # the MCP server is an optional extra; skip if absent
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import get_default_environment, stdio_client
 from mcp.shared.memory import create_connected_server_and_client_session
 
 from hike_finder import server
 from hike_finder.filters import Criteria, Hike
 from hike_finder.format import format_hike
+
+_SRC = str(Path(__file__).resolve().parent.parent / "src")
 
 
 # A bare `async def test_*` would be COLLECTED and reported PASSED without ever
@@ -184,3 +190,34 @@ def test_call_tool_runs_the_real_engine_on_fixture(monkeypatch):
     assert len(lines) >= 5                                  # 11 survive on this bbox
     assert all("OSM relation" in ln for ln in lines)        # all real formatted hikes
     assert any("OSM relation 6282999" in ln for ln in lines)  # the known Spindl loop
+
+
+# --- the REAL stdio transport: spawn the server as a subprocess ---------------
+
+def test_real_stdio_transport_lists_the_tool():
+    """Pin what the in-memory session can't: the actual stdio wiring + ``main()``.
+
+    Spawns the real ``python -m hike_finder.server`` and speaks MCP over its OS
+    stdin/stdout pipes. ``initialize`` + ``list_tools`` touch NO network (the
+    handler returns the static tool list), so this stays hermetic — we never
+    call ``find_hikes``, which would hit Overpass. PYTHONPATH points at ``src``
+    so the child finds the package whether or not it's pip-installed, and we
+    extend ``get_default_environment()`` (not replace it) so Windows keeps
+    SystemRoot/PATH and Python can start at all.
+    """
+    params = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "hike_finder.server"],
+        env={**get_default_environment(), "PYTHONPATH": _SRC},
+    )
+
+    async def _impl():
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(
+                read, write, read_timeout_seconds=timedelta(seconds=30)
+            ) as session:
+                await session.initialize()
+                return await session.list_tools()
+
+    result = asyncio.run(asyncio.wait_for(_impl(), timeout=60))
+    assert [t.name for t in result.tools] == ["find_hikes"]

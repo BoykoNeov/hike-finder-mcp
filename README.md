@@ -236,7 +236,7 @@ retry/backoff, and a persistent daily-request counter that degrades to `n/a`
 before blowing the API's daily cap), the CLI argument/formatter layer, **and the
 MCP server's tool schema / argument-mapping / rendering glue** (driven through
 the real MCP protocol over an in-memory session): **implemented and unit-tested**
-(107 tests, all offline). The Overpass HTTP call, the API elevation backend,
+(108 tests, all offline). The Overpass HTTP call, the API elevation backend,
 **the local-DEM backend, and the MCP server over real stdio** are all
 **validated live** (CLI + web + MCP), with computed gain cross-checked against
 the loop invariant (gain ≈ loss) — the local DEM read Sněžka at 1601 m vs the

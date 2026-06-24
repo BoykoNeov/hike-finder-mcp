@@ -304,14 +304,17 @@ find_hikes` against the Špindlerův Mlýn bbox returned a real engine-computed,
 [loop, car, lift:chair_lift]*, OSM relation 6282999); an impossible filter gave
 the friendly "No matching hikes found" message (`isError=False`); an unknown
 tool surfaced as `isError=True` "unknown tool: …". Pinned offline by
-`tests/test_server.py` (5 tests) — driven through the **real MCP protocol over an
-in-memory client/server session**, with `search_hikes` stubbed for the glue
-tests (schema, the tri-state argument→Criteria mapping, shared rendering, empty
-case, unknown-tool error) and only the two network boundaries (`fetch_area`,
+`tests/test_server.py` (6 tests): five drive the **real MCP protocol over an
+in-memory client/server session** — `search_hikes` stubbed for the glue tests
+(schema, the tri-state argument→Criteria mapping, shared rendering, empty case,
+unknown-tool error), and only the two network boundaries (`fetch_area`,
 `get_provider`) stubbed for one engine-integration test against the live
-`spindl_area.json` fixture. The test body is a sync `asyncio.run(...)` wrapper,
-not a bare `async def`, so it runs regardless of whether `pytest-asyncio` is
-present. The `mcp` extra is now also in the `dev` extra, and the module
+`spindl_area.json` fixture — and a sixth spawns the **real `python -m
+hike_finder.server` subprocess** and does `initialize` + `list_tools` over OS
+stdio pipes (network-free, so hermetic) to guard the actual `stdio_server()` /
+`main()` transport the in-memory session can't reach. The test bodies are sync
+`asyncio.run(...)` wrappers, not bare `async def`, so they run regardless of
+whether `pytest-asyncio` is present. The `mcp` extra is now also in the `dev` extra, and the module
 `pytest.importorskip("mcp")`s so a base install stays green. The SDK's decorator
 API has shifted across versions; adjust imports in `server.py` if a different
 `mcp` version won't start.
@@ -551,7 +554,7 @@ validated `search_hikes` path and returns correct UTF-8 JSON.)
 
 ```bash
 pip install -e .             # CLI + web UI (no LLM); extras: ".[mcp]" ".[local-dem]" ".[dev]"
-pytest -q                    # 107 tests, all offline (pure math + Overpass parser + CLI + MCP server + elevation API + daily quota + local-DEM synthetic tiles + live closure & coupling fixtures); MCP tests skip without the `mcp` extra
+pytest -q                    # 108 tests, all offline (pure math + Overpass parser + CLI + MCP server (incl. a real-stdio subprocess) + elevation API + daily quota + local-DEM synthetic tiles + live closure & coupling fixtures); MCP tests skip without the `mcp` extra
 hike-finder --bbox 50.72 15.58 50.74 15.62 --user-agent you@example.com
 hike-finder-web              # local web UI on http://127.0.0.1:8765
 hike-finder-mcp              # MCP server over stdio (needs the `mcp` extra)
