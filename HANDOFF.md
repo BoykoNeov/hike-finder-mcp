@@ -819,6 +819,29 @@ validated `search_hikes` path and returns correct UTF-8 JSON.)
   resampled line + elevation array `add_elevation` currently discards), walking-order
   stitching for the single-track ideal.
 
+- **Repo hygiene — DONE and CI-GREEN (2026-06-24).** The public repo now carries
+  the basics a serious project needs: an **MIT `LICENSE`**, a **`CHANGELOG.md`**
+  (Keep-a-Changelog, documents the 0.1.0 feature set), and **GitHub Actions CI**
+  (`.github/workflows/ci.yml`) that runs the suite on every push + PR. The CI
+  matrix is shaped to the suite's optional-dep guards: a **Linux matrix
+  (3.10–3.13)** installs *all* extras (`.[dev,local-dem]` → pytest + mcp + rasterio)
+  so the `importorskip`-guarded suites (`test_server`, `test_local_dem`) actually
+  run, plus a **windows-latest** smoke job (`.[dev]`, rasterio omitted) that
+  exercises the native `.ps1` launchers. **First run was red** and taught two real
+  things: (1) `ubuntu-latest` ships `pwsh`, so the `.ps1` launcher tests run on
+  Linux too (they passed — the wrappers are clean cross-platform PS); (2) a latent
+  test bug — `test_local_dem.py` did `import numpy` *before* its rasterio
+  `importorskip`, so the Windows job (no local-dem extra → no transitive numpy)
+  errored on collection instead of skipping. Fixed by guarding numpy with
+  `importorskip` too (it's not a declared dep, only arrives via rasterio). Second
+  run **all green** (4 Linux + 1 Windows). `pyproject.toml` packaging metadata is
+  now complete for an eventual PyPI publish: SPDX `license = "MIT"` + `license-files`
+  (bumped `setuptools>=77`), `authors`, `readme`, `keywords`, classifiers (Py
+  3.10–3.13), and project URLs — validated through the setuptools backend
+  (`License-Expression: MIT`, `License-File: LICENSE`). README carries CI + license
+  badges. Not done (deliberately): the actual PyPI publish (needs an account +
+  token) and a `v0.1.0` git tag (the CHANGELOG's release link is dead until tagged).
+
 ## Conventions
 
 - Pure math stays network-free and tested. Keep it that way — it's the trust

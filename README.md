@@ -1,5 +1,8 @@
 # hike-finder-mcp
 
+[![CI](https://github.com/BoykoNeov/hike-finder-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/BoykoNeov/hike-finder-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Find **marked hiking routes from OpenStreetMap** and filter them by **real,
 locally-computed elevation gain and distance** — not numbers scraped from
 trail-description websites — plus **shape and access**: whether a route is a loop,
