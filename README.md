@@ -14,6 +14,11 @@ maintained trail data — including the Czech **KČT** network — that **mapy.c
 renders. Distance and elevation gain are computed in this codebase, so the
 numbers are consistent and tunable instead of inherited from a third party.
 
+> **New here? Read [`GUIDE.md`](GUIDE.md)** — a verbose, step-by-step walkthrough
+> covering what to do, why, what output to expect, and how to read the results.
+> This README is the terse reference (full flag list, every env var, the filter
+> table); the guide is the tutorial.
+
 ## Why this exists
 
 Trail sites (AllTrails, Komoot, mapy.cz) all report *different* gain for the
@@ -92,6 +97,9 @@ hike-finder --help                 # prints usage → the entry points resolve
 For deeper assurance, `pip install -e ".[dev]"` then `pytest` runs the full
 offline suite (108 tests). From here, pick a frontend: the **Web UI** (Option A),
 **command line** (Option B), or **MCP server** (Option C) below.
+
+Want the slower, fully-explained version of all of this — with sample output and
+how to interpret it? See **[`GUIDE.md`](GUIDE.md)**.
 
 ## Quickstart
 
