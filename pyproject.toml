@@ -1,13 +1,35 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "hike-finder-mcp"
 version = "0.1.0"
 description = "OSM-based hike search (CLI, web UI, and MCP server) with real computed elevation gain and distance"
+readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Boyko Neov", email = "boikoneov@gmail.com" }]
+keywords = ["hiking", "openstreetmap", "osm", "elevation", "gpx", "mcp", "overpass"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "Environment :: Console",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+]
 dependencies = ["requests>=2.31"]
+
+[project.urls]
+Homepage = "https://github.com/BoykoNeov/hike-finder-mcp"
+Repository = "https://github.com/BoykoNeov/hike-finder-mcp"
+Changelog = "https://github.com/BoykoNeov/hike-finder-mcp/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.2"]
