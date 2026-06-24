@@ -16,6 +16,7 @@ import argparse
 import json
 import sys
 
+from . import cache
 from . import config as _config
 from .elevation import api_quota_snapshot
 from .filters import Criteria
@@ -103,6 +104,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Elevation backend, overrides HIKE_ELEVATION_MODE.",
     )
     o.add_argument("--dem-dir", help="GeoTIFF DEM tile directory for local/auto, overrides HIKE_DEM_DIR.")
+    o.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Bypass the on-disk cache for this run (always re-fetch Overpass + "
+        "elevation). The cache is on by default; also disable via HIKE_CACHE=0.",
+    )
+    o.add_argument(
+        "--clear-cache",
+        action="store_true",
+        help="Empty the on-disk cache (Overpass areas + elevation points) and exit.",
+    )
 
     p.add_argument("--json", action="store_true", help="Emit results as JSON instead of text lines.")
     return p
@@ -157,6 +169,17 @@ def _fetch_hint(e: Exception) -> None:
 def run(args: argparse.Namespace) -> int:
     cfg = _config.load()
     near_miss = "auto" if args.near_misses is None else args.near_misses
+
+    # --clear-cache is a standalone maintenance action: empty the cache and exit.
+    if getattr(args, "clear_cache", False):
+        c = cache.Cache(cache.cache_path_from_config(cfg))
+        c.clear()
+        print(f"Cleared cache at {cache.cache_path_from_config(cfg)}.")
+        return 0
+
+    # --no-cache disables the transparent cache for this whole run.
+    if getattr(args, "no_cache", False):
+        cfg.cache_enabled = False
 
     if args.area and args.download:
         print("error: --area and --download are mutually exclusive.", file=sys.stderr)

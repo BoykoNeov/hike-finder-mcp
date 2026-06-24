@@ -17,17 +17,18 @@ Three entry points, all returning the same filtered ``Hike`` list:
 """
 from __future__ import annotations
 
+from . import cache as _cache
 from . import config as _config
 from .config import Config
 from .elevation import get_provider
 from .filters import Criteria, Hike, find_hikes
-from .overpass import DEFAULT_OVERPASS_URL, fetch_area
+from .overpass import DEFAULT_OVERPASS_URL, build_query, fetch_area
 from .snapshot import AreaSnapshot, RecordingElevationProvider, SnapshotElevationProvider
 
 Bbox = tuple[float, float, float, float]
 
 
-def _provider(cfg: Config, elevation_mode: str | None, dem_dir: str | None):
+def _provider(cfg: Config, elevation_mode: str | None, dem_dir: str | None, cache=None):
     return get_provider(
         mode=elevation_mode or cfg.elevation_mode,
         dem_dir=dem_dir or cfg.dem_dir,
@@ -38,7 +39,35 @@ def _provider(cfg: Config, elevation_mode: str | None, dem_dir: str | None):
         api_max_backoff_s=cfg.api_max_backoff_s,
         api_daily_limit=cfg.api_daily_limit,
         api_state_dir=cfg.api_state_dir,
+        cache=cache,
     )
+
+
+def _fetch_area(
+    bbox: Bbox,
+    cfg: Config,
+    cache,
+    *,
+    user_agent: str | None,
+    overpass_url: str | None,
+    read_cache: bool,
+):
+    """Fetch an area, transparently cached. ``read_cache=False`` forces a live fetch
+    (used by ``download_area`` so a saved snapshot is always current) but still
+    *refreshes* the cache on the way through, so later live searches benefit."""
+    url = overpass_url or cfg.overpass_url or DEFAULT_OVERPASS_URL
+    ua = user_agent or cfg.overpass_user_agent
+    ttl_days = getattr(cfg, "overpass_cache_ttl_days", 0)
+    cache_on = cache is not None and ttl_days > 0
+    key = _cache.area_cache_key(url, build_query(*bbox)) if cache_on else None
+    if cache_on and read_cache:
+        hit = cache.get_area(key, ttl_days * 86400)
+        if hit is not None:
+            return hit
+    area = fetch_area(*bbox, url, user_agent=ua)
+    if cache_on:
+        cache.put_area(key, area)
+    return area
 
 
 def _near_miss_kwargs(cfg: Config) -> dict:
@@ -67,12 +96,11 @@ def search_hikes(
     environment (see config.py).
     """
     cfg = cfg or _config.load()
-    area = fetch_area(
-        *bbox,
-        overpass_url or cfg.overpass_url or DEFAULT_OVERPASS_URL,
-        user_agent=user_agent or cfg.overpass_user_agent,
+    cache = _cache.from_config(cfg)
+    area = _fetch_area(
+        bbox, cfg, cache, user_agent=user_agent, overpass_url=overpass_url, read_cache=True
     )
-    provider = _provider(cfg, elevation_mode, dem_dir)
+    provider = _provider(cfg, elevation_mode, dem_dir, cache)
     return find_hikes(
         area,
         provider,
@@ -107,14 +135,18 @@ def download_area(
     API calls (see ``search_snapshot``). Routes whose elevation lookup fails (e.g. the
     daily quota runs out mid-download) are simply left unsampled and degrade to n/a
     offline, exactly as they would live.
+
+    A download deliberately bypasses the Overpass *read* cache (``read_cache=False``)
+    so a freshly-named snapshot always reflects current OSM, never a weeks-old cached
+    area — but it still refreshes the cache and warms the elevation cache, both pure
+    wins for later live searches.
     """
     cfg = cfg or _config.load()
-    area = fetch_area(
-        *bbox,
-        overpass_url or cfg.overpass_url or DEFAULT_OVERPASS_URL,
-        user_agent=user_agent or cfg.overpass_user_agent,
+    cache = _cache.from_config(cfg)
+    area = _fetch_area(
+        bbox, cfg, cache, user_agent=user_agent, overpass_url=overpass_url, read_cache=False
     )
-    recorder = RecordingElevationProvider(_provider(cfg, elevation_mode, dem_dir))
+    recorder = RecordingElevationProvider(_provider(cfg, elevation_mode, dem_dir, cache))
     # Empty criteria => no filtering: find_hikes still runs the cheap pass (so the
     # over-length guard drops through-routes, sparing their elevation) and the
     # elevation pass on every survivor, which is exactly what the recorder captures.

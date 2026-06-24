@@ -55,7 +55,7 @@ frontends (pick one; cli/web need no LLM):
   cli.py  ─┐
   web.py  ─┼─→ search.search_hikes(bbox, criteria, cfg)   # shared orchestration
   server.py┘     (MCP tool find_hikes; needs the optional `mcp` extra)
-       ├─ overpass.fetch_area(bbox)          # routes + parking + lifts  [NETWORK]
+       ├─ overpass.fetch_area(bbox)          # routes + parking + lifts  [NETWORK, CACHED (TTL)]
        │    └─ overpass.parse_area(elements) # split mixed response      [PURE, TESTED]
        ├─ elevation.get_provider(mode)       # api | local | auto        [NETWORK/DISK]
        └─ filters.find_hikes(area, elevation, criteria, bbox)
@@ -66,7 +66,7 @@ frontends (pick one; cli/web need no LLM):
             │  → apply over-length guard + distance/shape/access filters
             └─ EXPENSIVE pass (survivors only) → filters.add_elevation(hike, line)
                  ├─ geometry.resample_by_distance  # even spacing      [PURE, TESTED]
-                 ├─ elevation.lookup(points)       # api/local/auto    [NETWORK/DISK]
+                 ├─ elevation.lookup(points)       # api/local/auto    [NETWORK/DISK; API CACHED, no TTL]
                  └─ elevation.cumulative_gain_loss # smoothing+thresh  [PURE, TESTED]
                → apply gain filter, sort
   → results rendered by format.format_hike / format.hike_to_dict (shared)
@@ -577,8 +577,45 @@ validated `search_hikes` path and returns correct UTF-8 JSON.)
   everything. Also: nodata is taken from the first tile only (`srcs[0].nodata`),
   and Copernicus tiles report `nodata=None`, so a void/ocean point would leak a
   raw value rather than raise — the off-tile bounds-check is the backstop.
-- **No caching.** Overpass and elevation results should be cached (disk/SQLite)
-  to respect usage policies and speed up repeat queries. Add before heavy use.
+- **Caching — DONE and VALIDATED LIVE (2026-06-24).** A transparent SQLite cache
+  (`cache.py`, stdlib `sqlite3`) sits at the two network seams so repeat/overlapping
+  searches don't re-hit the public servers — the OSM-usage-policy ask, now satisfied.
+  On by default; opt out with `--no-cache` / `HIKE_CACHE=0`. Two stores, different
+  staleness models:
+  - **elevation** — keyed by `(endpoint, rounded coord)`, **no TTL** (terrain is
+    immutable). Keyed by the **full endpoint, not the host** — OpenTopoData `srtm30m`
+    and `aster30m` share a host but return different elevations, so host-keying (what
+    `quota.py` does, fine for a counter) would cross-serve. Because route relations
+    carry full member geometry regardless of bbox, the *same route resamples to the
+    same points across different overlapping bboxes*, so this cache hits across bbox
+    changes, not just exact re-runs — the higher-value half.
+  - **overpass** — keyed by `sha256(url + build_query(bbox))` (auto-invalidates if the
+    query shape changes), **TTL-gated** (`HIKE_OVERPASS_CACHE_TTL_DAYS`, default 30;
+    trails change slowly; 0 disables Overpass caching). Stores `AreaData` as JSON via
+    snapshot's `_area_to_json`/`_area_from_json`.
+  Wiring: `get_provider(cache=…)` wraps **only the `ApiElevationProvider`** with
+  `CachingElevationProvider` (local DEM is fast disk, never cached; per-endpoint key
+  keeps DEM values out of an API-mode cache). `search._fetch_area` consults the
+  overpass cache; `download_area` deliberately **bypasses the overpass read** (a named
+  snapshot must reflect current OSM) but still refreshes both caches. **Failure-
+  isolated:** every DB op degrades to a clean miss / no-op on any sqlite/OS error
+  (corrupt, locked, disk-full, read-only) — a broken cache is invisible, never fatal,
+  mirroring `quota._read`. `--clear-cache` empties it. Default location: the per-user
+  cache dir alongside the quota counter (`HIKE_CACHE_DIR` to override; resolved live so
+  it isolates in tests). Validated live on the Špindl bbox: cold search **4.2 s** (live
+  Overpass + elevation) → warm **0.4 s**, **byte-identical** results, 0 network; the DB
+  held 1 area + 163 elevation points keyed by `…/v1/srtm30m`; `--no-cache` re-fetched
+  in **3.9 s**. Pinned offline by `tests/test_cache.py` (19 tests) — store round-trip,
+  source isolation, TTL expiry, `IN(...)` chunking past SQLite's var limit, failure-
+  isolation, the decorator's hit/miss/order/error-propagation contract, and the
+  **headline goal**: a repeated `search_hikes` makes zero further elevation requests
+  and leaves the `DailyQuota` counter unchanged, plus an elevation-cache-hits-across-
+  bboxes case.
+  - *Caveat for future live re-validation:* the byte-for-byte offline==live checks
+    elsewhere in this doc assume a cold network. Run those with `--no-cache` (or a
+    throwaway `HIKE_CACHE_DIR`) so the cache doesn't mask whether the network was
+    actually hit. The elevation table grows unbounded (~tens of bytes/point → tens of
+    MB even for millions of points); no eviction for a personal tool.
 - **CLI quota line — gate tightened to "API actually hit this run" (DONE
   2026-06-24).** `cli.run` now snapshots the daily counter before and after
   `search_hikes` and prints the line only when it went up (and `limit > 0`).
@@ -642,8 +679,9 @@ validated `search_hikes` path and returns correct UTF-8 JSON.)
 
 ```bash
 pip install -e .             # CLI + web UI (no LLM); extras: ".[mcp]" ".[local-dem]" ".[dev]"
-pytest -q                    # 114 tests, all offline (pure math + Overpass parser + CLI + MCP server (incl. a real-stdio subprocess) + elevation API + daily quota + local-DEM synthetic tiles + live closure & coupling fixtures + launcher scripts); MCP tests skip without the `mcp` extra
+pytest -q                    # 169 tests, all offline (pure math + Overpass parser + CLI + MCP server (incl. a real-stdio subprocess) + elevation API + daily quota + transparent cache + local-DEM synthetic tiles + live closure & coupling fixtures + launcher scripts); 166 pass on a WSL-less box (the 3 `.sh` launcher cases need bash); MCP tests skip without the `mcp` extra
 hike-finder --bbox 50.72 15.58 50.74 15.62 --user-agent you@example.com
+hike-finder --clear-cache    # empty the on-disk cache; --no-cache bypasses it for a run
 hike-finder-web              # local web UI on http://127.0.0.1:8765
 hike-finder-mcp              # MCP server over stdio (needs the `mcp` extra)
 

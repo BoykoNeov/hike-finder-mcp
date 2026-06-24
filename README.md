@@ -87,6 +87,25 @@ threshold, smoothing, access radii and shape tolerance stay tunable offline. The
 web UI exposes this as **"Download view"** + a saved-area selector; MCP gains a
 `download_area` tool and an `area` argument on `find_hikes`.
 
+### Transparent cache (automatic, on by default)
+
+Even without an explicit snapshot, a **transparent on-disk cache** (SQLite, stdlib
+only) sits at the two network seams so you don't re-hit the public servers when you
+re-run or pan around an area:
+
+- **Elevation** points are cached forever (terrain doesn't change) and — because a
+  route relation carries its full geometry regardless of the query box — they're
+  reused even across *different overlapping* bounding boxes, not just exact re-runs.
+- **Overpass** areas are cached with a time-to-live (`HIKE_OVERPASS_CACHE_TTL_DAYS`,
+  default 30 days; trails change slowly).
+
+It's invisible — cached runs return exactly what a live run would — and it's
+fail-safe: any cache error degrades to a normal live fetch. Disable it for a run
+with `--no-cache` (or `HIKE_CACHE=0`); empty it with `hike-finder --clear-cache`.
+This is what makes repeat exploration cheap *and* keeps the tool a polite OSM
+citizen. (Unlike a snapshot, the cache isn't a portable file you manage — it's just
+plumbing. A `--download` snapshot stays the way to search a fixed area fully offline.)
+
 ## Two elevation backends (both supported)
 
 | Mode | Source | Setup | Accuracy | Limits |
@@ -134,7 +153,7 @@ hike-finder --help                 # prints usage → the entry points resolve
 ```
 
 For deeper assurance, `pip install -e ".[dev]"` then `pytest` runs the full
-offline suite (147 tests). From here, pick a frontend: the **Web UI** (Option A),
+offline suite (169 tests; 166 pass without `bash`). From here, pick a frontend: the **Web UI** (Option A),
 **command line** (Option B), or **MCP server** (Option C) below.
 
 Want the slower, fully-explained version of all of this — with sample output and
@@ -340,6 +359,9 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 | `HIKE_NEAR_MISS_DIST_KM` | Near-miss distance tolerance, km past a min/max | `2.0` |
 | `HIKE_NEAR_MISS_RADIUS_FRAC` | Near-miss access tolerance: parking/lift within radius × (1 + this) still counts | `0.5` |
 | `HIKE_SNAPSHOT_DIR` | Directory for named area snapshots saved by the web UI | per-user cache (`…/hike-finder/snapshots`) |
+| `HIKE_CACHE` | Transparent on-disk cache of Overpass + elevation results, so repeat/overlapping searches don't re-hit the public servers. `0`/`false`/`no`/`off` disables (same as `--no-cache`) | on |
+| `HIKE_CACHE_DIR` | Directory for the cache SQLite file | per-user cache (`…/hike-finder`) |
+| `HIKE_OVERPASS_CACHE_TTL_DAYS` | How long a cached Overpass area stays fresh, days (trails change slowly). `0` disables Overpass caching; elevation is immutable terrain and never expires | `30` |
 
 > **Snapshot caveat:** `--area` locks the snapshot's sample interval (the saved
 > elevation points were taken at it), so `HIKE_SAMPLE_INTERVAL` can't break an
@@ -362,12 +384,16 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 Core geometry, gain, access/shape math, the Overpass response parser, the
 elevation-API client (including its rate-limit throttle, transient-error
 retry/backoff, and a persistent daily-request counter that degrades to `n/a`
-before blowing the API's daily cap), the CLI argument/formatter layer, **and the
-MCP server's tool schema / argument-mapping / rendering glue** (driven through
-the real MCP protocol over an in-memory session): **implemented and unit-tested**
-(147 tests, all offline). The Overpass HTTP call, the API elevation backend,
-**the local-DEM backend, and the MCP server over real stdio** are all
-**validated live** (CLI + web + MCP), with computed gain cross-checked against
-the loop invariant (gain ≈ loss) — the local DEM read Sněžka at 1601 m vs the
-known 1603 m on a Copernicus GLO-30 tile. All three frontends are now exercised
-end-to-end. See `HANDOFF.md` for exactly what's done and what's next.
+before blowing the API's daily cap), a **transparent SQLite cache** at the
+Overpass + elevation seams (so repeat/overlapping searches don't re-hit the
+public servers), the CLI argument/formatter layer, **and the MCP server's tool
+schema / argument-mapping / rendering glue** (driven through the real MCP protocol
+over an in-memory session): **implemented and unit-tested** (169 tests, all
+offline; 166 pass on a box without `bash` — the 3 `.sh` launcher cases need it).
+The Overpass HTTP call, the API elevation backend, **the local-DEM backend, the
+MCP server over real stdio, and the cache** are all **validated live** (CLI + web
++ MCP), with computed gain cross-checked against the loop invariant (gain ≈ loss)
+— the local DEM read Sněžka at 1601 m vs the known 1603 m on a Copernicus GLO-30
+tile, and a warm cached search returned byte-identical results in 0.4 s vs 4.2 s
+cold. All three frontends are now exercised end-to-end. See `HANDOFF.md` for
+exactly what's done and what's next.

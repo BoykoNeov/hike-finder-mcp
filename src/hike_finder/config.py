@@ -36,11 +36,27 @@
                              radius x (1 + this) still counts (default 0.5)
   HIKE_SNAPSHOT_DIR     directory for named area snapshots saved by the web UI
                         (default: a per-user cache subdir, .../hike-finder/snapshots)
+
+  HIKE_CACHE            transparent on-disk cache of Overpass + elevation results,
+                        on by default. Set 0/false/no/off to disable (--no-cache).
+                        Spares the public servers on repeat/overlapping searches.
+  HIKE_CACHE_DIR        directory for the cache SQLite file (default: the same
+                        per-user cache dir as the quota counter, .../hike-finder)
+  HIKE_OVERPASS_CACHE_TTL_DAYS  how long a cached Overpass area stays fresh, days
+                        (default 30; trails change slowly). 0 disables Overpass
+                        caching (elevation, being immutable terrain, is never TTL'd).
 """
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return v.strip().lower() not in ("0", "false", "no", "off", "")
 
 
 @dataclass
@@ -68,6 +84,10 @@ class Config:
     near_miss_gain_frac: float = float(os.getenv("HIKE_NEAR_MISS_GAIN_FRAC", "0.2"))
     near_miss_dist_km: float = float(os.getenv("HIKE_NEAR_MISS_DIST_KM", "2.0"))
     near_miss_radius_frac: float = float(os.getenv("HIKE_NEAR_MISS_RADIUS_FRAC", "0.5"))
+
+    cache_enabled: bool = _env_bool("HIKE_CACHE", True)
+    cache_dir: str | None = os.getenv("HIKE_CACHE_DIR")
+    overpass_cache_ttl_days: float = float(os.getenv("HIKE_OVERPASS_CACHE_TTL_DAYS", "30"))
 
 
 def load() -> Config:

@@ -71,8 +71,8 @@ hike-finder --help
 
 You should see the usage block (`usage: hike-finder [-h] --bbox SOUTH WEST NORTH
 EAST ...`). If that prints, the install worked. If you want deeper assurance,
-`pip install -e ".[dev]"` then `pytest` runs the full **offline** suite (114
-tests) — all green means the engine is sound on your machine.
+`pip install -e ".[dev]"` then `pytest` runs the full **offline** suite (169
+tests; 166 pass without `bash`) — all green means the engine is sound on your machine.
 
 ---
 
@@ -466,6 +466,33 @@ the bbox and a file path to fetch-and-save once) and an **`area`** argument on
 `find_hikes` (point it at a saved snapshot to search it offline). So you can ask *"download
 the Špindlerův Mlýn area for offline use,"* then later *"search that saved area for loops
 over 600 m"* and the client routes the second request through the snapshot — no API calls.
+
+### Even without downloading: the automatic cache
+
+A snapshot is the deliberate, portable way to go offline. But you don't have to think
+about it for everyday repeat searches — **hike-finder caches network results on disk
+automatically**, on by default. The first search of an area fetches Overpass and the
+elevation API as usual; a second search of the *same or an overlapping* area answers
+from the cache, hitting the network only for anything genuinely new.
+
+**Expect** — re-run the very same search and it returns near-instantly (no `elevation
+API:` movement, no Overpass wait). On a live test a cold search took 4.2 s and the warm
+re-run **0.4 s**, with byte-identical results. Because a trail relation carries its full
+shape no matter how you draw the box, the elevation half of the cache even pays off when
+you pan to a *different* nearby area — the shared trails are already known.
+
+**Read it** — two knobs and two staleness rules:
+
+- Elevation is cached **forever** (terrain doesn't change). Overpass areas expire after
+  `HIKE_OVERPASS_CACHE_TTL_DAYS` (default **30 days**, since marked trails change slowly).
+- The cache lives next to the daily-counter file (`%LOCALAPPDATA%\hike-finder` or
+  `~/.cache/hike-finder`); point it elsewhere with `HIKE_CACHE_DIR`.
+- Bypass it for one run with **`--no-cache`** (or `HIKE_CACHE=0`); wipe it with
+  **`hike-finder --clear-cache`**. A broken or unwritable cache never breaks a search —
+  it just falls back to fetching live.
+
+This is both a convenience (repeat exploration is cheap) and good manners: it's exactly
+the "cache results, don't re-fetch" the OpenStreetMap usage policy asks of clients.
 
 ### Show close-but-not-matching routes
 

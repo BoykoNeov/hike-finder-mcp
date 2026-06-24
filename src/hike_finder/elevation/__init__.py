@@ -57,7 +57,20 @@ def get_provider(
     api_max_backoff_s: float | None = None,
     api_daily_limit: int | None = None,
     api_state_dir: str | None = None,
+    cache=None,
 ) -> ElevationProvider:
+    # When a cache is supplied, wrap ONLY the network (API) provider — local DEM is
+    # fast disk and is never cached, and keying the cache by the API endpoint keeps
+    # DEM elevations from ever being served to an API-mode user. Imported lazily so
+    # the elevation package doesn't import hike_finder.cache at module load (which
+    # imports back into elevation, a cycle).
+    def _maybe_cache(api: "ApiElevationProvider") -> ElevationProvider:
+        if cache is None:
+            return api
+        from ..cache import CachingElevationProvider
+
+        return CachingElevationProvider(cache, source=api.endpoint, inner=api)
+
     api_kwargs: dict = {}
     if api_endpoint:
         api_kwargs["endpoint"] = api_endpoint
@@ -74,11 +87,11 @@ def get_provider(
     if api_state_dir is not None:
         api_kwargs["state_dir"] = api_state_dir
     if mode == "api":
-        return ApiElevationProvider(**api_kwargs)
+        return _maybe_cache(ApiElevationProvider(**api_kwargs))
     if mode == "local":
         if not dem_dir:
             raise ValueError("mode='local' requires dem_dir")
-        return LocalDemElevationProvider(dem_dir)
+        return LocalDemElevationProvider(dem_dir)  # local disk; not cached
     if mode == "auto":
         chain = []
         if dem_dir:
@@ -86,7 +99,7 @@ def get_provider(
                 chain.append(LocalDemElevationProvider(dem_dir))
             except ElevationError:
                 pass  # no tiles / no rasterio -> just use API
-        chain.append(ApiElevationProvider(**api_kwargs))
+        chain.append(_maybe_cache(ApiElevationProvider(**api_kwargs)))
         return FallbackElevationProvider(chain)
     raise ValueError(f"unknown elevation mode: {mode!r}")
 
