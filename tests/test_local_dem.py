@@ -16,10 +16,12 @@ and the provider does nearest-cell sampling, so a centre reads back its cell val
 """
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
 rasterio = pytest.importorskip("rasterio")  # skip module without the local-dem extra
+np = pytest.importorskip("numpy")  # rasterio's transitive dep; guard it too so a
+# [dev]-only install (no local-dem extra) skips this module instead of erroring on
+# collection — numpy is not a declared dependency, it only arrives via rasterio.
 from rasterio.transform import from_origin  # noqa: E402
 
 from hike_finder.elevation.base import ElevationError  # noqa: E402
