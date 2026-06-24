@@ -183,8 +183,10 @@ latitude, max longitude):
 > ride to (a lollipop with parking out on the ring keeps its start at the
 > stem-tip trailhead; pure loops have no terminus, so their start stays at the
 > conventional head).
-> Remaining caveat: the **local DEM** backend
-> (`mode=local`) is still untested — tracked in `HANDOFF.md`.
+> The **local DEM** backend (`mode=local`) is now validated live too — Copernicus
+> GLO-30 tiles, Sněžka read 1601 m vs the known 1603 m, loop invariant holds.
+> Remaining caveat: only the **MCP** entry point is still unvalidated — tracked in
+> `HANDOFF.md`.
 
 ### Configuration (environment variables)
 
@@ -227,8 +229,9 @@ Core geometry, gain, access/shape math, the Overpass response parser, the
 elevation-API client (including its rate-limit throttle, transient-error
 retry/backoff, and a persistent daily-request counter that degrades to `n/a`
 before blowing the API's daily cap), and the CLI argument/formatter layer:
-**implemented and unit-tested** (72 tests, all offline). The Overpass HTTP call **and the API
-elevation backend** are **validated live** (CLI + web), with computed gain
-cross-checked against the loop invariant (gain ≈ loss). The local-DEM backend
-and the MCP entry point are **implemented; validate on a networked machine**.
-See `HANDOFF.md` for exactly what's done and what's next.
+**implemented and unit-tested** (102 tests, all offline). The Overpass HTTP call,
+the API elevation backend, **and the local-DEM backend** are **validated live**
+(CLI + web), with computed gain cross-checked against the loop invariant
+(gain ≈ loss) — the local DEM read Sněžka at 1601 m vs the known 1603 m on a
+Copernicus GLO-30 tile. Only the MCP entry point is **implemented; validate on a
+networked machine**. See `HANDOFF.md` for exactly what's done and what's next.

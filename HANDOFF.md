@@ -146,7 +146,13 @@ report a 200 km "hike" and test parking/lifts at endpoints in another region.
   (`tests/test_geometry.py`). The old single-segment test missed a carry bug
   that collapsed finely-vertexed real OSM lines to 2 points (see bug #3 below).
 
-Run it: `pytest` → 95 passing.
+- `elevation/local_dem.py` — the synthetic-GeoTIFF regression (`tests/test_local_dem.py`,
+  guarded by `pytest.importorskip("rasterio")` so it skips without the `local-dem`
+  extra): known-cell round-trip, the two-tile **merge seam**, nodata→raise *and*
+  nodata→fill, out-of-coverage→raise/fill, and the empty-dir error. Pins the
+  sampling/merge/nodata logic that the live Copernicus run exercised.
+
+Run it: `pytest` → 102 passing.
 
 ## What is now VALIDATED LIVE (run against real OSM, 2026-06-23)
 
@@ -249,14 +255,39 @@ Run it: `pytest` → 95 passing.
     *zero-churn on a no-access route* (every route in this dense resort bbox has
     some access, so the live check was vacuous — unit-tested in `test_access.py`).
 
+- **Local DEM backend** (`elevation/local_dem.py`) — validated live 2026-06-24 with
+  `rasterio` 1.5.0 (cp314 wheel installs clean on Python 3.14; GDAL 3.12.1 bundled).
+  DEM source is **Copernicus GLO-30 on AWS — anonymous, no auth** (SRTM via USGS needs
+  a login; skip it). Tiles are keyed by SW corner; the **N50 E015** COG (one ~29 MB
+  GeoTIFF, EPSG:4326, float32, `nodata=None`) covers Sněžka + Špindl + Medvědín:
+  `https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N50_00_E015_00_DEM/...tif`.
+  - **Ground truth:** `LocalDemElevationProvider` read **Sněžka = 1601.4 m vs the known
+    1603 m (−1.6 m)** — a near-exact hit on the country's highest peak that *simultaneously*
+    confirms lat/lon axis order (the code calls `rowcol(transform, lon, lat)`; a swap sends
+    the point off-tile → `ElevationError`, verified), band, float scaling, and that nodata
+    doesn't leak. Off-summit refs (Luční hora, Medvědín) missed by 50–230 m at my
+    from-memory coords, but a ±0.005° grid-max around each recovered the summit height
+    (Luční −19 m, Medvědín *overshoots* +44 m onto higher ridge terrain) — i.e. the misses
+    are coordinate error, not a provider bug (a systematic bug could never nail Sněžka).
+  - **End-to-end:** `find_hikes` on the Špindl bbox with a local provider returned all
+    **11 routes with 0 nulls**; the pure loop read **+30/−23 m** (loop invariant gain≈loss
+    holds; documented API value was +34/−34, the looser closure is the raw-DEM-is-noisier
+    effect), and `[Z] Richtrovy Boudy → Špindlerův mlýn` read **+693/−268 m** vs the
+    documented API **+678/−251 m** — two independent anchors confirming local gains track
+    the API (~2–7% higher, as expected; raw 30 m DEM wants a higher gain threshold — a
+    documented per-source tuning TODO, not retuned here on one bbox).
+  - **CLI gate doubled as a live check:** `auto --dem-dir <tiles>` answered every point
+    from disk and left the daily counter unchanged → no quota line (see the gate fix below).
+  - Code note: `self._nodata = srcs[0].nodata` uses only the first tile's nodata; Copernicus
+    reports `nodata=None`, so a void/ocean point would leak a raw value — but the bounds-check
+    catches off-tile regardless. Pinned offline by `tests/test_local_dem.py` (synthetic tiles).
+
 ## What is WRITTEN but UNVALIDATED (needs a networked machine)
 
-Logic is complete; you still need to exercise these live (the Overpass layer and
-the API elevation backend above are now done):
+Logic is complete; you still need to exercise this live (Overpass, the API
+elevation backend, and the local DEM backend above are now all done):
 
-1. `elevation/local_dem.py` — needs `rasterio`. Confirm tile merge + `rowcol`
-   sampling against a known summit elevation. Watch nodata handling.
-2. `server.py` — confirm it speaks MCP over stdio with your `mcp` SDK version
+1. `server.py` — confirm it speaks MCP over stdio with your `mcp` SDK version
    (the decorator API has shifted across versions; adjust imports if needed).
    Now needs the optional `mcp` extra (`pip install -e ".[mcp]"`).
 
@@ -377,8 +408,13 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
    reset is *assumed* (low-stakes — misalignment only degrades early/late); the
    enforcement path is unit-tested (mocked) but, like the retry path, not yet
    live-exercised against a real daily-cap rejection.
-6. **Wire MCP end-to-end** and call `find_hikes` from Claude Code.
-7. **Then** add the local DEM path and the polish items below.
+6. **Local DEM backend** — **DONE and VALIDATED LIVE (2026-06-24).** Copernicus
+   GLO-30 (anonymous AWS), Sněžka read 1601.4 m vs 1603 m, 11/11 routes 0 nulls,
+   loop invariant holds, gains track the API. Offline regression in
+   `tests/test_local_dem.py`. Remaining DEM work is only the large-region VRT
+   (below) — the in-memory merge is fine for a single tile / small region.
+7. **Wire MCP end-to-end** and call `find_hikes` from Claude Code (the last
+   unvalidated frontend), then the polish items below.
 
 ## Known limitations / TODOs (design notes, not bugs)
 
@@ -427,17 +463,21 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
   than that reads as open in `route_cycle_count` — `is_circular`'s start≈end line
   fallback (`HIKE_LOOP_TOLERANCE`, 150 m) is the backstop, and `roundtrip=yes`
   still wins regardless.
-- **Local DEM merges tiles in memory.** For large regions, switch to a GDAL VRT
-  over `dem_dir` (`gdalbuildvrt`) and sample the VRT — avoids loading everything.
+- **Local DEM merges tiles in memory.** Validated live on a single Copernicus
+  GLO-30 tile (~29 MB) — fine for a small region. For large regions, switch to a
+  GDAL VRT over `dem_dir` (`gdalbuildvrt`) and sample the VRT — avoids loading
+  everything. Also: nodata is taken from the first tile only (`srcs[0].nodata`),
+  and Copernicus tiles report `nodata=None`, so a void/ocean point would leak a
+  raw value rather than raise — the off-tile bounds-check is the backstop.
 - **No caching.** Overpass and elevation results should be cached (disk/SQLite)
   to respect usage policies and speed up repeat queries. Add before heavy use.
-- **CLI quota line gates on `mode != "local"`, not on "the API was actually hit
-  this run."** Today that's equivalent (no rasterio/tiles → `auto` always uses the
-  API). But once the local DEM backend is live, `auto`-with-working-tiles won't
-  touch the API yet would still print a (possibly stale) `N/1000` line. When you
-  wire up local DEM, tighten the gate to "API actually used this run" (e.g. track
-  an in-process request count on the provider and surface it) so the line only
-  shows when relevant.
+- **CLI quota line — gate tightened to "API actually hit this run" (DONE
+  2026-06-24).** `cli.run` now snapshots the daily counter before and after
+  `search_hikes` and prints the line only when it went up (and `limit > 0`).
+  So `auto`-with-working-tiles, which answers from the local DEM and never touches
+  the API, stays silent (live-verified: counter `0→0`, no line); `api` and
+  DEM-less `auto` still show it (verified by recording one request → line prints).
+  No provider plumbing needed — the persistent counter already reflects real usage.
 - **Round-trip vs point-to-point gain:** we report cumulative gain over the
   stitched line as-is. If a route is one-way, decide whether to report return
   gain too. Currently `loss` gives you the reverse direction's gain.
@@ -484,7 +524,7 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
 
 ```bash
 pip install -e .             # CLI + web UI (no LLM); extras: ".[mcp]" ".[local-dem]" ".[dev]"
-pytest -q                    # 95 tests, all offline (pure math + Overpass parser + CLI + elevation API + daily quota + live closure & coupling fixtures)
+pytest -q                    # 102 tests, all offline (pure math + Overpass parser + CLI + elevation API + daily quota + local-DEM synthetic tiles + live closure & coupling fixtures)
 hike-finder --bbox 50.72 15.58 50.74 15.62 --user-agent you@example.com
 hike-finder-web              # local web UI on http://127.0.0.1:8765
 hike-finder-mcp              # MCP server over stdio (needs the `mcp` extra)
