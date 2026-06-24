@@ -179,8 +179,10 @@ latitude, max longitude):
 > "Medvěd*" relations, where the branched *Medvědí okruh* (42% stitch coverage)
 > recovers all four real trailheads. The reported **start** point is now coupled
 > to access: when a route has a mapped parking/lift near an end, `start` is the
-> terminus nearest it, so the pin lands on the trailhead you drive or ride to
-> (pure loops have no terminus, so their start stays at the conventional head).
+> terminus nearest it, so the pin usually lands on the trailhead you drive or
+> ride to (a lollipop with parking out on the ring keeps its start at the
+> stem-tip trailhead; pure loops have no terminus, so their start stays at the
+> conventional head).
 > Remaining caveat: the **local DEM** backend
 > (`mode=local`) is still untested — tracked in `HANDOFF.md`.
 
