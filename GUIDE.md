@@ -378,33 +378,103 @@ are relaxed. See the next section to turn them on always or off.
 
 Two options that save API calls and rescue empty searches.
 
-**Download once, search many times — offline, no API calls.** If you're going to
-try several filters on one area, fetch it once and search the saved copy:
+### Download once, search many times — offline, no API calls
+
+**Do** — fetch the area one time, then re-filter the saved copy as often as you like:
 
 ```bash
+# Linux / macOS
 hike-finder --bbox 50.72 15.58 50.74 15.62 --download krkonose.json   # one fetch + elevation
 hike-finder --area krkonose.json --min-gain 600 --circular            # offline
-hike-finder --area krkonose.json --max-distance 8 --car-access         # offline, re-filter freely
+hike-finder --area krkonose.json --max-distance 8 --car-access        # offline, re-filter freely
 ```
 
-The `--download` step is the only one that touches the network: it fetches the
-routes and computes elevation for **every** plausible route (so it spends the
-elevation budget once, up front), then writes a `.json` snapshot. Every `--area`
-search after that is **completely offline** and gives the *same* numbers a live
-search would — validated: the offline gains match a live search exactly. Handy on a
-plane, on a metered connection, or just to stop re-hitting the elevation API while
-you explore. In the **web UI** this is the **"Download view"** button plus the
-"Search area" dropdown; an LLM driving the **MCP** server has a `download_area` tool
-and an `area` argument on `find_hikes`.
+```powershell
+# Windows PowerShell — identical (no env vars; quote the path if it has spaces)
+hike-finder --bbox 50.72 15.58 50.74 15.62 --download krkonose.json
+hike-finder --area krkonose.json --min-gain 600 --circular
+hike-finder --area krkonose.json --max-distance 8 --car-access
+```
 
-> Only the *sample interval* is frozen into a snapshot. You can still re-tune the
-> gain threshold, smoothing, access radii and loop tolerance on an offline search.
+**Why** — the `--download` step is the **only** one that touches the network: it
+makes the single Overpass call and then computes elevation for **every** plausible
+route in the box, spending the elevation budget once, up front, and writes it all to a
+`.json` snapshot. Every `--area` search afterwards reads that file and touches nothing
+— no Overpass, no elevation API, no daily-quota spend. Ideal when you want to try a
+dozen filter combinations on one area, or you're on a plane / a metered connection.
 
-**Show close-but-not-matching routes.** Add `--near-misses` to always list them,
-`--no-near-misses` to never. The default (omit the flag) shows them only when
-nothing strictly matches. Tolerances are tunable — `HIKE_NEAR_MISS_GAIN_FRAC`
-(default 0.2 = within 20% of a gain bound), `HIKE_NEAR_MISS_DIST_KM` (2 km),
-`HIKE_NEAR_MISS_RADIUS_FRAC` (0.5 = parking/lift up to 1.5× the radius still counts).
+**Expect** — the download prints one confirmation line on stdout, and (because it *did*
+hit the elevation API) the usual quota tail on stderr:
+
+```text
+Saved snapshot to krkonose.json: 11 routes, ~1,500 elevation samples. Search it offline with --area krkonose.json.
+elevation API: 120/1000 requests used today (880 remaining, resets at UTC midnight)
+```
+
+(The exact sample count scales with the routes' total length, so yours will differ.)
+Each later `--area` search prints the normal one-line results — and, tellingly, **no
+quota line**:
+
+```text
+[Z] Richtrovy Boudy - Špindlerův mlýn — 7.81 km, +678 m / -251 m [one-way, car] (start 50.7257,15.6071, OSM relation 237053)
+[Z] Špindlerův mlýn - okruh — 1.11 km, +34 m / -34 m [loop, car, lift:chair_lift] (start 50.7253,15.6057, OSM relation 6282999)
+```
+
+**Read it** — the **missing quota line is your proof it stayed offline**: `--area`
+never reaches the elevation API, so the daily counter doesn't move and the line is
+suppressed (see [Step 3B](#step-3b--command-line) — it only prints when the API was
+hit). The numbers are identical to a live search — this was validated by downloading an
+area and confirming every route's gain/loss matched a fresh live run exactly. The one
+thing frozen into a snapshot is the **sample interval**; you can still re-tune the gain
+threshold, smoothing, access radii and loop tolerance on each offline search.
+
+> A snapshot for one bbox is independent of any other. Download as many areas as you
+> like to separate files (or names, in the Web UI) and search whichever you need.
+
+### The same thing in the Web UI
+
+**Do** — in the page (see [Step 3A](#step-3a--web-ui-easiest-no-coordinates-to-type)
+for the basics):
+
+1. Pan/zoom the map to frame the area and fill in **Contact**.
+2. Type a name in the **"name this view"** box (e.g. `krkonose`) and click **"Download
+   view"**.
+3. Pick the saved view from the **"Search area"** dropdown (instead of the default
+   *"— live map (fetches OSM) —"*), set your filters, and click **Search**.
+
+**Expect** — while downloading, the status line reads
+`Downloading "krkonose" (one-time fetch + elevation)…`, then settles to
+`Saved "krkonose": 11 routes, ~1,500 elevation samples. Now searchable offline.` The
+new view appears in the **"Search area"** dropdown immediately. A search against a saved
+view shows the same cards and pins as a live one — but **with no `elevation API:` tail**
+on the status line, the same offline tell as the CLI.
+
+**Read it** — Web-UI snapshots are saved **by name** into a per-user cache folder, so a
+view you downloaded last week is still offered in the dropdown today:
+
+- Windows: `%LOCALAPPDATA%\hike-finder\snapshots`
+- Linux/macOS: `~/.cache/hike-finder/snapshots`
+- Override either with the `HIKE_SNAPSHOT_DIR` environment variable.
+
+(The **CLI** is different on purpose: it writes to the exact path you pass to
+`--download`, wherever you want the file — the dropdown convenience is a Web-UI thing.)
+
+### The same thing from MCP
+
+An LLM driving the server gets two offline hooks: a **`download_area`** tool (give it
+the bbox and a file path to fetch-and-save once) and an **`area`** argument on
+`find_hikes` (point it at a saved snapshot to search it offline). So you can ask *"download
+the Špindlerův Mlýn area for offline use,"* then later *"search that saved area for loops
+over 600 m"* and the client routes the second request through the snapshot — no API calls.
+
+### Show close-but-not-matching routes
+
+Add `--near-misses` to always list them, `--no-near-misses` to never. The default
+(omit the flag) shows them only when nothing strictly matches. Tolerances are tunable —
+`HIKE_NEAR_MISS_GAIN_FRAC` (default 0.2 = within 20% of a gain bound),
+`HIKE_NEAR_MISS_DIST_KM` (2 km), `HIKE_NEAR_MISS_RADIUS_FRAC` (0.5 = parking/lift up to
+1.5× the radius still counts). In the Web UI it's the **"Near misses"** dropdown
+(auto / always / never); over MCP, a `near_misses` boolean on `find_hikes`.
 
 ---
 
