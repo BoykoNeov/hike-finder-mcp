@@ -235,6 +235,21 @@ def test_call_tool_empty_result_is_friendly(monkeypatch):
     assert result.content[0].text == "No matching hikes found in that area."
 
 
+def test_call_tool_compose_empty_message_is_compose_specific(monkeypatch):
+    monkeypatch.setattr(server, "compose_loops", lambda *a, **k: [])
+
+    async def _impl():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.call_tool(
+                "find_hikes",
+                {"south": 1, "west": 2, "north": 3, "east": 4, "compose_loops": True},
+            )
+
+    result = asyncio.run(_impl())
+    assert not result.isError
+    assert "compose" in result.content[0].text.lower()
+
+
 def test_unknown_tool_is_an_error(monkeypatch):
     monkeypatch.setattr(server, "search_hikes", lambda *a, **k: [])
 

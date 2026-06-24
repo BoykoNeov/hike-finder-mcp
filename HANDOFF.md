@@ -732,6 +732,25 @@ validated `search_hikes` path and returns correct UTF-8 JSON.)
     parallel-trails loop can still pass), true geometric bbox-clipping (vs vertex-
     granularity), and **access-anchored loops** ("a 12 km loop from where I park" —
     seed/close the cycle at a matched parking/lift), the natural v2.
+  - **Elevation cost — compose is effectively a LOCAL-DEM feature (known, documented).**
+    `compose_loops` reuses `find_hikes`, which resamples each loop's whole line at 25 m
+    *from that loop's own start vertex* and looks up elevation per point. Composed loops
+    are long (8–15 km → ~320–600 pts each) and — measured, not assumed — barely share
+    sample points across loops: on the broader-Krkonoše 15-loop set, 5943 total resampled
+    points collapsed to only **5716 distinct 7-decimal cache keys (4% overlap)**, because
+    two loops sharing a segment enter it at different cumulative offsets so the
+    interpolated points differ. At the public API's ~1 req/point that's ~5716 requests —
+    ~5.7× the 1000/day quota — so a dense-area compose run on `api`/`auto`-without-tiles
+    **exhausts the quota and the later loops degrade to `gain n/a`** (graceful, via the
+    existing quota fail-safe — never an IP ban). It is fast/free on a **local DEM**, which
+    is the recommended backend for compose (documented in README/GUIDE). The cap doesn't
+    fix this (no cap value makes a dense API run fit the quota); it only bounds it. The
+    real future optimization is **segment-level shared sampling**: resample each graph
+    *segment* once on a canonical grid and assemble loop elevation from shared per-segment
+    points, so overlapping loops dedup (5716→~the area's distinct trail points, and
+    cache-hot across searches). Deferred — it diverges from the clean `find_hikes` reuse
+    and risks per-segment-vs-whole-line gain drift, and even then a very dense cold run
+    still exceeds the public quota, so local DEM stays the answer.
 
 ## Conventions
 

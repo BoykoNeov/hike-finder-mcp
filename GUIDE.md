@@ -559,6 +559,16 @@ genuinely connect at shared OpenStreetMap nodes), but nobody necessarily signs o
 as one named route. Loop closure is high-confidence; the *composition* is the tool's idea,
 not the trail network's.
 
+**One practical caveat — use local elevation tiles for this.** Composed loops are long, so
+each needs hundreds of elevation samples, and unlike re-searching one route, loops in an
+area barely share sample points (each is measured from its own start), so the cache can't
+help across them. On the **public elevation API** (rate-limited to ~1 request/second) a
+compose run over a busy area will burn through the **daily request cap** and the later
+loops come back with **`gain n/a`**. Nothing breaks — those loops just lack a gain number —
+but if you want real gain on *every* composed loop, set up a
+[local DEM](#choosing-an-elevation-backend) (`HIKE_ELEVATION_MODE=local`); it's fast and
+has no limits. On the API backend, keep the area modest or lower `HIKE_COMPOSE_MAX_LOOPS`.
+
 ---
 
 ## Choosing an elevation backend

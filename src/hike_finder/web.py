@@ -165,8 +165,13 @@ async function search(){
     if (!resp.ok || data.error){ status.textContent = 'Error: ' + (data.error || resp.status); return; }
     render(data);
     const near = data.filter(h => h.near_miss).length;
-    status.textContent = (data.length - near) + ' match(es)'
-      + (near ? (' + ' + near + ' near miss(es)') : '') + (area ? ' [offline]' : '');
+    const composing = !area && document.getElementById('compose_loops').checked;
+    if (composing && data.length === 0){
+      status.textContent = 'No loops could be composed here — widen the map or the min/max distance.';
+    } else {
+      status.textContent = (data.length - near) + (composing ? ' loop(s)' : ' match(es)')
+        + (near ? (' + ' + near + ' near miss(es)') : '') + (area ? ' [offline]' : '');
+    }
     if (!area) showQuota();
   } catch (e){ status.textContent = 'Request failed: ' + e; }
 }

@@ -142,6 +142,16 @@ checkbox; MCP via a `compose_loops` argument on `find_hikes`.
 > as one route. Loop closure itself is high-confidence (exact shared OSM nodes); the
 > composition is geometric, not editorial.
 
+> **Use a local DEM for compose.** Composed loops are long (8–15 km), so each one needs
+> hundreds of elevation samples, and loops in one area barely share sample points (each
+> resamples from its own start), so the cache can't dedup across them. On the **public
+> elevation API** (~1 request/second) a dense-area compose run will **exhaust the daily
+> quota** and the later loops come back `gain n/a`. It still works — it just degrades —
+> but for real gain on every composed loop, point it at a
+> [local DEM](#two-elevation-backends-both-supported) (`HIKE_ELEVATION_MODE=local`),
+> which is fast and unlimited. On the API backend, keep the area small or lower
+> `HIKE_COMPOSE_MAX_LOOPS`.
+
 ## Two elevation backends (both supported)
 
 | Mode | Source | Setup | Accuracy | Limits |

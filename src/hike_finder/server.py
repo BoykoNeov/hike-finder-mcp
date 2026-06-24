@@ -183,7 +183,13 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
         hikes = await asyncio.to_thread(search, bbox, criteria, CFG, near_miss=near_miss)
 
     if not hikes:
-        return [TextContent(type="text", text="No matching hikes found in that area.")]
+        msg = (
+            "No loops could be composed in that area — try a wider bounding box or a "
+            "wider min/max_distance_km band."
+            if arguments.get("compose_loops") and not area_path
+            else "No matching hikes found in that area."
+        )
+        return [TextContent(type="text", text=msg)]
     return [TextContent(type="text", text="\n".join(format_hike(h) for h in hikes))]
 
 
