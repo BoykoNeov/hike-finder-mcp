@@ -118,15 +118,18 @@ def measure_geometry(
     distance_km = total_way_length_m(ways) / 1000.0
     circular = is_circular(ways, line, route.get("tags", {}), tol_m=loop_tolerance_m)
 
-    # Access + start come from the route's GENUINE termini (degree-1 vertices of
-    # the full vertex graph), not the stitched line's two ends. stitch_ways drops
-    # members on branched/gap-split relations, so its ends — and line[0] — can fall
-    # mid-route and hide a real trailhead's parking/lift. Termini are stitch-order
-    # independent and include ends on dropped members. A pure loop (or a fwd+back
-    # duplicated route) has no degree-1 vertex; fall back to the stitched ends,
-    # preserving today's loop behaviour.
+    # Access is tested at the UNION of the route's genuine termini (degree-1
+    # vertices of the full vertex graph) and the stitched line's two ends. The
+    # termini are the fix: stitch_ways drops members on branched/gap-split
+    # relations, so its ends alone can fall mid-route and hide a real trailhead's
+    # parking/lift on a dropped member. We keep the stitched ends too rather than
+    # replace them — replacing would MOVE the test point off a lollipop's ring to
+    # its stem tip and could drop a parking mapped on the loop (a false negative,
+    # the bug class this fixes). Union is recall-monotonic: it can only add access
+    # hits, never remove one. A pure loop / fwd+back-duplicated route has no
+    # degree-1 vertex, so the union is just the stitched ends — today's behaviour.
     termini = route_termini(ways)
-    endpoints = termini or route_endpoints(line)
+    endpoints = list(dict.fromkeys(termini + route_endpoints(line)))
     car = car_accessible(endpoints, parking, car_radius_m)
     lift_ok, lift_kind = chairlift_access(endpoints, lifts, lift_radius_m)
 

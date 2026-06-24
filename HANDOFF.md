@@ -292,22 +292,27 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
      `max_route_factor=4.0` was left as-is (no retune, no bbox-clip needed — no
      genuine in-bbox route sits near the boundary).
    - **Endpoint/`start`-pick half — DONE and VALIDATED LIVE 2026-06-24.** `start`
-     and the car/lift access endpoints now come from `geometry.route_termini` —
+     and the car/lift access endpoints now incorporate `geometry.route_termini` —
      the **degree-1 vertices of the same full vertex graph** that drives closure
-     (`_vertex_graph` is now the single shared builder, so the two can't drift) —
-     not the greedy stitched line's two ends. A branched/disconnected relation
-     whose stitch drops members therefore tests access at the route's *genuine*
-     open ends, including ends on dropped members. `measure_geometry` uses
-     `termini or route_endpoints(line)` (a pure loop / fwd+back-duplicated route
-     has no degree-1 vertex → falls back to the stitched ends, today's behaviour),
-     and `_route_start` keeps `line[0]` when it is already a terminus (zero churn
-     on clean routes) else moves to the smallest terminus by coordinate. Validated
+     (`_vertex_graph` is now the single shared builder, so the two can't drift).
+     A branched/disconnected relation whose stitch drops members therefore tests
+     access at the route's *genuine* open ends, including ends on dropped members.
+     Access uses the **UNION** of the termini and the stitched line's two ends:
+     `endpoints = list(dict.fromkeys(termini + route_endpoints(line)))` — *adding*
+     the termini, not replacing the stitched ends, because replacing would move a
+     lollipop's access point off its ring to the stem tip and could drop a parking
+     mapped on the loop (a false negative). Union is recall-monotonic — it can only
+     add access hits, never remove one. A pure loop / fwd+back-duplicated route has
+     no degree-1 vertex, so the union is just the stitched ends (today's behaviour).
+     `_route_start` keeps `line[0]` when it is already a terminus (zero churn on
+     clean routes) else moves to the smallest terminus by coordinate. Validated
      live on the "Medvěd*" fixture: the branched *Medvědí okruh* (rel 6285306,
      only 42% stitch coverage) recovers **4 genuine termini ~2.46 km apart**
      (the old code tested 2 ends, only 1 a real terminus); the real KČT okruhs are
-     lollipops whose single stem tip is now the access point; every clean linear
-     route is unchanged. Pinned by `tests/test_closure_live.py` termini ground
-     truth. Distance no longer depends on the stitch; closure never did. **Nothing
+     lollipops whose stem tip is now tested *in addition to* the ring point; every
+     clean linear route is unchanged. Pinned by `tests/test_closure_live.py`
+     termini ground truth plus a lollipop ring-parking guard. Distance no longer
+     depends on the stitch; closure never did. **Nothing
      in this relation's geometry pipeline still rides on the greedy stitch except
      the `is_circular` gap fallback and the loop `start` fallback (both benign).**
 4. ~~Add API retry/backoff on transient 5xx / daily-cap 429.~~ **DONE.**
@@ -349,15 +354,17 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
     now double-count, but the public KČT relations checked live carry no such
     members (all role-empty), so the honest member-sum strictly beats the
     arbitrary greedy subset. Closure never depended on the stitch (vertex graph).
-  - *Endpoints / `start`:* **fixed.** No longer read from the stitched line —
-    `measure_geometry` derives them from `geometry.route_termini`, the **degree-1
-    vertices of the vertex graph** (`_vertex_graph` is the single builder shared
-    with `route_cycle_count`, so closure and termini can't drift). Stitch-order
-    independent; captures ends on members the stitch drops. Fallback to the
-    stitched ends only when there is no degree-1 vertex (a pure loop, or a
-    fwd+back-duplicated route); `start` keeps `line[0]` when it is already a
-    terminus, so clean routes don't move. Live-validated on the "Medvěd*" fixture
-    (branched *Medvědí okruh* recovers all 4 real trailheads; see Next-steps).
+  - *Endpoints / `start`:* **fixed.** `measure_geometry` now folds in
+    `geometry.route_termini`, the **degree-1 vertices of the vertex graph**
+    (`_vertex_graph` is the single builder shared with `route_cycle_count`, so
+    closure and termini can't drift). Stitch-order independent; captures ends on
+    members the stitch drops. Access tests the **union** of the termini and the
+    stitched ends (`termini + route_endpoints(line)`, deduped) — adding the
+    termini rather than replacing the stitched ends, so a lollipop's ring point
+    isn't dropped in favour of the stem tip (union is recall-monotonic). `start`
+    keeps `line[0]` when it is already a terminus, so clean routes don't move.
+    Live-validated on the "Medvěd*" fixture (branched *Medvědí okruh* recovers all
+    4 real trailheads; see Next-steps).
 - **Closure T-junctions: handled.** `route_cycle_count` now nodes on *every*
   vertex (welded by coordinate), so a way whose endpoint lands on another way's
   interior vertex shares that exact node and the join is seen — a loop closed

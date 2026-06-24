@@ -169,6 +169,22 @@ def test_measure_geometry_start_stays_when_head_is_a_terminus():
     assert hike.start == line[0]
 
 
+def test_measure_geometry_lollipop_keeps_loop_access_point():
+    # Lollipop (loop a-b-c-a + approach stem a-d) — the shape most real KČT okruhs
+    # take. The only degree-1 terminus is the stem tip d, but the stitched line
+    # also surfaces the ring point a. Access tests the UNION, so parking mapped on
+    # the ring (far from the stem tip) is NOT lost. Replacing the stitched ends
+    # with termini alone would test only d and flip this to False — the regression
+    # this guards.
+    a, b, c = (50.0, 14.0), (50.0, 14.01), (50.01, 14.005)
+    d = (49.97, 14.0)  # stem tip terminus, ~3.3 km from the ring
+    ways = [[a, b], [b, c], [c, a], [a, d]]
+    route = {"id": 9, "name": "Lolly", "ways": ways, "tags": {}}
+    parking = [{"coord": a, "name": "P"}]  # on the ring, far from the stem tip
+    hike, _ = measure_geometry(route, parking, [])
+    assert hike.car_access is True
+
+
 def test_measure_geometry_start_moves_off_interior_head():
     # The first member starts at a junction the second way passes THROUGH (a
     # T-junction interior vertex), which stitch can't attach, so the stitched head
