@@ -256,9 +256,16 @@ def _one_route_area(*_args, **_kw) -> AreaData:
 
 @pytest.fixture
 def _stub_network(monkeypatch):
-    """Stub both network seams: Overpass fetch (counted) + the elevation API post."""
-    monkeypatch.setenv("HIKE_API_MIN_INTERVAL", "0")  # no real sleeping
-    monkeypatch.setenv("HIKE_ELEVATION_MODE", "api")
+    """Stub both network seams (Overpass fetch counted + elevation API post) and
+    return a fully-pinned ``cfg``.
+
+    The config knobs are set on the object, NOT via env: ``Config`` snapshots env at
+    import time, so ``monkeypatch.setenv`` here would be a no-op (the same gotcha the
+    cache-dir fix works around). We pin them explicitly so these tests are hermetic
+    regardless of the developer's environment — in particular ``dem_dir=None`` forces
+    elevation through the (cached) API rather than letting a stray ``HIKE_DEM_DIR``
+    serve points from local tiles and zero out ``post.calls``.
+    """
     fetches = {"n": 0}
 
     def fake_fetch(*args, **kw):
@@ -268,7 +275,12 @@ def _stub_network(monkeypatch):
     post = _FakePost()
     monkeypatch.setattr("hike_finder.search.fetch_area", fake_fetch)
     monkeypatch.setattr("hike_finder.elevation.api.requests.post", post)
-    return fetches, post
+
+    cfg = config_mod.load()
+    cfg.elevation_mode = "api"      # not 'auto' -> no DEM in the chain
+    cfg.dem_dir = None              # belt-and-braces: never read local tiles
+    cfg.api_min_interval_s = 0      # no real throttle sleeps
+    return fetches, post, cfg
 
 
 def test_repeat_search_hits_cache_and_spares_the_api(_stub_network):
@@ -278,8 +290,7 @@ def test_repeat_search_hits_cache_and_spares_the_api(_stub_network):
     from hike_finder.filters import Criteria
     from hike_finder.search import search_hikes
 
-    fetches, post = _stub_network
-    cfg = config_mod.load()
+    fetches, post, cfg = _stub_network
     bbox = (49.99, 13.99, 50.01, 14.01)
 
     search_hikes(bbox, Criteria(), cfg=cfg)
@@ -299,8 +310,7 @@ def test_elevation_cache_hits_across_different_bboxes(_stub_network):
     from hike_finder.filters import Criteria
     from hike_finder.search import search_hikes
 
-    fetches, post = _stub_network
-    cfg = config_mod.load()
+    fetches, post, cfg = _stub_network
 
     search_hikes((49.99, 13.99, 50.01, 14.01), Criteria(), cfg=cfg)
     search_hikes((49.98, 13.98, 50.02, 14.02), Criteria(), cfg=cfg)  # different bbox
@@ -313,8 +323,7 @@ def test_no_cache_refetches_everything(_stub_network):
     from hike_finder.filters import Criteria
     from hike_finder.search import search_hikes
 
-    fetches, post = _stub_network
-    cfg = config_mod.load()
+    fetches, post, cfg = _stub_network
     cfg.cache_enabled = False  # what `--no-cache` sets
     bbox = (49.99, 13.99, 50.01, 14.01)
 

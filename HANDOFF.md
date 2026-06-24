@@ -231,7 +231,7 @@ Tests: `test_snapshot.py`, `test_near_miss.py`, `test_web.py`, plus new cases in
   nodata→fill, out-of-coverage→raise/fill, and the empty-dir error. Pins the
   sampling/merge/nodata logic that the live Copernicus run exercised.
 
-Run it: `pytest` → 102 passing.
+Run it: `pytest` → 169 tests (166 pass; the 3 `.sh` launcher cases need bash).
 
 ## What is now VALIDATED LIVE (run against real OSM, 2026-06-23)
 
