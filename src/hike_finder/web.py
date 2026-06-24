@@ -18,6 +18,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from .export import GEOJSON_MIME, GPX_MIME, hikes_to_geojson, hikes_to_gpx
 from .filters import Criteria
 from .format import hike_to_dict
 from .search import compose_loops, download_area, search_hikes, search_snapshot
@@ -108,6 +109,11 @@ INDEX_HTML = """<!doctype html>
     <p class="muted">Stitch several marked trails into day-loops of your target distance (uses min/max dist above; default 3–15 km). Live map only.</p>
 
     <button id="search">Search this map area</button>
+    <div class="row" style="margin-top:8px;">
+      <div><button id="dl_gpx" style="margin-top:0;" title="Download the listed routes as a GPX track for your GPS / phone">Download GPX</button></div>
+      <div><button id="dl_geojson" style="margin-top:0;" title="Download the listed routes as GeoJSON">Download GeoJSON</button></div>
+    </div>
+    <p class="muted">Download the routes you see — load the GPX into Komoot / OsmAnd / mapy.cz / a Garmin.</p>
     <div id="status"></div>
     <div id="results"></div>
   </div>
@@ -118,6 +124,8 @@ const map = L.map('map').setView([50.73, 15.60], 13);
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
   { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
 const markers = L.layerGroup().addTo(map);
+const routeLines = L.layerGroup().addTo(map);   // drawn polylines for the matched routes
+let lastParams = null;                           // params of the last search, for GPX/GeoJSON download
 
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function val(id){ const v = document.getElementById(id).value.trim(); return v === '' ? null : v; }
@@ -154,11 +162,14 @@ async function search(){
     if (document.getElementById('compose_loops').checked) params.set('compose_loops', 'true');
   }
   for (const f of FIELDS){ const id = (f === 'user_agent') ? 'ua' : f; const v = val(id); if (v !== null) params.set(f, v); }
+  // Remember exactly what we searched, so the GPX/GeoJSON download reproduces THIS
+  // result set (the same area/bbox/filters) rather than the current map view.
+  lastParams = params.toString();
 
   const status = document.getElementById('status');
   const results = document.getElementById('results');
   status.textContent = area ? ('Searching “' + area + '” offline…') : 'Searching…';
-  results.innerHTML = ''; markers.clearLayers();
+  results.innerHTML = ''; markers.clearLayers(); routeLines.clearLayers();
   try {
     const resp = await fetch('/api/hikes?' + params.toString());
     const data = await resp.json();
@@ -219,6 +230,19 @@ function render(hikes){
     const marker = L.marker([h.start.lat, h.start.lon]).addTo(markers)
       .bindPopup('<b>' + esc(h.name) + '</b><br>' + h.distance_km + ' km'
                  + (h.gain_m != null ? (', +' + h.gain_m + ' m') : ''));
+    // Draw the route line(s): near-miss amber, composed loop dashed purple, else blue.
+    // geometry is a list of member ways, each an array of [lat, lon] points.
+    const color = h.near_miss ? '#d08700' : (h.composed ? '#7048e8' : '#2563eb');
+    const lines = [];
+    (h.geometry || []).forEach(way => {
+      if (way && way.length >= 2){
+        const pl = L.polyline(way, { color, weight: 4, opacity: 0.8,
+                                     dashArray: h.composed ? '6 5' : null }).addTo(routeLines);
+        pl.bindPopup('<b>' + esc(h.name) + '</b><br>' + h.distance_km + ' km'
+                     + (h.gain_m != null ? (', +' + h.gain_m + ' m / -' + h.loss_m + ' m') : ''));
+        lines.push(pl);
+      }
+    });
     const flags = [ h.circular ? 'loop' : 'one-way' ];
     if (h.car_access) flags.push('car');
     if (h.chairlift_access) flags.push('lift:' + esc(h.lift_type));
@@ -236,12 +260,31 @@ function render(hikes){
       + '<div class="flags">' + flags.map(f => '<span>' + f + '</span>').join('') + '</div>'
       + note
       + '<div class="muted">' + ident + '</div>';
-    el.onclick = () => { map.setView([h.start.lat, h.start.lon], 15); marker.openPopup(); };
+    el.onclick = () => {
+      // Frame the whole route if we drew it; otherwise just centre on the start.
+      if (lines.length){
+        try { map.fitBounds(L.featureGroup(lines).getBounds().pad(0.2)); }
+        catch(e){ map.setView([h.start.lat, h.start.lon], 15); }
+      } else {
+        map.setView([h.start.lat, h.start.lon], 15);
+      }
+      marker.openPopup();
+    };
     results.appendChild(el);
   });
 }
+
+function download(fmt){
+  // Re-runs the LAST search server-side and streams the file (cache-hot live, free
+  // offline). Uses the stored params so the download matches what's listed.
+  const status = document.getElementById('status');
+  if (!lastParams){ status.textContent = 'Search first, then download GPX/GeoJSON.'; return; }
+  window.location = '/api/' + fmt + '?' + lastParams;
+}
 document.getElementById('search').onclick = search;
 document.getElementById('download').onclick = downloadArea;
+document.getElementById('dl_gpx').onclick = () => download('gpx');
+document.getElementById('dl_geojson').onclick = () => download('geojson');
 loadAreas();
 </script>
 </body>
@@ -323,6 +366,12 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/hikes":
             self._api(parse_qs(parsed.query))
             return
+        if parsed.path == "/api/gpx":
+            self._export(parse_qs(parsed.query), "gpx")
+            return
+        if parsed.path == "/api/geojson":
+            self._export(parse_qs(parsed.query), "geojson")
+            return
         if parsed.path == "/api/areas":
             self._areas()
             return
@@ -384,7 +433,13 @@ class Handler(BaseHTTPRequestHandler):
         )
         self._send(200, body, "application/json; charset=utf-8")
 
-    def _api(self, qs: dict) -> None:
+    def _resolve_hikes(self, qs: dict):
+        """Run the search a query describes (offline --area or live bbox/compose).
+
+        Shared by ``/api/hikes`` (JSON) and ``/api/gpx`` / ``/api/geojson`` (file
+        download) so all three agree on filters, area resolution, and error handling.
+        Returns ``(hikes, None)`` on success or ``(None, (status, {"error": ...}))``.
+        """
         criteria = Criteria(
             min_gain_m=_num(qs, "min_gain_m"),
             max_gain_m=_num(qs, "max_gain_m"),
@@ -403,16 +458,12 @@ class Handler(BaseHTTPRequestHandler):
             # Offline: search a saved snapshot — no network, no API calls.
             path = _snapshot_path(area_name)
             if path is None or not path.is_file():
-                self._json(404, {"error": f"no saved area named {area_name!r}"})
-                return
+                return None, (404, {"error": f"no saved area named {area_name!r}"})
             try:
                 snap = load_snapshot(path)
-                hikes = search_snapshot(snap, criteria, near_miss=near_miss)
+                return search_snapshot(snap, criteria, near_miss=near_miss), None
             except (OSError, ValueError) as e:
-                self._json(500, {"error": f"could not search snapshot: {e}"})
-                return
-            self._json(200, [hike_to_dict(h) for h in hikes])
-            return
+                return None, (500, {"error": f"could not search snapshot: {e}"})
 
         try:
             bbox = (
@@ -422,8 +473,7 @@ class Handler(BaseHTTPRequestHandler):
                 float(qs["east"][0]),
             )
         except (KeyError, ValueError):
-            self._json(400, {"error": "south/west/north/east are required"})
-            return
+            return None, (400, {"error": "south/west/north/east are required"})
 
         # Loop composition: synthesise loops from connected trails inside the box.
         search = compose_loops if _tri(qs, "compose_loops") else search_hikes
@@ -436,10 +486,34 @@ class Handler(BaseHTTPRequestHandler):
                     " — fill in the Contact field (the public Overpass server rejects "
                     "the default User-Agent)."
                 )
-            self._json(502, {"error": f"failed to fetch OSM data: {msg}"})
-            return
+            return None, (502, {"error": f"failed to fetch OSM data: {msg}"})
+        return hikes, None
 
-        self._json(200, [hike_to_dict(h) for h in hikes])
+    def _api(self, qs: dict) -> None:
+        hikes, err = self._resolve_hikes(qs)
+        if err is not None:
+            self._json(*err)
+            return
+        # geometry=True so the map can draw the route lines without a second search.
+        self._json(200, [hike_to_dict(h, geometry=True) for h in hikes])
+
+    def _export(self, qs: dict, fmt: str) -> None:
+        """Run the query's search and stream the results as a GPX / GeoJSON download."""
+        hikes, err = self._resolve_hikes(qs)
+        if err is not None:
+            self._json(*err)
+            return
+        if fmt == "gpx":
+            body, mime, filename = hikes_to_gpx(hikes), GPX_MIME, "hikes.gpx"
+        else:
+            body, mime, filename = hikes_to_geojson(hikes), GEOJSON_MIME, "hikes.geojson"
+        data = body.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", f"{mime}; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
 
 def main(argv: list[str] | None = None) -> None:

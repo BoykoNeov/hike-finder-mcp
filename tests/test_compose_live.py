@@ -104,6 +104,11 @@ def test_compose_loops_pipeline_offline(monkeypatch):
     assert hike_to_dict(h)["osm_id"] is None                       # no fake relation id
     # Access is computed along the loop line (real parking/lift in the fixture).
     assert h.car_access is True and h.chairlift_access is True
+    # The composed loop carries its synthesised ring as geometry, so it exports too.
+    from hike_finder.export import hikes_to_gpx
+
+    assert h.ways and len(h.ways[0]) >= 4          # a closed ring (>= 4 vertices)
+    assert "<trk>" in hikes_to_gpx([h])            # and serialises as a GPX track
 
 
 def test_compose_loops_car_access_anchors_start_at_parking(monkeypatch):

@@ -25,6 +25,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from . import config as _config
+from .export import hikes_to_geojson, hikes_to_gpx
 from .filters import Criteria
 from .format import format_hike
 from .search import compose_loops, download_area, search_hikes, search_snapshot
@@ -102,6 +103,15 @@ async def list_tools() -> list[Tool]:
                         "description": "true = synthesise loops from connected marked trails "
                         "inside the box (live only; ignored with `area`). Target length from "
                         "min/max_distance_km. Results are stitched from several trails.",
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["text", "gpx", "geojson"],
+                        "description": "Output format. 'text' (default) returns the one-line "
+                        "human summaries; 'gpx' returns a GPX 1.1 document and 'geojson' a "
+                        "GeoJSON FeatureCollection of the matched + composed routes (the file "
+                        "you load into a GPS / phone / Komoot / OsmAnd / mapy.cz), as text. "
+                        "When nothing matches, the helpful text message is returned regardless.",
                     },
                 },
                 "required": [],
@@ -202,6 +212,14 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
         else:
             msg = "No matching hikes found in that area."
         return [TextContent(type="text", text=msg)]
+
+    # Optional GPX / GeoJSON serialisation (only when there ARE routes — an empty
+    # result returns the helpful text above, more useful than an empty document).
+    fmt = arguments.get("format") or "text"
+    if fmt == "gpx":
+        return [TextContent(type="text", text=hikes_to_gpx(hikes))]
+    if fmt == "geojson":
+        return [TextContent(type="text", text=hikes_to_geojson(hikes))]
     return [TextContent(type="text", text="\n".join(format_hike(h) for h in hikes))]
 
 

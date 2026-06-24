@@ -63,6 +63,12 @@ def _get(url):
         return resp.status, json.loads(resp.read().decode("utf-8"))
 
 
+def _get_raw(url):
+    """Fetch a non-JSON download: returns (status, headers, body-text)."""
+    with urllib.request.urlopen(url, timeout=10) as resp:
+        return resp.status, resp.headers, resp.read().decode("utf-8")
+
+
 def test_areas_lists_saved_snapshot(server):
     status, areas = _get(server + "/api/areas")
     assert status == 200
@@ -79,6 +85,38 @@ def test_hikes_offline_by_area(server):
     h = hikes[0]
     assert h["osm_id"] == 7 and h["name"] == "WebNorth"
     assert h["gain_m"] is not None  # answered from saved samples, not degraded
+    # /api/hikes carries geometry so the map can draw the line without a 2nd search;
+    # it is [lat, lon] (Leaflet order), and the known first vertex proves the axis.
+    assert h["geometry"][0][0] == [50.0, 14.0]
+
+
+def test_gpx_download_offline(server):
+    status, headers, body = _get_raw(server + "/api/gpx?area=webtest")
+    assert status == 200
+    assert "attachment" in headers["Content-Disposition"]
+    assert "hikes.gpx" in headers["Content-Disposition"]
+    import xml.etree.ElementTree as ET
+
+    assert ET.fromstring(body).tag.endswith("gpx")
+    assert "WebNorth" in body
+
+
+def test_geojson_download_offline(server):
+    status, headers, body = _get_raw(server + "/api/geojson?area=webtest")
+    assert status == 200
+    assert "hikes.geojson" in headers["Content-Disposition"]
+    obj = json.loads(body)
+    assert obj["type"] == "FeatureCollection" and len(obj["features"]) == 1
+    # GeoJSON is [lon, lat] (RFC 7946) — the opposite axis order from /api/hikes.
+    assert obj["features"][0]["geometry"]["coordinates"][0][0] == [14.0, 50.0]
+
+
+def test_gpx_unknown_area_is_404(server):
+    import urllib.error
+
+    with pytest.raises(urllib.error.HTTPError) as ei:
+        _get_raw(server + "/api/gpx?area=nope")
+    assert ei.value.code == 404
 
 
 def test_hikes_unknown_area_is_404(server):

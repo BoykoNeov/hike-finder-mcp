@@ -38,9 +38,16 @@ def format_hike(h: Hike) -> str:
     )
 
 
-def hike_to_dict(h: Hike) -> dict:
-    """JSON-serialisable view of a hike (for CLI --json and the web UI)."""
-    return {
+def hike_to_dict(h: Hike, *, geometry: bool = False) -> dict:
+    """JSON-serialisable view of a hike (for CLI --json and the web UI).
+
+    ``geometry=True`` adds a ``geometry`` key — the member ways as ``[lat, lon]``
+    polylines (the project's lat/lon order, ready for Leaflet's ``L.polyline``; NOT
+    GeoJSON's ``[lon, lat]``). It is opt-in so the default summary stays lean: the CLI
+    ``--json`` keeps its compact shape and the web map opts in only when it needs to
+    draw the lines.
+    """
+    d = {
         # A composed loop carries no single OSM relation id — expose None and list its
         # constituent trails in `composed_of` instead.
         "osm_id": None if h.composed else h.osm_id,
@@ -59,3 +66,6 @@ def hike_to_dict(h: Hike) -> dict:
         "composed": h.composed,
         "composed_of": list(h.composed_of),
     }
+    if geometry:
+        d["geometry"] = [[[lat, lon] for lat, lon in way] for way in h.ways]
+    return d

@@ -4,6 +4,8 @@ No network: we only exercise argument parsing, the args -> Criteria mapping
 (especially the tri-state booleans, which are easy to get wrong), and the
 one-line / dict rendering shared by every frontend.
 """
+import json
+
 from hike_finder.cli import build_criteria, build_parser, run
 from hike_finder.elevation.base import ElevationProvider
 from hike_finder.filters import Criteria, Hike, find_hikes
@@ -93,6 +95,14 @@ def test_hike_to_dict_shape():
     assert d["composed"] is False and d["composed_of"] == []
 
 
+def test_hike_to_dict_geometry_is_opt_in_and_lat_lon():
+    h = _sample_hike(ways=(((50.0, 14.0), (50.1, 14.1)),))
+    assert "geometry" not in hike_to_dict(h)  # default stays lean for --json
+    d = hike_to_dict(h, geometry=True)
+    # [lat, lon] order (Leaflet's L.polyline), NOT GeoJSON's [lon, lat]
+    assert d["geometry"] == [[[50.0, 14.0], [50.1, 14.1]]]
+
+
 def test_format_hike_near_miss_is_flagged():
     h = _sample_hike(near_miss=True, notes=("gain 720 m — 80 m below the 800 m minimum",))
     line = format_hike(h)
@@ -131,6 +141,41 @@ def test_run_area_and_download_mutually_exclusive(capsys):
     rc = run(build_parser().parse_args(["--bbox", "1", "2", "3", "4", "--area", "a", "--download", "b"]))
     assert rc == 2
     assert "mutually exclusive" in capsys.readouterr().err
+
+
+def test_export_flags_parse():
+    a = _parse("--bbox", "1", "2", "3", "4", "--gpx", "out.gpx", "--geojson", "out.geojson")
+    assert a.gpx == "out.gpx" and a.geojson == "out.geojson"
+
+
+def test_export_with_download_is_rejected(capsys):
+    rc = run(build_parser().parse_args(
+        ["--bbox", "1", "2", "3", "4", "--download", "d.json", "--gpx", "x.gpx"]
+    ))
+    assert rc == 2
+    assert "can't be combined with --download" in capsys.readouterr().err
+
+
+def test_run_area_mode_writes_gpx_and_geojson(tmp_path, capsys):
+    import xml.etree.ElementTree as ET
+
+    snap = tmp_path / "area.json"
+    _write_snapshot(snap)
+    gpx = tmp_path / "out.gpx"
+    geojson = tmp_path / "out.geojson"
+    rc = run(build_parser().parse_args(
+        ["--area", str(snap), "--gpx", str(gpx), "--geojson", str(geojson)]
+    ))
+    assert rc == 0
+    # GPX: well-formed, and the snapshot route "North" is exported as a track.
+    body = gpx.read_text(encoding="utf-8")
+    assert ET.fromstring(body).tag.endswith("gpx")
+    assert "North" in body
+    # GeoJSON: a single-feature collection.
+    obj = json.loads(geojson.read_text(encoding="utf-8"))
+    assert obj["type"] == "FeatureCollection" and len(obj["features"]) == 1
+    # The confirmation goes to stderr (never pollutes a --json pipe).
+    assert "Wrote 1 route(s)" in capsys.readouterr().err
 
 
 def test_run_requires_bbox_without_area(capsys):

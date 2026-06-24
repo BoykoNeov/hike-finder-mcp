@@ -85,6 +85,9 @@ def test_list_tools_advertises_find_hikes(monkeypatch):
     for key in ("circular", "car_access", "chairlift_access", "near_misses", "compose_loops"):
         assert schema["properties"][key]["type"] == "boolean"
     assert schema["properties"]["area"]["type"] == "string"
+    # the export format selector
+    assert schema["properties"]["format"]["type"] == "string"
+    assert set(schema["properties"]["format"]["enum"]) == {"text", "gpx", "geojson"}
 
     # download_area requires the corners plus a destination path.
     dl = tools["download_area"].inputSchema
@@ -219,6 +222,56 @@ def test_call_tool_compose_loops_routes_to_compose_engine(monkeypatch):
     text = result.content[0].text
     assert "composed of 0402 + 1801" in text
     assert "OSM relation" not in text
+
+
+def test_call_tool_format_gpx_returns_a_gpx_document(monkeypatch):
+    # format=gpx serialises the matched routes as GPX (not the one-line summaries).
+    monkeypatch.setattr(
+        server, "search_hikes",
+        lambda *a, **k: [
+            Hike(osm_id=1, name="Alpha loop", distance_km=8.3, circular=True,
+                 car_access=True, chairlift_access=False, start=(50.7, 15.6),
+                 gain_m=540, loss_m=535, ways=(((50.7, 15.6), (50.71, 15.61)),)),
+        ],
+    )
+
+    async def _impl():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.call_tool(
+                "find_hikes",
+                {"south": 1, "west": 2, "north": 3, "east": 4, "format": "gpx"},
+            )
+
+    result = asyncio.run(_impl())
+    assert not result.isError
+    text = result.content[0].text
+    import xml.etree.ElementTree as ET
+
+    assert ET.fromstring(text).tag.endswith("gpx")
+    assert "Alpha loop" in text
+
+
+def test_call_tool_format_geojson_returns_a_feature_collection(monkeypatch):
+    monkeypatch.setattr(
+        server, "search_hikes",
+        lambda *a, **k: [
+            Hike(osm_id=1, name="Alpha loop", distance_km=8.3, circular=True,
+                 car_access=True, chairlift_access=False, start=(50.7, 15.6),
+                 gain_m=540, loss_m=535, ways=(((50.7, 15.6), (50.71, 15.61)),)),
+        ],
+    )
+
+    async def _impl():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.call_tool(
+                "find_hikes",
+                {"south": 1, "west": 2, "north": 3, "east": 4, "format": "geojson"},
+            )
+
+    result = asyncio.run(_impl())
+    assert not result.isError
+    obj = json.loads(result.content[0].text)
+    assert obj["type"] == "FeatureCollection" and len(obj["features"]) == 1
 
 
 def test_call_tool_empty_result_is_friendly(monkeypatch):

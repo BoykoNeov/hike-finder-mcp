@@ -19,6 +19,7 @@ import sys
 from . import cache
 from . import config as _config
 from .elevation import api_quota_snapshot
+from .export import hikes_to_geojson, hikes_to_gpx
 from .filters import Criteria
 from .format import format_hike, hike_to_dict
 from .search import compose_loops, download_area, search_hikes, search_snapshot
@@ -127,6 +128,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Empty the on-disk cache (Overpass areas + elevation points) and exit.",
     )
 
+    x = p.add_argument_group("export (write the routes to a file you can load into a GPS / phone)")
+    x.add_argument(
+        "--gpx",
+        metavar="FILE",
+        help="Also write the matched + composed routes to FILE as GPX 1.1 (one track per "
+        "route plus a start waypoint) — load into Komoot / OsmAnd / Garmin / mapy.cz. "
+        "Works with a live, --compose-loops, or offline --area search; the text/--json "
+        "output is still printed.",
+    )
+    x.add_argument(
+        "--geojson",
+        metavar="FILE",
+        help="Also write the matched + composed routes to FILE as GeoJSON (a "
+        "FeatureCollection of route lines carrying the full computed stats).",
+    )
+
     p.add_argument("--json", action="store_true", help="Emit results as JSON instead of text lines.")
     return p
 
@@ -153,6 +170,28 @@ def _emit(hikes: list, as_json: bool, empty_msg: str = "No matching hikes found 
         return
     for h in hikes:
         print(format_hike(h))
+
+
+def _write_exports(hikes: list, args: argparse.Namespace) -> None:
+    """Write the result set to GPX / GeoJSON if --gpx / --geojson were given.
+
+    A side effect alongside the normal stdout rendering (text or --json): the
+    confirmation goes to stderr so it never pollutes a --json pipe. An empty result
+    still writes a valid (empty) document, so a downstream script always gets a file.
+    """
+    for path, fn, label in (
+        (getattr(args, "gpx", None), hikes_to_gpx, "GPX"),
+        (getattr(args, "geojson", None), hikes_to_geojson, "GeoJSON"),
+    ):
+        if not path:
+            continue
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(fn(hikes))
+        except OSError as e:
+            print(f"error: could not write {label} to {path!r}: {e}", file=sys.stderr)
+            continue
+        print(f"Wrote {len(hikes)} route(s) to {path} ({label}).", file=sys.stderr)
 
 
 def _quota_line(cfg, used_before: int) -> None:
@@ -204,6 +243,14 @@ def run(args: argparse.Namespace) -> int:
         )
         return 2
 
+    if (getattr(args, "gpx", None) or getattr(args, "geojson", None)) and args.download:
+        print(
+            "error: --gpx/--geojson export the search results; they can't be combined "
+            "with --download (which writes a snapshot, not routes).",
+            file=sys.stderr,
+        )
+        return 2
+
     # Offline: search a saved snapshot. No network, no API calls, no quota line.
     if args.area:
         try:
@@ -213,6 +260,7 @@ def run(args: argparse.Namespace) -> int:
             return 1
         hikes = search_snapshot(snap, build_criteria(args), cfg, near_miss=near_miss)
         _emit(hikes, args.json)
+        _write_exports(hikes, args)
         return 0
 
     if not args.bbox:
@@ -282,6 +330,7 @@ def run(args: argparse.Namespace) -> int:
     else:
         empty_msg = "No matching hikes found in that area."
     _emit(hikes, args.json, empty_msg)
+    _write_exports(hikes, args)
     return 0
 
 

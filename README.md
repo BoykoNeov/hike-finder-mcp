@@ -158,6 +158,31 @@ trailhead). The loop geometry — and its gain/loss — is unchanged; only the s
 > which is fast and unlimited. On the API backend, keep the area small or lower
 > `HIKE_COMPOSE_MAX_LOOPS`.
 
+### Export — GPX / GeoJSON (load into your phone or GPS)
+
+Once a search (live, offline `--area`, or `--compose-loops`) gives you routes you like,
+hand them off to the device you'll actually navigate with. `--gpx` / `--geojson` write
+the **matched + composed routes** (near-misses included, flagged) to a file *alongside*
+the normal output:
+
+```bash
+hike-finder --bbox 50.72 15.58 50.74 15.62 --circular --gpx loops.gpx     # text + a GPX file
+hike-finder --area krkonose.json --min-gain 600 --geojson picks.geojson    # offline, still exports
+hike-finder --bbox 50.72 15.58 50.74 15.62 --compose-loops --gpx day.gpx   # composed loops too
+```
+
+- **GPX 1.1** — one `<trk>` per route (one `<trkseg>` per mapped leg) plus a `<wpt>` at
+  each start (the trailhead you drive/ride to). Loads into Komoot, OsmAnd, Gaia GPS,
+  Garmin, **mapy.cz**, …
+- **GeoJSON** (RFC 7946) — a `FeatureCollection` of route lines carrying the full computed
+  stats in `properties` (gain/loss, distance, shape, access, provenance).
+
+The exported track is the route's **raw mapped geometry** (every member way), so it keeps
+all legs and matches the reported distance — it does *not* re-stitch (which can drop legs).
+Per-point elevation isn't embedded; gain/loss live in each track's description. The web UI
+has **Download GPX / Download GeoJSON** buttons (and draws the route lines on the map);
+MCP's `find_hikes` takes a `format: "gpx"｜"geojson"` argument that returns the file as text.
+
 ## Two elevation backends (both supported)
 
 | Mode | Source | Setup | Accuracy | Limits |
@@ -269,7 +294,9 @@ three boolean filters are **tri-state**: omit = don't care, `--circular` = requi
 Numeric filters: `--min-gain`/`--max-gain` (m), `--min-distance`/`--max-distance`
 (km). Add `--json` for machine-readable output. `hike-finder --help` lists all.
 Add `--compose-loops` to synthesise loops from connected trails (see
-[Composing loops](#composing-loops-stitch-connected-trails-into-a-day-loop)).
+[Composing loops](#composing-loops-stitch-connected-trails-into-a-day-loop)), and
+`--gpx FILE` / `--geojson FILE` to also write the results as a track you can load
+into a GPS or phone (see [Export](#export--gpx--geojson-load-into-your-phone-or-gps)).
 
 Each match prints as one line:
 

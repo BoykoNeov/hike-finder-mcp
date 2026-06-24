@@ -785,6 +785,40 @@ validated `search_hikes` path and returns correct UTF-8 JSON.)
     compose backend** — it's already fast/free, so it gains ~nothing here; this optimization
     helps the API backend (fewer requests, faster, cache-hot re-runs).
 
+- **GPX / GeoJSON export — DONE (2026-06-24).** The "last mile": a hike finder that can't
+  hand you a file to load into your phone/GPS was missing the point of finding hikes. New
+  pure `export.py` (`hikes_to_gpx`, `hikes_to_geojson`, `hike_to_feature`) serialises the
+  matched + composed routes (near-misses included, flagged) to **GPX 1.1** (one `<trk>` per
+  hike, one `<trkseg>` per member way, a `<wpt>` at each start) and **GeoJSON** (RFC 7946
+  `FeatureCollection` of `MultiLineString`s, stats in `properties`). Geometry now rides on
+  the `Hike`: a new `Hike.ways` field is populated in `measure_geometry` from the route's
+  **raw member ways** — deliberately NOT the stitched line, so the export keeps every leg
+  and matches the reported `distance_km` (the stitched line silently drops unchainable
+  members, the same reason `total_way_length_m` sums the ways; see filters.py). Default `()`
+  so every prior `Hike` construction and the one-line/`hike_to_dict` output are byte-for-byte
+  unchanged. **Coordinate-order is the landmine and is pinned both ways**: GPX writes
+  `lat=/lon=` attributes, GeoJSON writes `[lon, lat]`, `hike_to_dict(geometry=True)` writes
+  `[lat, lon]` (Leaflet's `L.polyline`) — a known fixture point is asserted onto a known axis
+  in `test_export.py`/`test_web.py`. Wired into all three frontends: **CLI** `--gpx FILE` /
+  `--geojson FILE` (an *extra* output beside text/`--json`; confirmation to stderr so it never
+  pollutes a `--json` pipe; rejected with `--download`; works on live, `--compose-loops`, and
+  offline `--area`); **web** `/api/gpx` + `/api/geojson` download endpoints (share one
+  `_resolve_hikes` with `/api/hikes`, `Content-Disposition: attachment`) plus Download
+  buttons, and `/api/hikes` now carries `geometry` so the map **draws each route line**
+  (amber near-miss, dashed-purple composed loop) with no second search; **MCP** a
+  `format: "text"|"gpx"|"geojson"` arg on `find_hikes` (empty result still returns the
+  helpful text). XML names are `xml.sax`-escaped, files written UTF-8; an empty result yields
+  a valid empty `<gpx>` / empty `FeatureCollection`. **Validated end-to-end** on the
+  `spindl_area.json` fixture through the real engine (11 routes → 11 GPX tracks / 3281
+  trkpts, well-formed XML; first trkpt `lat=50.726 lon=15.607`, GeoJSON `[15.607, 50.726]`).
+  A near-miss is marked in the exported `<name>` with the same `~` prefix every frontend
+  uses (GPS lists show the name, not the desc; GeoJSON keeps the structured `near_miss`/
+  `notes` properties). Pure + frontend tests in `test_export.py` (19 cases), `test_cli.py`,
+  `test_web.py`, `test_server.py`, plus a composed-loop `ways` assertion in
+  `test_compose_live.py`. **Suite 228**. v2 left: embed per-point `<ele>` (needs the
+  resampled line + elevation array `add_elevation` currently discards), walking-order
+  stitching for the single-track ideal.
+
 ## Conventions
 
 - Pure math stays network-free and tested. Keep it that way — it's the trust

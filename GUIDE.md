@@ -588,6 +588,52 @@ has no limits. On the API backend, keep the area modest or lower `HIKE_COMPOSE_M
 
 ---
 
+## Taking a route with you — GPX / GeoJSON export
+
+A summary on screen is the start; the last mile is a file your **phone or GPS** can follow
+in the field. Any search — live, offline `--area`, or `--compose-loops` — can also write
+its results to a track file. The flag is an *extra* output: you still get the normal text
+(or `--json`), and the file is written beside it.
+
+```bash
+hike-finder --bbox 50.72 15.58 50.74 15.62 --circular --gpx loops.gpx
+```
+
+```text
+Medvědí okruh — 11.7 km, +505 m / -505 m [loop, car] (start 50.7312,15.6044, OSM relation 6282999)
+… (the usual lines on stdout) …
+Wrote 4 route(s) to loops.gpx (GPX).        ← this confirmation goes to stderr
+```
+
+- **`--gpx FILE`** writes **GPX 1.1**: one track per route (one segment per mapped leg),
+  preceded by a waypoint at each **start** (the trailhead you drive/ride to). Drop it into
+  **Komoot, OsmAnd, Gaia GPS, a Garmin, or mapy.cz** and the route is there to navigate.
+- **`--geojson FILE`** writes **GeoJSON** (RFC 7946): a `FeatureCollection` of route lines
+  with the full computed stats in each feature's `properties` — handy for QGIS, a web map,
+  or any data pipeline.
+
+It works on every search mode, including **offline** ones (no network needed to export a
+snapshot search) and **composed loops** (the stitched loop exports as one closed ring):
+
+```bash
+hike-finder --area krkonose.json --min-gain 600 --geojson picks.geojson    # offline
+hike-finder --bbox 50.72 15.58 50.74 15.62 --compose-loops --gpx day.gpx    # composed loops
+```
+
+**Read it** — the confirmation prints to *stderr* (so `--json --gpx out.gpx` keeps stdout a
+clean JSON pipe). **Near-misses are exported too**, flagged exactly as on screen. The track
+is the route's **raw mapped geometry** — every member way, so it keeps all legs and matches
+the reported distance (it does not re-stitch, which can silently drop a leg). Per-point
+elevation is **not** embedded; the gain/loss numbers ride in each track's description.
+
+**In the Web UI**, the same two formats are **Download GPX / Download GeoJSON** buttons —
+they hand you the routes currently listed — and the map now **draws each route line** (amber
+for a near-miss, dashed purple for a composed loop) so you can see the shape before you save
+it. Over **MCP**, `find_hikes` takes a `format: "gpx" | "geojson"` argument that returns the
+serialised file as text.
+
+---
+
 ## Choosing an elevation backend
 
 You normally don't touch this — the default `auto` does the right thing. But it

@@ -75,6 +75,15 @@ class Hike:
     # ordinary route.
     composed: bool = False
     composed_of: tuple[str, ...] = ()
+    # Route geometry: the member ways as ordered (lat, lon) polylines, exactly as
+    # mapped (a composed loop carries its single synthesised ring). This is the RAW
+    # member-way geometry, NOT the stitched line — `stitch_ways` silently drops members
+    # it can't chain, so the stitched line under-represents a branched/gap-split relation
+    # exactly as it under-counts distance (see geometry.total_way_length_m). The GPX /
+    # GeoJSON export and the web-map draw read this; it is deliberately left out of the
+    # one-line summary and the default `hike_to_dict`, so ordinary output is byte-for-byte
+    # unchanged. Default empty so every Hike construction that predates export keeps working.
+    ways: tuple[tuple[Coord, ...], ...] = ()
 
 
 @dataclass
@@ -347,6 +356,8 @@ def measure_geometry(
         ref=route.get("ref"),
         car_distance_m=car_distance_m,
         lift_distance_m=lift_distance_m,
+        # Carry the raw member-way geometry for export / map draw (immutable copy).
+        ways=tuple(tuple(w) for w in ways),
     )
     return hike, line
 
