@@ -99,6 +99,9 @@ def build_criteria(args: argparse.Namespace) -> Criteria:
 def run(args: argparse.Namespace) -> int:
     bbox = tuple(args.bbox)  # (south, west, north, east)
     cfg = _config.load()
+    # Snapshot the daily counter before the search so we can tell whether the API
+    # was actually hit this run (see the quota line below).
+    used_before, _ = api_quota_snapshot(cfg)
     try:
         hikes = search_hikes(
             bbox,
@@ -120,17 +123,17 @@ def run(args: argparse.Namespace) -> int:
         return 1
 
     # Show how close we are to the elevation API's daily cap (stderr, so --json
-    # stdout stays clean). Skip in local-DEM mode — the API isn't used there, so a
-    # quota line would just be confusing.
-    mode = args.elevation_mode or cfg.elevation_mode
-    if mode != "local":
-        used, limit = api_quota_snapshot(cfg)
-        if limit > 0:
-            print(
-                f"elevation API: {used}/{limit} requests used today "
-                f"({max(0, limit - used)} remaining, resets at UTC midnight)",
-                file=sys.stderr,
-            )
+    # stdout stays clean). Gate on "the API was actually hit this run" — the
+    # counter went up — not on the mode: with a working local DEM, `auto` answers
+    # from disk and never touches the API, so a quota line would be misleading.
+    # (`local` is silent for the same reason; `api` / DEM-less `auto` still show.)
+    used, limit = api_quota_snapshot(cfg)
+    if limit > 0 and used > used_before:
+        print(
+            f"elevation API: {used}/{limit} requests used today "
+            f"({max(0, limit - used)} remaining, resets at UTC midnight)",
+            file=sys.stderr,
+        )
 
     if args.json:
         print(json.dumps([hike_to_dict(h) for h in hikes], ensure_ascii=False, indent=2))
