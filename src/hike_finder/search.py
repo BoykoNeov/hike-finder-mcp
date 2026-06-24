@@ -4,6 +4,16 @@ One place that wires the three runtime pieces together — fetch OSM data, pick 
 elevation provider, run the two-pass filter — so the frontends stay thin and
 behave identically. The pure math lives in its own modules; this is the glue that
 touches the network.
+
+Three entry points, all returning the same filtered ``Hike`` list:
+  - ``search_hikes``    — live: fetch the area and search it (one Overpass call + the
+                          elevation API for surviving routes).
+  - ``download_area``   — live: fetch an area and warm elevation for *every* plausible
+                          route, returning a snapshot you can search offline forever.
+  - ``search_snapshot`` — offline: search a saved snapshot with zero network.
+
+``near_miss`` (tri-state ``False`` / ``True`` / ``"auto"``) is forwarded to
+``find_hikes`` unchanged on both the live and offline paths — see filters.py.
 """
 from __future__ import annotations
 
@@ -12,8 +22,31 @@ from .config import Config
 from .elevation import get_provider
 from .filters import Criteria, Hike, find_hikes
 from .overpass import DEFAULT_OVERPASS_URL, fetch_area
+from .snapshot import AreaSnapshot, RecordingElevationProvider, SnapshotElevationProvider
 
 Bbox = tuple[float, float, float, float]
+
+
+def _provider(cfg: Config, elevation_mode: str | None, dem_dir: str | None):
+    return get_provider(
+        mode=elevation_mode or cfg.elevation_mode,
+        dem_dir=dem_dir or cfg.dem_dir,
+        api_endpoint=cfg.api_endpoint,
+        api_min_interval_s=cfg.api_min_interval_s,
+        api_max_retries=cfg.api_max_retries,
+        api_backoff_s=cfg.api_backoff_s,
+        api_max_backoff_s=cfg.api_max_backoff_s,
+        api_daily_limit=cfg.api_daily_limit,
+        api_state_dir=cfg.api_state_dir,
+    )
+
+
+def _near_miss_kwargs(cfg: Config) -> dict:
+    return {
+        "near_miss_gain_frac": cfg.near_miss_gain_frac,
+        "near_miss_dist_km": cfg.near_miss_dist_km,
+        "near_miss_radius_frac": cfg.near_miss_radius_frac,
+    }
 
 
 def search_hikes(
@@ -25,6 +58,7 @@ def search_hikes(
     overpass_url: str | None = None,
     elevation_mode: str | None = None,
     dem_dir: str | None = None,
+    near_miss: bool | str = False,
 ) -> list[Hike]:
     """Fetch OSM data for ``bbox`` and return measured, filtered hikes.
 
@@ -38,17 +72,7 @@ def search_hikes(
         overpass_url or cfg.overpass_url or DEFAULT_OVERPASS_URL,
         user_agent=user_agent or cfg.overpass_user_agent,
     )
-    provider = get_provider(
-        mode=elevation_mode or cfg.elevation_mode,
-        dem_dir=dem_dir or cfg.dem_dir,
-        api_endpoint=cfg.api_endpoint,
-        api_min_interval_s=cfg.api_min_interval_s,
-        api_max_retries=cfg.api_max_retries,
-        api_backoff_s=cfg.api_backoff_s,
-        api_max_backoff_s=cfg.api_max_backoff_s,
-        api_daily_limit=cfg.api_daily_limit,
-        api_state_dir=cfg.api_state_dir,
-    )
+    provider = _provider(cfg, elevation_mode, dem_dir)
     return find_hikes(
         area,
         provider,
@@ -61,4 +85,97 @@ def search_hikes(
         loop_tolerance_m=cfg.loop_tolerance_m,
         car_radius_m=cfg.car_radius_m,
         lift_radius_m=cfg.lift_radius_m,
+        near_miss=near_miss,
+        **_near_miss_kwargs(cfg),
+    )
+
+
+def download_area(
+    bbox: Bbox,
+    cfg: Config | None = None,
+    *,
+    user_agent: str | None = None,
+    overpass_url: str | None = None,
+    elevation_mode: str | None = None,
+    dem_dir: str | None = None,
+) -> AreaSnapshot:
+    """Fetch an area and warm elevation for *every* geometry-plausible route.
+
+    This deliberately spends the elevation budget up front — you download before you
+    know your filters, so every route the over-length guard keeps is sampled. The
+    cost is one-time: the returned snapshot is then searchable offline with no further
+    API calls (see ``search_snapshot``). Routes whose elevation lookup fails (e.g. the
+    daily quota runs out mid-download) are simply left unsampled and degrade to n/a
+    offline, exactly as they would live.
+    """
+    cfg = cfg or _config.load()
+    area = fetch_area(
+        *bbox,
+        overpass_url or cfg.overpass_url or DEFAULT_OVERPASS_URL,
+        user_agent=user_agent or cfg.overpass_user_agent,
+    )
+    recorder = RecordingElevationProvider(_provider(cfg, elevation_mode, dem_dir))
+    # Empty criteria => no filtering: find_hikes still runs the cheap pass (so the
+    # over-length guard drops through-routes, sparing their elevation) and the
+    # elevation pass on every survivor, which is exactly what the recorder captures.
+    hikes = find_hikes(
+        area,
+        recorder,
+        Criteria(),
+        bbox=bbox,
+        max_route_factor=cfg.max_route_factor,
+        sample_interval_m=cfg.sample_interval_m,
+        gain_threshold_m=cfg.gain_threshold_m,
+        smooth_window=cfg.smooth_window,
+        loop_tolerance_m=cfg.loop_tolerance_m,
+        car_radius_m=cfg.car_radius_m,
+        lift_radius_m=cfg.lift_radius_m,
+    )
+    # Keep ONLY the routes the over-length guard accepted (exactly the ones we
+    # sampled). Pruning the unsampled through-routes makes the snapshot self-
+    # consistent: a later offline search can't surface a route with no elevation as
+    # n/a just because its max_route_factor is looser than this download's.
+    kept = {h.osm_id for h in hikes}
+    area.routes = [r for r in area.routes if r.get("id") in kept]
+    return AreaSnapshot(
+        bbox=tuple(bbox),
+        area=area,
+        elevations=recorder.samples,
+        sample_interval_m=cfg.sample_interval_m,
+        user_agent=user_agent or cfg.overpass_user_agent,
+    )
+
+
+def search_snapshot(
+    snapshot: AreaSnapshot,
+    criteria: Criteria,
+    cfg: Config | None = None,
+    *,
+    near_miss: bool | str = False,
+) -> list[Hike]:
+    """Search a saved snapshot offline (no network).
+
+    The snapshot's ``sample_interval_m`` is LOCKED in — the saved elevation points were
+    sampled at that interval, so the offline search must resample identically to hit
+    them. Everything else stays tunable from ``cfg``: ``gain_threshold``/``smooth_window``
+    re-derive gain/loss from the saved elevations, and the geometry knobs
+    (loop tolerance, access radii) re-decide shape/access from the saved geometry — all
+    without touching the network. The over-length guard reuses the snapshot's own bbox.
+    """
+    cfg = cfg or _config.load()
+    provider = SnapshotElevationProvider(snapshot.elevations)
+    return find_hikes(
+        snapshot.area,
+        provider,
+        criteria,
+        bbox=snapshot.bbox,
+        max_route_factor=cfg.max_route_factor,
+        sample_interval_m=snapshot.sample_interval_m,  # locked to the snapshot
+        gain_threshold_m=cfg.gain_threshold_m,
+        smooth_window=cfg.smooth_window,
+        loop_tolerance_m=cfg.loop_tolerance_m,
+        car_radius_m=cfg.car_radius_m,
+        lift_radius_m=cfg.lift_radius_m,
+        near_miss=near_miss,
+        **_near_miss_kwargs(cfg),
     )

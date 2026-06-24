@@ -101,4 +101,4 @@ def test_mcp_launcher_keeps_stdout_clean(suffix):
                 return await session.list_tools()
 
     result = asyncio.run(asyncio.wait_for(_impl(), timeout=60))
-    assert [t.name for t in result.tools] == ["find_hikes"]
+    assert {t.name for t in result.tools} == {"find_hikes", "download_area"}

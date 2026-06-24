@@ -4,9 +4,12 @@ No network: we only exercise argument parsing, the args -> Criteria mapping
 (especially the tri-state booleans, which are easy to get wrong), and the
 one-line / dict rendering shared by every frontend.
 """
-from hike_finder.cli import build_criteria, build_parser
-from hike_finder.filters import Hike
+from hike_finder.cli import build_criteria, build_parser, run
+from hike_finder.elevation.base import ElevationProvider
+from hike_finder.filters import Criteria, Hike, find_hikes
 from hike_finder.format import format_hike, hike_to_dict
+from hike_finder.overpass import AreaData
+from hike_finder.snapshot import AreaSnapshot, RecordingElevationProvider, save_snapshot
 
 
 def _parse(*argv):
@@ -83,4 +86,53 @@ def test_hike_to_dict_shape():
     assert set(d) == {
         "osm_id", "name", "ref", "distance_km", "gain_m", "loss_m",
         "circular", "car_access", "chairlift_access", "lift_type", "start",
+        "near_miss", "notes",
     }
+    # A plain match serialises as not-a-near-miss with no notes.
+    assert d["near_miss"] is False and d["notes"] == []
+
+
+def test_format_hike_near_miss_is_flagged():
+    h = _sample_hike(near_miss=True, notes=("gain 720 m — 80 m below the 800 m minimum",))
+    line = format_hike(h)
+    assert line.startswith("~ Test loop")
+    assert "[near miss: gain 720 m — 80 m below the 800 m minimum]" in line
+
+
+# --- offline --area mode through the CLI's run() (no network) -----------------
+
+
+class _Ramp(ElevationProvider):
+    def lookup(self, points):
+        return [(lat - 50.0) * 20000.0 for lat, _ in points]
+
+
+def _write_snapshot(path):
+    area = AreaData(routes=[{"id": 1, "name": "North", "ways": [[(50.0, 14.0), (50.05, 14.0)]], "tags": {}}])
+    rec = RecordingElevationProvider(_Ramp())
+    bbox = (49.9, 13.9, 50.2, 14.2)
+    find_hikes(area, rec, Criteria(), bbox=bbox)
+    save_snapshot(
+        AreaSnapshot(bbox=bbox, area=area, elevations=rec.samples, sample_interval_m=25.0), path
+    )
+
+
+def test_run_area_mode_searches_offline(tmp_path, capsys):
+    path = tmp_path / "area.json"
+    _write_snapshot(path)
+    rc = run(build_parser().parse_args(["--area", str(path)]))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "North" in out and "OSM relation 1" in out
+
+
+def test_run_area_and_download_mutually_exclusive(capsys):
+    rc = run(build_parser().parse_args(["--bbox", "1", "2", "3", "4", "--area", "a", "--download", "b"]))
+    assert rc == 2
+    assert "mutually exclusive" in capsys.readouterr().err
+
+
+def test_run_requires_bbox_without_area(capsys):
+    rc = run(build_parser().parse_args(["--min-gain", "100"]))
+    assert rc == 2
+    assert "--bbox is required" in capsys.readouterr().err

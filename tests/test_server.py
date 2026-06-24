@@ -72,14 +72,23 @@ def test_list_tools_advertises_find_hikes(monkeypatch):
 
     result = asyncio.run(_impl())
     tools = {t.name: t for t in result.tools}
-    assert set(tools) == {"find_hikes"}
+    assert set(tools) == {"find_hikes", "download_area"}
 
     schema = tools["find_hikes"].inputSchema
     assert schema["type"] == "object"
-    assert schema["required"] == ["south", "west", "north", "east"]
-    # the tri-state filters are advertised as booleans
-    for key in ("circular", "car_access", "chairlift_access"):
+    # No field is unconditionally required now: a live search needs the four corners,
+    # an offline search needs `area` instead — validated in call_tool, not the schema.
+    assert schema["required"] == []
+    # the corners and the tri-state filters are still advertised
+    for key in ("south", "west", "north", "east"):
+        assert schema["properties"][key]["type"] == "number"
+    for key in ("circular", "car_access", "chairlift_access", "near_misses"):
         assert schema["properties"][key]["type"] == "boolean"
+    assert schema["properties"]["area"]["type"] == "string"
+
+    # download_area requires the corners plus a destination path.
+    dl = tools["download_area"].inputSchema
+    assert dl["required"] == ["south", "west", "north", "east", "path"]
 
 
 def test_call_tool_maps_arguments_and_renders(monkeypatch):
@@ -123,6 +132,57 @@ def test_call_tool_maps_arguments_and_renders(monkeypatch):
     # rendered through the SAME formatter the CLI prints and the web serialises
     assert len(result.content) == 1
     assert result.content[0].text == "\n".join(format_hike(h) for h in SAMPLE_HIKES)
+
+
+def test_call_tool_area_searches_snapshot_offline(monkeypatch):
+    captured = {}
+
+    def _fail_live(*a, **k):  # the live path must NOT run when `area` is given
+        raise AssertionError("search_hikes should not be called in offline mode")
+
+    monkeypatch.setattr(server, "search_hikes", _fail_live)
+    monkeypatch.setattr(server, "load_snapshot", lambda path: f"SNAP:{path}")
+
+    def _stub_snapshot(snap, criteria, cfg=None, *, near_miss=False):
+        captured["snap"] = snap
+        captured["near_miss"] = near_miss
+        captured["circular"] = criteria.circular
+        return SAMPLE_HIKES
+
+    monkeypatch.setattr(server, "search_snapshot", _stub_snapshot)
+
+    async def _impl():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.call_tool(
+                "find_hikes", {"area": "krkonose.json", "circular": True}
+            )
+
+    result = asyncio.run(_impl())
+    assert not result.isError
+    assert captured["snap"] == "SNAP:krkonose.json"
+    assert captured["near_miss"] == "auto"      # near_misses omitted -> auto
+    assert captured["circular"] is True
+    assert result.content[0].text == "\n".join(format_hike(h) for h in SAMPLE_HIKES)
+
+
+def test_call_tool_near_misses_flag_forwarded(monkeypatch):
+    captured = {}
+
+    def _stub(bbox, criteria, cfg=None, *, near_miss=False, **kwargs):
+        captured["near_miss"] = near_miss
+        return []
+
+    monkeypatch.setattr(server, "search_hikes", _stub)
+
+    async def _impl():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.call_tool(
+                "find_hikes",
+                {"south": 1, "west": 2, "north": 3, "east": 4, "near_misses": True},
+            )
+
+    asyncio.run(_impl())
+    assert captured["near_miss"] is True
 
 
 def test_call_tool_empty_result_is_friendly(monkeypatch):
@@ -220,4 +280,4 @@ def test_real_stdio_transport_lists_the_tool():
                 return await session.list_tools()
 
     result = asyncio.run(asyncio.wait_for(_impl(), timeout=60))
-    assert [t.name for t in result.tools] == ["find_hikes"]
+    assert {t.name for t in result.tools} == {"find_hikes", "download_area"}

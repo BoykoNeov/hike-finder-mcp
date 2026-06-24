@@ -20,7 +20,8 @@ from urllib.parse import parse_qs, urlparse
 
 from .filters import Criteria
 from .format import hike_to_dict
-from .search import search_hikes
+from .search import download_area, search_hikes, search_snapshot
+from .snapshot import default_snapshot_dir, load_snapshot, save_snapshot
 
 INDEX_HTML = """<!doctype html>
 <html lang="en">
@@ -47,6 +48,9 @@ INDEX_HTML = """<!doctype html>
   .hike .meta { color:#444; }
   .flags span { display:inline-block; background:#eef; border-radius:3px; padding:0 6px; margin:3px 4px 0 0; font-size:12px; }
   .muted { color:#888; font-size:12px; }
+  .hike.near { background:#fffaf0; }
+  .hike.near .name::before { content:"~ "; color:#b8860b; }
+  .note { color:#a06000; font-size:12px; margin-top:2px; }
 </style>
 </head>
 <body>
@@ -58,6 +62,16 @@ INDEX_HTML = """<!doctype html>
 
     <label>Contact (email or URL) <span class="muted">— recommended</span></label>
     <input id="ua" placeholder="you@example.com">
+
+    <label>Search area</label>
+    <select id="area">
+      <option value="">— live map (fetches OSM) —</option>
+    </select>
+    <div class="row" style="margin-top:6px;">
+      <div style="flex:2;"><input id="area_name" placeholder="name this view, e.g. krkonose"></div>
+      <div style="flex:1;"><button id="download" style="margin-top:0;" title="Fetch this map view once and save it for offline, API-free searching">Download view</button></div>
+    </div>
+    <p class="muted">Download a view once, then pick it above to search offline with no API calls.</p>
 
     <label>Shape</label>
     <select id="circular">
@@ -72,6 +86,13 @@ INDEX_HTML = """<!doctype html>
     <label>Chairlift access (lift near an end)</label>
     <select id="chairlift_access">
       <option value="">any</option><option value="true">required</option><option value="false">excluded</option>
+    </select>
+
+    <label>Near misses (close-but-not-matching routes)</label>
+    <select id="near_misses">
+      <option value="">auto (show only if nothing matches)</option>
+      <option value="true">always show</option>
+      <option value="false">never show</option>
     </select>
 
     <div class="row">
@@ -98,27 +119,72 @@ const markers = L.layerGroup().addTo(map);
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function val(id){ const v = document.getElementById(id).value.trim(); return v === '' ? null : v; }
 
-const FIELDS = ['circular','car_access','chairlift_access',
+const FIELDS = ['circular','car_access','chairlift_access','near_misses',
                 'min_gain_m','max_gain_m','min_distance_km','max_distance_km','user_agent'];
 
+async function loadAreas(selectName){
+  // Populate the saved-area selector from disk, preserving the live-map option.
+  try {
+    const areas = await (await fetch('/api/areas')).json();
+    const sel = document.getElementById('area');
+    sel.length = 1;  // keep the first "live map" option
+    for (const a of areas){
+      const o = document.createElement('option');
+      o.value = a.name;
+      o.textContent = a.name + ' (' + a.routes + ' routes)';
+      sel.appendChild(o);
+    }
+    if (selectName) sel.value = selectName;
+  } catch (e){ /* best-effort */ }
+}
+
 async function search(){
-  const b = map.getBounds();
-  const params = new URLSearchParams({
-    south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast()
-  });
+  const area = document.getElementById('area').value;
+  const params = new URLSearchParams();
+  if (area){
+    params.set('area', area);                 // offline: bbox comes from the snapshot
+  } else {
+    const b = map.getBounds();
+    params.set('south', b.getSouth()); params.set('west', b.getWest());
+    params.set('north', b.getNorth()); params.set('east', b.getEast());
+  }
   for (const f of FIELDS){ const id = (f === 'user_agent') ? 'ua' : f; const v = val(id); if (v !== null) params.set(f, v); }
 
   const status = document.getElementById('status');
   const results = document.getElementById('results');
-  status.textContent = 'Searching…'; results.innerHTML = ''; markers.clearLayers();
+  status.textContent = area ? ('Searching “' + area + '” offline…') : 'Searching…';
+  results.innerHTML = ''; markers.clearLayers();
   try {
     const resp = await fetch('/api/hikes?' + params.toString());
     const data = await resp.json();
     if (!resp.ok || data.error){ status.textContent = 'Error: ' + (data.error || resp.status); return; }
     render(data);
-    status.textContent = data.length + ' hike(s) found.';
-    showQuota();
+    const near = data.filter(h => h.near_miss).length;
+    status.textContent = (data.length - near) + ' match(es)'
+      + (near ? (' + ' + near + ' near miss(es)') : '') + (area ? ' [offline]' : '');
+    if (!area) showQuota();
   } catch (e){ status.textContent = 'Request failed: ' + e; }
+}
+
+async function downloadArea(){
+  const name = (document.getElementById('area_name').value || '').trim();
+  if (!name){ document.getElementById('status').textContent = 'Enter a name for this view first.'; return; }
+  const b = map.getBounds();
+  const params = new URLSearchParams({
+    name, south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast()
+  });
+  const ua = val('ua'); if (ua !== null) params.set('user_agent', ua);
+  const status = document.getElementById('status');
+  status.textContent = 'Downloading “' + name + '” (one-time fetch + elevation)…';
+  try {
+    const resp = await fetch('/api/download?' + params.toString());
+    const data = await resp.json();
+    if (!resp.ok || data.error){ status.textContent = 'Error: ' + (data.error || resp.status); return; }
+    status.textContent = 'Saved “' + data.name + '”: ' + data.routes + ' routes, '
+      + data.samples + ' elevation samples. Now searchable offline.';
+    await loadAreas(data.name);
+    showQuota();
+  } catch (e){ status.textContent = 'Download failed: ' + e; }
 }
 
 async function showQuota(){
@@ -143,17 +209,22 @@ function render(hikes){
     if (h.car_access) flags.push('car');
     if (h.chairlift_access) flags.push('lift:' + esc(h.lift_type));
     const gain = (h.gain_m != null) ? ('+' + h.gain_m + ' m / -' + h.loss_m + ' m') : 'gain n/a';
+    const note = (h.near_miss && h.notes && h.notes.length)
+      ? '<div class="note">near miss: ' + esc(h.notes.join('; ')) + '</div>' : '';
     const el = document.createElement('div');
-    el.className = 'hike';
+    el.className = h.near_miss ? 'hike near' : 'hike';
     el.innerHTML = '<div class="name">' + esc(h.name) + '</div>'
       + '<div class="meta">' + h.distance_km + ' km &middot; ' + gain + '</div>'
       + '<div class="flags">' + flags.map(f => '<span>' + f + '</span>').join('') + '</div>'
+      + note
       + '<div class="muted">OSM relation ' + h.osm_id + '</div>';
     el.onclick = () => { map.setView([h.start.lat, h.start.lon], 15); marker.openPopup(); };
     results.appendChild(el);
   });
 }
 document.getElementById('search').onclick = search;
+document.getElementById('download').onclick = downloadArea;
+loadAreas();
 </script>
 </body>
 </html>
@@ -179,6 +250,41 @@ def _str(qs: dict, key: str) -> str | None:
     return v or None
 
 
+def _slug(name: str) -> str:
+    """A safe snapshot filename stem: keep word chars and dashes, never a path."""
+    return "".join(c if (c.isalnum() or c in "-_") else "_" for c in name).strip("_")
+
+
+def _snapshot_path(name: str):
+    stem = _slug(name)
+    if not stem:
+        return None
+    return default_snapshot_dir() / f"{stem}.json"
+
+
+def _list_areas() -> list[dict]:
+    """Light metadata for every saved snapshot (no full elevation load)."""
+    out = []
+    d = default_snapshot_dir()
+    if not d.is_dir():
+        return out
+    for path in sorted(d.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        out.append(
+            {
+                "name": path.stem,
+                "bbox": data.get("bbox"),
+                "created_at": data.get("created_at"),
+                "routes": len(data.get("area", {}).get("routes", [])),
+                "samples": len(data.get("elevations", {})),
+            }
+        )
+    return out
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # keep the console quiet
         pass
@@ -199,10 +305,49 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/hikes":
             self._api(parse_qs(parsed.query))
             return
+        if parsed.path == "/api/areas":
+            self._areas()
+            return
+        if parsed.path == "/api/download":
+            self._download(parse_qs(parsed.query))
+            return
         if parsed.path == "/api/quota":
             self._quota()
             return
         self._send(404, "not found", "text/plain; charset=utf-8")
+
+    def _json(self, code: int, obj) -> None:
+        self._send(code, json.dumps(obj, ensure_ascii=False), "application/json; charset=utf-8")
+
+    def _areas(self) -> None:
+        self._json(200, _list_areas())
+
+    def _download(self, qs: dict) -> None:
+        name = _str(qs, "name")
+        path = _snapshot_path(name) if name else None
+        if path is None:
+            self._json(400, {"error": "a non-empty area name is required"})
+            return
+        try:
+            bbox = (
+                float(qs["south"][0]),
+                float(qs["west"][0]),
+                float(qs["north"][0]),
+                float(qs["east"][0]),
+            )
+        except (KeyError, ValueError):
+            self._json(400, {"error": "south/west/north/east are required"})
+            return
+        try:
+            snap = download_area(bbox, user_agent=_str(qs, "user_agent"))
+            save_snapshot(snap, path)
+        except Exception as e:  # noqa: BLE001 — surface any fetch/write failure to the UI
+            msg = str(e)
+            if "406" in msg:
+                msg += " — fill in the Contact field (the public Overpass server rejects the default User-Agent)."
+            self._json(502, {"error": f"download failed: {msg}"})
+            return
+        self._json(200, {"name": path.stem, "routes": snap.route_count, "samples": snap.sample_count})
 
     def _quota(self) -> None:
         # Separate endpoint so we never reshape /api/hikes (a bare array the JS
@@ -222,21 +367,6 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, body, "application/json; charset=utf-8")
 
     def _api(self, qs: dict) -> None:
-        try:
-            bbox = (
-                float(qs["south"][0]),
-                float(qs["west"][0]),
-                float(qs["north"][0]),
-                float(qs["east"][0]),
-            )
-        except (KeyError, ValueError):
-            self._send(
-                400,
-                json.dumps({"error": "south/west/north/east are required"}),
-                "application/json; charset=utf-8",
-            )
-            return
-
         criteria = Criteria(
             min_gain_m=_num(qs, "min_gain_m"),
             max_gain_m=_num(qs, "max_gain_m"),
@@ -246,8 +376,39 @@ class Handler(BaseHTTPRequestHandler):
             car_access=_tri(qs, "car_access"),
             chairlift_access=_tri(qs, "chairlift_access"),
         )
+        # near_misses tri-state: absent -> "auto", true -> always, false -> never.
+        nm = _tri(qs, "near_misses")
+        near_miss = "auto" if nm is None else nm
+
+        area_name = _str(qs, "area")
+        if area_name:
+            # Offline: search a saved snapshot — no network, no API calls.
+            path = _snapshot_path(area_name)
+            if path is None or not path.is_file():
+                self._json(404, {"error": f"no saved area named {area_name!r}"})
+                return
+            try:
+                snap = load_snapshot(path)
+                hikes = search_snapshot(snap, criteria, near_miss=near_miss)
+            except (OSError, ValueError) as e:
+                self._json(500, {"error": f"could not search snapshot: {e}"})
+                return
+            self._json(200, [hike_to_dict(h) for h in hikes])
+            return
+
         try:
-            hikes = search_hikes(bbox, criteria, user_agent=_str(qs, "user_agent"))
+            bbox = (
+                float(qs["south"][0]),
+                float(qs["west"][0]),
+                float(qs["north"][0]),
+                float(qs["east"][0]),
+            )
+        except (KeyError, ValueError):
+            self._json(400, {"error": "south/west/north/east are required"})
+            return
+
+        try:
+            hikes = search_hikes(bbox, criteria, user_agent=_str(qs, "user_agent"), near_miss=near_miss)
         except Exception as e:
             msg = str(e)
             if "406" in msg:
@@ -255,15 +416,10 @@ class Handler(BaseHTTPRequestHandler):
                     " — fill in the Contact field (the public Overpass server rejects "
                     "the default User-Agent)."
                 )
-            self._send(
-                502,
-                json.dumps({"error": f"failed to fetch OSM data: {msg}"}),
-                "application/json; charset=utf-8",
-            )
+            self._json(502, {"error": f"failed to fetch OSM data: {msg}"})
             return
 
-        body = json.dumps([hike_to_dict(h) for h in hikes], ensure_ascii=False)
-        self._send(200, body, "application/json; charset=utf-8")
+        self._json(200, [hike_to_dict(h) for h in hikes])
 
 
 def main(argv: list[str] | None = None) -> None:

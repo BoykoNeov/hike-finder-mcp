@@ -48,6 +48,45 @@ Internally the search is two-pass: cheap geometry/shape/access filters run first
 and a long through-route that merely crosses the area is dropped, so the
 elevation backend is only queried for routes that already match.
 
+### Near-miss results (close-but-not-matching)
+
+When a query returns little or nothing, the search can also list routes that
+*just* miss — each flagged and annotated with **how** it falls short, so a "close"
+route is never mistaken for a match:
+
+```text
+~ 0402 — 9.86 km, +709 m / -327 m [one-way, lift:chair_lift] (…)  [near miss: gain 709 m — 41 m below the 750 m minimum]
+```
+
+A route qualifies when it is within tolerance of a numeric bound (gain within a
+percentage, distance within a few km) **or** has parking/a lift just past its
+access radius (`nearest parking 380 m from an end — just past the 300 m limit`).
+Shape is never relaxed — a loop is not "almost point-to-point" — and an *excluded*
+access stays strict, so near-misses always share the shape and exclusions you
+asked for. By default they appear **only when nothing matches** (`auto`); you can
+force them always on or off. Tolerances are tunable (see the env vars below).
+
+### Saved areas — fetch once, search offline (no API calls)
+
+Exploring one area with several filters re-hits Overpass and the elevation API
+each time. Instead, **download the area once** and search the saved copy offline:
+
+```bash
+hike-finder --bbox 50.72 15.58 50.74 15.62 --download krkonose.json   # one fetch + elevation warm-up
+hike-finder --area krkonose.json --min-gain 600 --circular            # offline, zero API calls
+hike-finder --area krkonose.json --max-distance 8 --car-access        # …re-filter freely
+```
+
+`--download` fetches the routes once and computes elevation for **every** plausible
+route (it spends the elevation budget up front, since you download before knowing
+your filters), saving geometry + elevation to a JSON snapshot. `--area` then runs
+the *same* engine against the snapshot with **no network at all** — results are
+identical to a live search by construction (validated: offline gains match a live
+search byte-for-byte). Only the sample interval is frozen into the snapshot; gain
+threshold, smoothing, access radii and shape tolerance stay tunable offline. The
+web UI exposes this as **"Download view"** + a saved-area selector; MCP gains a
+`download_area` tool and an `area` argument on `find_hikes`.
+
 ## Two elevation backends (both supported)
 
 | Mode | Source | Setup | Accuracy | Limits |
@@ -95,7 +134,7 @@ hike-finder --help                 # prints usage → the entry points resolve
 ```
 
 For deeper assurance, `pip install -e ".[dev]"` then `pytest` runs the full
-offline suite (114 tests). From here, pick a frontend: the **Web UI** (Option A),
+offline suite (147 tests). From here, pick a frontend: the **Web UI** (Option A),
 **command line** (Option B), or **MCP server** (Option C) below.
 
 Want the slower, fully-explained version of all of this — with sample output and
@@ -264,6 +303,14 @@ latitude, max longitude):
 > The **MCP** server is validated live as well — driven over real stdio with the
 > `mcp` SDK and pinned offline by `tests/test_server.py`. All three frontends are
 > now exercised end-to-end.
+> **Saved areas + near-misses are validated live too** (2026-06-24): on the
+> Špindlerův Mlýn bbox, `--download` then `--area` (in separate processes, local
+> DEM) reproduced a live search's gain/loss/distance for **all 11 routes
+> byte-for-byte with zero `n/a`** — proving offline == online. A `--min-gain 750`
+> query (which nothing meets) surfaced the two closest routes as near-misses
+> (`+709 m`, 41 m short; `+693 m`, 57 m short), identically across the CLI, the web
+> UI (`/api/download` + offline `/api/hikes?area=`), and the MCP `find_hikes(area=…)`
+> tool.
 
 ### Configuration (environment variables)
 
@@ -289,6 +336,16 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 | `HIKE_CAR_RADIUS` | Parking-near-endpoint radius, metres | `300` |
 | `HIKE_LIFT_RADIUS` | Lift-station-near-endpoint radius, metres | `400` |
 | `HIKE_MAX_ROUTE_FACTOR` | Drop routes longer than this × the bbox diagonal (kills through-routes) | `4.0` |
+| `HIKE_NEAR_MISS_GAIN_FRAC` | Near-miss gain tolerance, as a fraction of the bound (0.2 = within 20%) | `0.2` |
+| `HIKE_NEAR_MISS_DIST_KM` | Near-miss distance tolerance, km past a min/max | `2.0` |
+| `HIKE_NEAR_MISS_RADIUS_FRAC` | Near-miss access tolerance: parking/lift within radius × (1 + this) still counts | `0.5` |
+| `HIKE_SNAPSHOT_DIR` | Directory for named area snapshots saved by the web UI | per-user cache (`…/hike-finder/snapshots`) |
+
+> **Snapshot caveat:** `--area` locks the snapshot's sample interval (the saved
+> elevation points were taken at it), so `HIKE_SAMPLE_INTERVAL` can't break an
+> offline search. `HIKE_MAX_ROUTE_FACTOR` is the one knob that still applies
+> offline; the download already prunes over-length routes, so loosening it offline
+> is safe and tightening it only drops a subset.
 
 ### Troubleshooting
 
@@ -308,7 +365,7 @@ retry/backoff, and a persistent daily-request counter that degrades to `n/a`
 before blowing the API's daily cap), the CLI argument/formatter layer, **and the
 MCP server's tool schema / argument-mapping / rendering glue** (driven through
 the real MCP protocol over an in-memory session): **implemented and unit-tested**
-(114 tests, all offline). The Overpass HTTP call, the API elevation backend,
+(147 tests, all offline). The Overpass HTTP call, the API elevation backend,
 **the local-DEM backend, and the MCP server over real stdio** are all
 **validated live** (CLI + web + MCP), with computed gain cross-checked against
 the loop invariant (gain ≈ loss) — the local DEM read Sněžka at 1601 m vs the

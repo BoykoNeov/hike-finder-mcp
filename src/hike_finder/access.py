@@ -152,6 +152,64 @@ def chairlift_access(
     return (best_kind is not None, best_kind)
 
 
+def nearest_parking_m(
+    endpoints: list[Coord],
+    parking: list[dict],
+    max_m: float,
+) -> float | None:
+    """Distance (m) to the nearest mapped parking within ``max_m`` of an endpoint,
+    or ``None`` if none is that close.
+
+    A *measuring* sibling of ``car_accessible`` for the near-miss path: where the
+    boolean asks "is parking within the access radius?", this answers "and how far
+    is the closest one?" so a result just past the threshold can be reported
+    ("parking 380 m from an end, just past the 300 m limit"). Same radius-padded
+    bbox prune (here padded by ``max_m``, the *relaxed* radius) keeps it cheap, and
+    it never scans past ``max_m`` so the cost stays bounded on a whole-loop endpoint
+    set. Returns the distance only — the boolean verdict stays with ``car_accessible``
+    so the live-pinned access predicate is never duplicated/forked.
+    """
+    if not endpoints or not parking:
+        return None
+    lo_lat, hi_lat, lo_lon, hi_lon = _bbox_pad(endpoints, max_m)
+    best: float | None = None
+    for p in parking:
+        plat, plon = p["coord"]
+        if not (lo_lat <= plat <= hi_lat and lo_lon <= plon <= hi_lon):
+            continue
+        for e in endpoints:
+            d = haversine_m(e, p["coord"])
+            if d <= max_m and (best is None or d < best):
+                best = d
+    return best
+
+
+def nearest_lift_m(
+    endpoints: list[Coord],
+    lifts: list[dict],
+    max_m: float,
+) -> tuple[float | None, str | None]:
+    """``(distance, kind)`` of the nearest ride-up station within ``max_m`` of an
+    endpoint, or ``(None, None)``. The measuring sibling of ``chairlift_access``
+    (see ``nearest_parking_m``)."""
+    if not endpoints or not lifts:
+        return (None, None)
+    lo_lat, hi_lat, lo_lon, hi_lon = _bbox_pad(endpoints, max_m)
+    best_d: float | None = None
+    best_kind: str | None = None
+    for lift in lifts:
+        for station in lift.get("stations", []):
+            slat, slon = station
+            if not (lo_lat <= slat <= hi_lat and lo_lon <= slon <= hi_lon):
+                continue
+            for e in endpoints:
+                d = haversine_m(e, station)
+                if d <= max_m and (best_d is None or d < best_d):
+                    best_d = d
+                    best_kind = lift.get("kind")
+    return (best_d, best_kind)
+
+
 def matched_access_points(
     endpoints: list[Coord],
     parking: list[dict],

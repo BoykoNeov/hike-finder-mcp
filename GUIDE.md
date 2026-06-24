@@ -364,6 +364,48 @@ and is coupled to access where possible — when a route has mapped parking/lift
 an end, `start` is the terminus nearest it, so the pin usually marks the trailhead
 you'd actually drive or ride to.
 
+**`~` and `[near miss: …]`** mark a route that does **not** meet your filters but
+is close — and the note says exactly how (`gain 709 m — 41 m below the 750 m
+minimum`, or `nearest parking 380 m from an end — just past the 300 m limit`). By
+default these appear only when nothing matches, so an empty result still gives you
+the next-best options instead of a blank. Treat them as "almost, but check the
+note" — they keep the shape and exclusions you asked for, only the numbers/access
+are relaxed. See the next section to turn them on always or off.
+
+---
+
+## Searching an area offline (and seeing "close" results)
+
+Two options that save API calls and rescue empty searches.
+
+**Download once, search many times — offline, no API calls.** If you're going to
+try several filters on one area, fetch it once and search the saved copy:
+
+```bash
+hike-finder --bbox 50.72 15.58 50.74 15.62 --download krkonose.json   # one fetch + elevation
+hike-finder --area krkonose.json --min-gain 600 --circular            # offline
+hike-finder --area krkonose.json --max-distance 8 --car-access         # offline, re-filter freely
+```
+
+The `--download` step is the only one that touches the network: it fetches the
+routes and computes elevation for **every** plausible route (so it spends the
+elevation budget once, up front), then writes a `.json` snapshot. Every `--area`
+search after that is **completely offline** and gives the *same* numbers a live
+search would — validated: the offline gains match a live search exactly. Handy on a
+plane, on a metered connection, or just to stop re-hitting the elevation API while
+you explore. In the **web UI** this is the **"Download view"** button plus the
+"Search area" dropdown; an LLM driving the **MCP** server has a `download_area` tool
+and an `area` argument on `find_hikes`.
+
+> Only the *sample interval* is frozen into a snapshot. You can still re-tune the
+> gain threshold, smoothing, access radii and loop tolerance on an offline search.
+
+**Show close-but-not-matching routes.** Add `--near-misses` to always list them,
+`--no-near-misses` to never. The default (omit the flag) shows them only when
+nothing strictly matches. Tolerances are tunable — `HIKE_NEAR_MISS_GAIN_FRAC`
+(default 0.2 = within 20% of a gain bound), `HIKE_NEAR_MISS_DIST_KM` (2 km),
+`HIKE_NEAR_MISS_RADIUS_FRAC` (0.5 = parking/lift up to 1.5× the radius still counts).
+
 ---
 
 ## Choosing an elevation backend

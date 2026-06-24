@@ -1,15 +1,20 @@
 """MCP server exposing OSM-based hike search with real computed stats.
 
-Tool: find_hikes(south, west, north, east, min_gain_m, max_gain_m,
-                 min_distance_km, max_distance_km,
-                 circular, car_access, chairlift_access)
+Tools:
+  find_hikes(south, west, north, east, min_gain_m, max_gain_m,
+             min_distance_km, max_distance_km,
+             circular, car_access, chairlift_access,
+             near_misses, area)
+  download_area(south, west, north, east, path)  — fetch an area once and save it
+             so find_hikes(area=path) can search it offline with no further API calls.
 
 Uses the official `mcp` Python SDK. Run with:  python -m hike_finder.server
 (stdio transport — point your MCP client / Claude Code at this command).
 
-NOTE: requires network at runtime (Overpass + elevation). The build sandbox
-can't reach those, so this entry point is validated by you on your machine.
-The pure-math core it depends on (geometry, gain, access, parsing) is unit-tested.
+NOTE: requires network at runtime (Overpass + elevation), EXCEPT find_hikes with
+`area` set, which is fully offline. The build sandbox can't reach the network, so the
+live paths are validated by you on your machine. The pure-math core (geometry, gain,
+access, parsing, snapshot round-trip) is unit-tested offline.
 """
 from __future__ import annotations
 
@@ -22,7 +27,8 @@ from mcp.types import TextContent, Tool
 from . import config as _config
 from .filters import Criteria
 from .format import format_hike
-from .search import search_hikes
+from .search import download_area, search_hikes, search_snapshot
+from .snapshot import load_snapshot, save_snapshot
 
 app = Server("hike-finder")
 CFG = _config.load()
@@ -46,7 +52,10 @@ async def list_tools() -> list[Tool]:
                 "Confidence: shape (circular) is reliable. car_access/chairlift_access "
                 "are best-effort from OSM completeness — a `false` means nothing of "
                 "that kind is MAPPED near the route's ends, not that it is impossible "
-                "to get there."
+                "to get there.\n\n"
+                "Bounding box: pass south/west/north/east for a live search, OR `area` "
+                "(a snapshot path from download_area) to search offline with no API calls "
+                "— then the box is taken from the snapshot."
             ),
             inputSchema={
                 "type": "object",
@@ -71,25 +80,54 @@ async def list_tools() -> list[Tool]:
                         "type": "boolean",
                         "description": "true = require a ride-up aerialway near an endpoint.",
                     },
+                    "near_misses": {
+                        "type": "boolean",
+                        "description": "Also return routes that just miss the filters, each "
+                        "flagged and annotated with how it falls short. Omit = show them only "
+                        "when nothing matches; true = always; false = never.",
+                    },
+                    "area": {
+                        "type": "string",
+                        "description": "Path to a snapshot from download_area. When set, the "
+                        "search runs OFFLINE against the snapshot and south/west/north/east "
+                        "are ignored.",
+                    },
                 },
-                "required": ["south", "west", "north", "east"],
+                "required": [],
             },
-        )
+        ),
+        Tool(
+            name="download_area",
+            description=(
+                "Fetch a bounding box once — its hiking routes plus computed elevation for "
+                "every plausible route — and save it to `path`. This spends the elevation "
+                "budget up front; afterwards find_hikes(area=path) searches it offline with "
+                "no further API calls. Use it to avoid re-hitting the rate-limited elevation "
+                "API while exploring an area with different filters."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "south": {"type": "number"},
+                    "west": {"type": "number"},
+                    "north": {"type": "number"},
+                    "east": {"type": "number"},
+                    "path": {"type": "string", "description": "Where to write the snapshot JSON."},
+                },
+                "required": ["south", "west", "north", "east", "path"],
+            },
+        ),
     ]
 
 
-@app.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    if name != "find_hikes":
-        raise ValueError(f"unknown tool: {name}")
+def _near_miss(arguments: dict) -> bool | str:
+    """Tri-state from the optional `near_misses` flag: omit -> 'auto'."""
+    v = arguments.get("near_misses")
+    return "auto" if v is None else v
 
-    bbox = (
-        arguments["south"],
-        arguments["west"],
-        arguments["north"],
-        arguments["east"],
-    )
-    criteria = Criteria(
+
+def _criteria(arguments: dict) -> Criteria:
+    return Criteria(
         min_gain_m=arguments.get("min_gain_m"),
         max_gain_m=arguments.get("max_gain_m"),
         min_distance_km=arguments.get("min_distance_km"),
@@ -99,13 +137,59 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         chairlift_access=arguments.get("chairlift_access"),
     )
 
-    # search_hikes is synchronous (network + math); run it off the event loop.
-    hikes = await asyncio.to_thread(search_hikes, bbox, criteria, CFG)
+
+@app.call_tool()
+async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    if name == "find_hikes":
+        return await _call_find_hikes(arguments)
+    if name == "download_area":
+        return await _call_download_area(arguments)
+    raise ValueError(f"unknown tool: {name}")
+
+
+async def _call_find_hikes(arguments: dict) -> list[TextContent]:
+    criteria = _criteria(arguments)
+    near_miss = _near_miss(arguments)
+    area_path = arguments.get("area")
+
+    # Offline: search a saved snapshot (no network), bbox comes from the snapshot.
+    if area_path:
+        snap = await asyncio.to_thread(load_snapshot, area_path)
+        hikes = await asyncio.to_thread(search_snapshot, snap, criteria, CFG, near_miss=near_miss)
+    else:
+        missing = [k for k in ("south", "west", "north", "east") if k not in arguments]
+        if missing:
+            return [
+                TextContent(
+                    type="text",
+                    text="provide south/west/north/east for a live search, or `area` for an "
+                    "offline snapshot search.",
+                )
+            ]
+        bbox = (arguments["south"], arguments["west"], arguments["north"], arguments["east"])
+        # search_hikes is synchronous (network + math); run it off the event loop.
+        hikes = await asyncio.to_thread(search_hikes, bbox, criteria, CFG, near_miss=near_miss)
 
     if not hikes:
         return [TextContent(type="text", text="No matching hikes found in that area.")]
-
     return [TextContent(type="text", text="\n".join(format_hike(h) for h in hikes))]
+
+
+async def _call_download_area(arguments: dict) -> list[TextContent]:
+    bbox = (arguments["south"], arguments["west"], arguments["north"], arguments["east"])
+    path = arguments["path"]
+    snap = await asyncio.to_thread(download_area, bbox, CFG)
+    await asyncio.to_thread(save_snapshot, snap, path)
+    return [
+        TextContent(
+            type="text",
+            text=(
+                f"Saved snapshot to {path}: {snap.route_count} routes, "
+                f"{snap.sample_count} elevation samples. "
+                f"Search it offline with find_hikes(area=\"{path}\")."
+            ),
+        )
+    ]
 
 
 def main() -> None:

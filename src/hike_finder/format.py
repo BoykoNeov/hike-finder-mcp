@@ -10,7 +10,11 @@ from .filters import Hike
 
 
 def format_hike(h: Hike) -> str:
-    """The canonical one-line summary of a hike."""
+    """The canonical one-line summary of a hike.
+
+    A near-miss is prefixed with ``~`` and gets a trailing ``[near miss: ...]`` clause
+    spelling out how it falls short, so it reads as "close, but not a match".
+    """
     flags = ["loop" if h.circular else "one-way"]
     if h.car_access:
         flags.append("car")
@@ -20,9 +24,11 @@ def format_hike(h: Hike) -> str:
         elev = f"+{h.gain_m} m / -{h.loss_m} m"
     else:
         elev = "gain n/a"
+    prefix = "~ " if h.near_miss else ""
+    suffix = f"  [near miss: {'; '.join(h.notes)}]" if h.near_miss and h.notes else ""
     return (
-        f"{h.name} — {h.distance_km} km, {elev} [{', '.join(flags)}] "
-        f"(start {h.start[0]:.4f},{h.start[1]:.4f}, OSM relation {h.osm_id})"
+        f"{prefix}{h.name} — {h.distance_km} km, {elev} [{', '.join(flags)}] "
+        f"(start {h.start[0]:.4f},{h.start[1]:.4f}, OSM relation {h.osm_id}){suffix}"
     )
 
 
@@ -40,4 +46,6 @@ def hike_to_dict(h: Hike) -> dict:
         "chairlift_access": h.chairlift_access,
         "lift_type": h.lift_type,
         "start": {"lat": h.start[0], "lon": h.start[1]},
+        "near_miss": h.near_miss,
+        "notes": list(h.notes),
     }

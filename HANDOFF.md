@@ -97,6 +97,67 @@ routes longer than N× the bbox diagonal — a through-route (national trail) th
 merely crosses the area returns its *full* geometry, which would otherwise
 report a 200 km "hike" and test parking/lifts at endpoints in another region.
 
+### Saved areas (offline snapshots) and near-miss results — added 2026-06-24
+
+Two features added in response to "stop wasting API calls re-searching one area"
+and "show close results, especially when 0 match":
+
+- **Area snapshots (`snapshot.py` + `search.download_area`/`search_snapshot`).**
+  `download_area` fetches Overpass ONCE and warms elevation for *every* geometry-
+  plausible route (it runs `find_hikes` with empty `Criteria`, so the over-length
+  guard still prunes through-routes), then prunes the stored routes to exactly the
+  guard survivors and saves `{bbox, area, elevations, sample_interval}` to JSON.
+  `search_snapshot` searches that file with **zero network**, reusing the *unchanged*
+  `find_hikes` driven by two swapped seams: the saved `AreaData` instead of
+  `fetch_area`, and a `SnapshotElevationProvider` instead of the API. So offline ==
+  online **by construction**, not a parallel code path. Key mechanics:
+    - `RecordingElevationProvider` wraps the real provider during download and
+      records every `point → elevation`.
+    - `SnapshotElevationProvider` replays them; a missing point raises
+      `ElevationError` (the route degrades to n/a, same all-or-nothing as live).
+    - Elevation keys are rounded to **7 decimals (~1 cm)** at store *and* lookup, so
+      a hit never depends on bit-exact float reproduction across the two processes.
+    - `search_snapshot` **locks** the snapshot's `sample_interval_m` (the saved
+      points were taken at it) but leaves `gain_threshold`/`smooth_window`/access
+      radii/`loop_tolerance` tunable; the over-length guard reuses the snapshot bbox.
+  Coords round-trip JSON as lists and are restored to **tuples** on load (the vertex
+  graph / `dict.fromkeys` need hashable points).
+- **Near-misses (`filters.find_hikes(near_miss=…)`).** Tri-state `False | True |
+  "auto"`. `"auto"` (the frontend default) shows near-misses only when there are
+  **zero** strict matches. A relaxed cheap gate (`Criteria.accepts_geometry_relaxed`)
+  admits routes just outside the cut — distance within `HIKE_NEAR_MISS_DIST_KM`,
+  parking/lift within `radius × (1 + HIKE_NEAR_MISS_RADIUS_FRAC)` — into a second
+  bucket; their elevation is paid for **only when near-misses actually engage**, so
+  the API economy is intact when matches exist. `near_miss_notes` annotates each
+  with the literal gap (`gain 709 m — 41 m below the 750 m minimum`). Shape is never
+  relaxed (a loop is not "almost point-to-point") and *excluded* access stays strict,
+  so a near-miss always shares the requested shape/exclusions — the "don't label
+  wrong-shape routes close" hazard. Near-misses sort after matches and carry
+  `Hike.near_miss=True` + `Hike.notes`; `format_hike` prefixes `~` and appends
+  `[near miss: …]`, `hike_to_dict` adds `near_miss`/`notes`. Access distance comes
+  from `access.nearest_parking_m`/`nearest_lift_m` (measuring siblings of the boolean
+  predicates — the live-pinned `car_accessible`/`matched_access_points` are untouched).
+
+**Frontends.** CLI: `--download FILE` / `--area FILE` / `--near-misses`
+(`BooleanOptionalAction` → on/off, default `auto`). Web: a **"Download view"**
+button + area-name field, a saved-area selector, a near-miss select; new routes
+`/api/download`, `/api/areas`, and `area=`/`near_misses=` on `/api/hikes`
+(snapshots saved under `HIKE_SNAPSHOT_DIR`, name slugified so it can't escape the
+dir). MCP: `find_hikes` gains optional `area` (offline) + `near_misses` params (its
+schema `required` is now `[]`, validated in code), plus a new `download_area` tool.
+
+**Validated live (2026-06-24, local DEM so zero API quota).** On bbox
+`50.72,15.58,50.74,15.62`: `--download` (process 1) → `--area` (process 2) →
+gain/loss/distance/booleans for **all 11 routes equal a live `--bbox` search
+byte-for-byte, 0 `n/a`** — proves cross-process key matching on real geometry. A
+`--min-gain 750` query (nothing meets it) surfaced 2 near-misses (`+709 m`, 41 m
+short; `+693 m`, 57 m short) with notes; `--no-near-misses` returned the empty
+message. Identical results via the web UI (live `/api/download` → 11 routes, offline
+`/api/hikes?area=`) and the MCP `find_hikes(area=…)` tool over the real protocol.
+Tests: `test_snapshot.py`, `test_near_miss.py`, `test_web.py`, plus new cases in
+`test_cli.py`/`test_server.py`. Suite now 144 offline (excludes the 3 env-broken
+`.sh` launcher cases on this WSL-less box; `.ps1` equivalents pass).
+
 ## What is DONE and PROVEN (unit-tested, runs offline)
 
 - `geometry.py` — haversine distance, polyline length, **`total_way_length_m`

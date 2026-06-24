@@ -28,6 +28,14 @@
   HIKE_MAX_ROUTE_FACTOR drop routes longer than factor x bbox diagonal (default 4.0).
                         Guards against through-routes (national trails) that merely
                         cross the area being returned with their full geometry.
+
+  HIKE_NEAR_MISS_GAIN_FRAC   near-miss gain tolerance, fraction of the bound
+                             (default 0.2 -> within 20% of a min/max gain)
+  HIKE_NEAR_MISS_DIST_KM     near-miss distance tolerance, km past a min/max (default 2.0)
+  HIKE_NEAR_MISS_RADIUS_FRAC near-miss access tolerance: parking/lift within
+                             radius x (1 + this) still counts (default 0.5)
+  HIKE_SNAPSHOT_DIR     directory for named area snapshots saved by the web UI
+                        (default: a per-user cache subdir, .../hike-finder/snapshots)
 """
 from __future__ import annotations
 
@@ -56,6 +64,10 @@ class Config:
     car_radius_m: float = float(os.getenv("HIKE_CAR_RADIUS", "300"))
     lift_radius_m: float = float(os.getenv("HIKE_LIFT_RADIUS", "400"))
     max_route_factor: float = float(os.getenv("HIKE_MAX_ROUTE_FACTOR", "4.0"))
+
+    near_miss_gain_frac: float = float(os.getenv("HIKE_NEAR_MISS_GAIN_FRAC", "0.2"))
+    near_miss_dist_km: float = float(os.getenv("HIKE_NEAR_MISS_DIST_KM", "2.0"))
+    near_miss_radius_frac: float = float(os.getenv("HIKE_NEAR_MISS_RADIUS_FRAC", "0.5"))
 
 
 def load() -> Config:
