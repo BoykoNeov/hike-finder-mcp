@@ -45,7 +45,10 @@ Each frontend also has a **thin launcher** in `scripts/` (`cli`/`web`/`mcp`, in
 args to the entry point — no logic, so it can't drift. The MCP launcher writes
 NOTHING to stdout (that's the JSON-RPC channel). `.gitattributes` pins `*.sh` to
 LF so the bash launchers survive a Windows (`autocrlf=true`) checkout. All three
-are pinned by `tests/test_launchers.py` (MCP via a real stdio handshake).
+are pinned by `tests/test_launchers.py` (MCP via a real stdio handshake). The
+default-contact path is **validated live** (2026-06-24): with no `HIKE_OVERPASS_UA`
+and no `--user-agent`, `scripts/cli.sh` reached Overpass (no 406) and returned the
+Špindl okruh — so the baked-in default UA genuinely satisfies the public server.
 
 ```
 frontends (pick one; cli/web need no LLM):
