@@ -19,6 +19,8 @@ convention.
 """
 from __future__ import annotations
 
+import math
+
 from .geometry import Coord, haversine_m, route_cycle_count
 
 # Aerialways you can ride UP sitting/standing in a cabin — the realistic
@@ -86,15 +88,39 @@ def route_endpoints(line: list[Coord]) -> list[Coord]:
     return [line[0], line[-1]]
 
 
+def _bbox_pad(points: list[Coord], radius_m: float):
+    """Lat/lon bounds of ``points`` expanded so anything within ``radius_m`` of a
+    point is inside. Used to skip features that provably cannot be in range before
+    the O(points × features) haversine scan — an EXACT speedup (it only drops
+    features too far to ever match), worth it once ``points`` is a whole loop line.
+
+    Longitude padding uses the bbox's worst-case (highest-|lat|) cosine, so the
+    box is always a superset and the filter never wrongly drops a real candidate.
+    """
+    lats = [p[0] for p in points]
+    lons = [p[1] for p in points]
+    dlat = radius_m / 111_320.0
+    worst_lat = max(abs(min(lats)), abs(max(lats)))
+    dlon = radius_m / (111_320.0 * max(0.05, math.cos(math.radians(worst_lat))))
+    return (min(lats) - dlat, max(lats) + dlat, min(lons) - dlon, max(lons) + dlon)
+
+
 def car_accessible(
     endpoints: list[Coord],
     parking: list[dict],
     radius_m: float = 300.0,
 ) -> bool:
     """True if any mapped parking lot is within ``radius_m`` of an endpoint."""
-    return any(
-        haversine_m(e, p["coord"]) <= radius_m for e in endpoints for p in parking
-    )
+    if not endpoints or not parking:
+        return False
+    lo_lat, hi_lat, lo_lon, hi_lon = _bbox_pad(endpoints, radius_m)
+    for p in parking:
+        plat, plon = p["coord"]
+        if not (lo_lat <= plat <= hi_lat and lo_lon <= plon <= hi_lon):
+            continue  # outside the radius-padded bbox -> can't be within radius
+        if any(haversine_m(e, p["coord"]) <= radius_m for e in endpoints):
+            return True
+    return False
 
 
 def chairlift_access(
@@ -108,10 +134,16 @@ def chairlift_access(
     of the closest qualifying lift (e.g. ``"chair_lift"``, ``"gondola"``), so
     the output can name what the access actually is.
     """
+    if not endpoints or not lifts:
+        return (False, None)
+    lo_lat, hi_lat, lo_lon, hi_lon = _bbox_pad(endpoints, radius_m)
     best_kind: str | None = None
     best_d = float("inf")
     for lift in lifts:
         for station in lift.get("stations", []):
+            slat, slon = station
+            if not (lo_lat <= slat <= hi_lat and lo_lon <= slon <= hi_lon):
+                continue  # outside the radius-padded bbox -> skip the haversine
             for e in endpoints:
                 d = haversine_m(e, station)
                 if d <= radius_m and d < best_d:

@@ -141,29 +141,42 @@ def measure_geometry(
     distance_km = total_way_length_m(ways) / 1000.0
     circular = is_circular(ways, line, route.get("tags", {}), tol_m=loop_tolerance_m)
 
-    # Access is tested at the UNION of the route's genuine termini (degree-1
-    # vertices of the full vertex graph) and the stitched line's two ends. The
-    # termini are the fix: stitch_ways drops members on branched/gap-split
-    # relations, so its ends alone can fall mid-route and hide a real trailhead's
-    # parking/lift on a dropped member. We keep the stitched ends too rather than
-    # replace them — replacing would MOVE the test point off a lollipop's ring to
-    # its stem tip and could drop a parking mapped on the loop (a false negative,
-    # the bug class this fixes). Union is recall-monotonic: it can only add access
-    # hits, never remove one. A pure loop / fwd+back-duplicated route has no
-    # degree-1 vertex, so the union is just the stitched ends — today's behaviour.
+    # Termini are the route's genuine open ends (degree-1 vertices of the full
+    # vertex graph). They drive the START marker's access coupling below — the
+    # trailhead you reach by car/lift. They also matter for access on branched/
+    # gap-split relations: stitch_ways drops members it can't chain, so the
+    # stitched line's two ends alone can fall mid-route and hide a real trailhead's
+    # parking/lift on a dropped member; the termini recover it.
     termini = route_termini(ways)
     endpoints = list(dict.fromkeys(termini + route_endpoints(line)))
-    car = car_accessible(endpoints, parking, car_radius_m)
-    lift_ok, lift_kind = chairlift_access(endpoints, lifts, lift_radius_m)
+
+    # The car/lift BOOLEANS test a wider point set than `endpoints` on a LOOP: a
+    # loop has no real "end", so its stitched ends are arbitrary points on the ring
+    # and a lift or parking elsewhere on the loop (the common case — you ride a lift
+    # the loop merely passes) would be missed by an ends-only test. For a circular
+    # route we therefore test proximity along the WHOLE line, still UNIONed with the
+    # termini so a feature at a terminus on a dropped member is not lost. The set is
+    # a strict superset of `endpoints`, so it is recall-monotonic — it can only add
+    # access hits, never remove one — and a point-to-point route is unchanged (its
+    # access_pts collapse back to `endpoints`). NB the switch is `circular`, not
+    # `termini`: lollipops and gap-closed loops HAVE termini yet are exactly where
+    # the ends-only test misses a lift on the ring.
+    access_pts = list(
+        dict.fromkeys(termini + (line if circular else route_endpoints(line)))
+    )
+    car = car_accessible(access_pts, parking, car_radius_m)
+    lift_ok, lift_kind = chairlift_access(access_pts, lifts, lift_radius_m)
 
     # Couple the start marker to the access result: aim it at the terminus
     # nearest a parking lot / lift station that actually granted access, so a
-    # route's `start` points at the trailhead you drive or ride to. The matched
-    # features come from the SAME `<= radius` predicate as the car/lift booleans
-    # above, so the verdict and the start can't disagree. Note this only fires
-    # for routes WITH termini: a pure loop has none, so its start stays at the
-    # conventional head even when parking is matched (a known limitation — loop
-    # start is geometrically arbitrary anyway).
+    # route's `start` points at the trailhead you drive or ride to. This uses
+    # `endpoints` (the genuine ends), NOT the loop-widened `access_pts`: the start
+    # belongs at a real trailhead, not an arbitrary mid-loop point. On a
+    # point-to-point route `access_pts == endpoints`, so the matched features share
+    # the booleans' exact `<= radius` predicate and verdict and start can't
+    # disagree. On a loop the booleans may also fire on a mid-loop feature the start
+    # won't couple to — harmless, since a loop's start is arbitrary anyway (and this
+    # only fires for routes WITH termini: a pure loop's start stays at the head).
     access_points = matched_access_points(
         endpoints, parking, lifts, car_radius_m=car_radius_m, lift_radius_m=lift_radius_m
     )

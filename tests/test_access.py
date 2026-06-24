@@ -250,6 +250,52 @@ def test_measure_geometry_start_couples_to_lift_not_just_parking():
     assert hike.start == c
 
 
+def test_measure_geometry_loop_lift_on_ring_interior_counts():
+    # THE bug this fix targets. A lollipop (ring a-b-c-a + stem a-d): its only
+    # terminus is the stem tip d, and the stitched line's ends are d and the ring
+    # closure a — so an ends-only test checks just {d, a}. A lift sits on the ring
+    # INTERIOR (near c), which a loop hiker passes but no "end" is near. Because the
+    # route is circular, access is tested along the whole ring, so it counts. Under
+    # the old ends-only behaviour (or a `termini`-keyed switch, since a lollipop HAS
+    # a terminus) this is False — the regression that returned 0 lift-served loops.
+    a, b, c = (50.0, 14.0), (50.0, 14.01), (50.01, 14.005)
+    d = (49.97, 14.0)  # stem tip terminus, ~3.3 km from the ring
+    ways = [[a, b], [b, c], [c, a], [a, d]]
+    route = {"id": 10, "name": "Lolly", "ways": ways, "tags": {}}
+    lifts = [{"stations": [(50.0101, 14.005)], "kind": "gondola"}]  # ~11 m from c
+    hike, _ = measure_geometry(route, [], lifts)
+    assert hike.circular is True
+    assert hike.chairlift_access is True and hike.lift_type == "gondola"
+
+
+def test_measure_geometry_loop_no_feature_on_ring_stays_false():
+    # The widened loop test must not invent access: a circular route with no lift
+    # anywhere near the ring stays False (guards against a false positive).
+    a, b, c, d = (50.0, 14.0), (50.0, 14.01), (50.01, 14.01), (50.01, 14.0)
+    ways = [[a, b, c, d, a]]  # pure ring, no termini
+    route = {"id": 11, "name": "Ring", "ways": ways, "tags": {}}
+    lifts = [{"stations": [(49.9, 13.9)], "kind": "chair_lift"}]  # far away
+    hike, _ = measure_geometry(route, [], lifts)
+    assert hike.circular is True
+    assert hike.chairlift_access is False and hike.lift_type is None
+
+
+def test_measure_geometry_loop_keeps_dropped_member_terminus():
+    # Lock the UNION (termini ∪ line), not a replace-with-line. A ring a-b-c-a PLUS
+    # a disconnected leg p-q whose far end p is a real terminus stitch_ways drops
+    # (it can't chain it onto the ring), so p is NOT on the stitched line. A lift at
+    # p is found only via the termini half of the union. Replacing endpoints with
+    # the line alone — a tempting "loops test the whole line" — would lose it.
+    a, b, c = (50.0, 14.0), (50.0, 14.01), (50.01, 14.005)  # ring
+    p, q = (49.95, 14.2), (49.95, 14.21)  # disconnected leg, far from the ring
+    ways = [[a, b], [b, c], [c, a], [p, q]]
+    route = {"id": 12, "name": "RingPlusOrphan", "ways": ways, "tags": {}}
+    lifts = [{"stations": [(49.9501, 14.2)], "kind": "chair_lift"}]  # ~11 m from p
+    hike, _ = measure_geometry(route, [], lifts)
+    assert hike.circular is True
+    assert hike.chairlift_access is True
+
+
 def test_measure_geometry_lollipop_start_stays_at_stem_tip():
     # Lollipop (loop a-b-c-a + stem a-d). The only terminus is the stem tip d, so
     # even with parking on the ring (which keeps car_access True via the union),

@@ -531,9 +531,19 @@ validated `search_hikes` path and returns correct UTF-8 JSON.)
   (dense → proximity cost, and tag-fragile: `highway=track` + `motor_vehicle=no`).
   If recall is too low (real trailheads with a road but no mapped parking), add
   drivable-highway *nodes* near endpoints as a second signal — not all road geometry.
-- **Access is measured at endpoints only.** A trail that passes a car park or
-  lift mid-route but starts/ends elsewhere reads as no-access. That's intentional
-  (you want to start/finish where the car/lift is), but note it before "fixing."
+- **Access is measured at endpoints for point-to-point routes; along the whole
+  line for LOOPS** (2026-06-24). A point-to-point trail that passes a car park or
+  lift mid-route but starts/ends elsewhere reads as no-access — intentional (you
+  want to start/finish where the car/lift is). But a *loop* has no meaningful
+  "end": its stitched ends are arbitrary points on the ring, so testing only there
+  missed a lift the loop merely passes (it returned **0** lift-served loops on a
+  Cadore bbox where 2→4 loops actually have a lift). For a circular route the
+  car/lift booleans now test proximity along the whole line, UNIONed with the
+  termini (so a feature at a terminus on a stitch-dropped member is not lost —
+  recall-monotonic, a strict superset of the old endpoints). The `start` marker is
+  still coupled to the termini only, so a pure loop's start stays at the head. An
+  exact radius-padded-bbox pre-filter (`access._bbox_pad`) keeps the whole-line
+  scan cheap (Cadore cheap pass 5.6s→1.4s). See `filters.measure_geometry`.
 - **Over-length guard is a heuristic, not bbox-clipping.** `HIKE_MAX_ROUTE_FACTOR`
   × bbox-diagonal drops through-routes cheaply, but it can also drop a genuinely
   long loop in a small bbox, and it doesn't *clip* a route to the area (distance is
