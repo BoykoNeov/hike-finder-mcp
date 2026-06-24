@@ -177,7 +177,11 @@ latitude, max longitude):
 > vertices of that same vertex graph), so a branched relation whose stitch drops
 > members no longer tests access at the wrong ends — validated live against the
 > "Medvěd*" relations, where the branched *Medvědí okruh* (42% stitch coverage)
-> recovers all four real trailheads. Remaining caveat: the **local DEM** backend
+> recovers all four real trailheads. The reported **start** point is now coupled
+> to access: when a route has a mapped parking/lift near an end, `start` is the
+> terminus nearest it, so the pin lands on the trailhead you drive or ride to
+> (pure loops have no terminus, so their start stays at the conventional head).
+> Remaining caveat: the **local DEM** backend
 > (`mode=local`) is still untested — tracked in `HANDOFF.md`.
 
 ### Configuration (environment variables)

@@ -8,6 +8,7 @@ from hike_finder.access import (
     chairlift_access,
     endpoints_closed,
     is_circular,
+    matched_access_points,
     route_endpoints,
 )
 from hike_finder.filters import Criteria, Hike, measure_geometry
@@ -139,6 +140,32 @@ def test_chairlift_access_out_of_range():
     assert ok is False and kind is None
 
 
+def test_matched_access_points_iff_access_booleans():
+    # The load-bearing invariant for the start-coupling: matched_access_points
+    # must return a non-empty list IFF car/chairlift access is True — it shares
+    # the exact <= radius predicate and the same default radii. If the two ever
+    # drift, a route can read "accessible" with nothing to couple the start to,
+    # or vice versa. Sweep every car/lift presence combination.
+    endpoints = [(50.0, 14.0)]
+    near_p = [{"coord": (50.0, 14.0015)}]  # ~107 m  -> car True
+    far_p = [{"coord": (50.0, 14.01)}]  # ~710 m  -> car False
+    near_l = [{"stations": [(50.0, 14.002)], "kind": "gondola"}]  # ~143 m -> lift True
+    far_l = [{"stations": [(49.9, 13.9)], "kind": "gondola"}]  # far -> lift False
+    for parking, lifts in [
+        ([], []),
+        (near_p, []),
+        ([], near_l),
+        (near_p, near_l),
+        (far_p, far_l),
+        (far_p, near_l),
+        (near_p, far_l),
+    ]:
+        car = car_accessible(endpoints, parking)
+        lift_ok, _ = chairlift_access(endpoints, lifts)
+        pts = matched_access_points(endpoints, parking, lifts)
+        assert (car or lift_ok) == bool(pts)
+
+
 # ----------------------------------------------------------------------------
 # measure_geometry: access + start from genuine termini, not the stitched line
 # ----------------------------------------------------------------------------
@@ -195,6 +222,47 @@ def test_measure_geometry_start_moves_off_interior_head():
     hike, line = measure_geometry(route, [], [])
     assert line[0] == j  # stitch left an interior head (the through-way was dropped)
     assert hike.start in {e1, a, b} and hike.start != j
+
+
+def test_measure_geometry_start_couples_to_tail_parking():
+    # Clean linear route a-b-c. stitch seeds from the first member, so the head is
+    # deterministically a (a genuine terminus) — with no access, start would stay
+    # at a. Put the parking at the OTHER end c, and start must move to c: the
+    # marker now points at the trailhead you actually drive to. This is the whole
+    # feature — start is coupled to the access result.
+    a, b, c = (50.0, 14.0), (50.0, 14.01), (50.0, 14.02)
+    route = {"id": 4, "name": "Linear", "ways": [[a, b], [b, c]], "tags": {}}
+    parking = [{"coord": (50.0, 14.0201), "name": "P"}]  # ~7 m from c
+    hike, line = measure_geometry(route, parking, [])
+    assert line[0] == a  # head is the far terminus...
+    assert hike.car_access is True
+    assert hike.start == c  # ...but start coupled to the parking end
+
+
+def test_measure_geometry_start_couples_to_lift_not_just_parking():
+    # A lift station — not only parking — counts as a matched access feature, so
+    # start couples to the chairlift base just the same.
+    a, b, c = (50.0, 14.0), (50.0, 14.01), (50.0, 14.02)
+    route = {"id": 5, "name": "Linear", "ways": [[a, b], [b, c]], "tags": {}}
+    lifts = [{"stations": [(50.0, 14.0202)], "kind": "chair_lift"}]  # ~14 m from c
+    hike, _ = measure_geometry(route, [], lifts)
+    assert hike.chairlift_access is True and hike.lift_type == "chair_lift"
+    assert hike.start == c
+
+
+def test_measure_geometry_lollipop_start_stays_at_stem_tip():
+    # Lollipop (loop a-b-c-a + stem a-d). The only terminus is the stem tip d, so
+    # even with parking on the ring (which keeps car_access True via the union),
+    # start stays at d — the genuine open end you'd begin from. Restricting the
+    # start pick to termini, not the whole access union, is what keeps it there.
+    a, b, c = (50.0, 14.0), (50.0, 14.01), (50.01, 14.005)
+    d = (49.97, 14.0)  # stem tip terminus, ~3.3 km from the ring
+    ways = [[a, b], [b, c], [c, a], [a, d]]
+    route = {"id": 6, "name": "Lolly", "ways": ways, "tags": {}}
+    parking = [{"coord": a, "name": "P"}]  # on the ring, far from the stem tip
+    hike, _ = measure_geometry(route, parking, [])
+    assert hike.car_access is True  # access still found on the ring (union)
+    assert hike.start == d  # but start is the stem-tip terminus
 
 
 # ----------------------------------------------------------------------------

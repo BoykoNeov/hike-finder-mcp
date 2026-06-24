@@ -304,14 +304,27 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
      mapped on the loop (a false negative). Union is recall-monotonic — it can only
      add access hits, never remove one. A pure loop / fwd+back-duplicated route has
      no degree-1 vertex, so the union is just the stitched ends (today's behaviour).
-     `_route_start` keeps `line[0]` when it is already a terminus (zero churn on
-     clean routes) else moves to the smallest terminus by coordinate. Validated
-     live on the "Medvěd*" fixture: the branched *Medvědí okruh* (rel 6285306,
-     only 42% stitch coverage) recovers **4 genuine termini ~2.46 km apart**
-     (the old code tested 2 ends, only 1 a real terminus); the real KČT okruhs are
-     lollipops whose stem tip is now tested *in addition to* the ring point; every
-     clean linear route is unchanged. Pinned by `tests/test_closure_live.py`
-     termini ground truth plus a lollipop ring-parking guard. Distance no longer
+     `_route_start` is **coupled to the access result** (refinement, 2026-06-24):
+     when the route has matched access AND termini, `start` is the terminus
+     *nearest a matched parking/lift* (`access.matched_access_points`, the same
+     `<= radius` predicate as the booleans — a test pins `car or lift True` ⟺
+     non-empty), tie-broken by coordinate; so the marker lands on the trailhead you
+     actually drive/ride to. With no matched access it falls back to the prior rule
+     (keep `line[0]` when it's a terminus — zero churn on clean routes — else the
+     smallest terminus). Candidates are termini ONLY, so a lollipop's start stays at
+     the stem tip even with parking on the ring; a **pure loop has no terminus, so
+     its start is never coupled** (stays at the arbitrary head — known limitation,
+     loop start is geometrically arbitrary anyway). Live-gate caveat: the "Medvěd*"
+     fixture carries no parking/lift data, so the coupling branch can't be exercised
+     there — it's safe only because `start` is a label-only field (no filter reads
+     it; `add_elevation` uses `line`), so the synthetic tests carry the weight.
+     Validated live on the fixture for the termini themselves: the branched
+     *Medvědí okruh* (rel 6285306, only 42% stitch coverage) recovers **4 genuine
+     termini ~2.46 km apart** (the old code tested 2 ends, only 1 a real terminus);
+     the real KČT okruhs are lollipops whose stem tip is tested *in addition to* the
+     ring point; every clean linear route is unchanged. Pinned by
+     `tests/test_closure_live.py` termini ground truth plus a lollipop ring-parking
+     guard and the start-coupling cases in `tests/test_access.py`. Distance no longer
      depends on the stitch; closure never did. **Nothing
      in this relation's geometry pipeline still rides on the greedy stitch except
      the `is_circular` gap fallback and the loop `start` fallback (both benign).**
@@ -362,9 +375,16 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
     stitched ends (`termini + route_endpoints(line)`, deduped) — adding the
     termini rather than replacing the stitched ends, so a lollipop's ring point
     isn't dropped in favour of the stem tip (union is recall-monotonic). `start`
-    keeps `line[0]` when it is already a terminus, so clean routes don't move.
-    Live-validated on the "Medvěd*" fixture (branched *Medvědí okruh* recovers all
-    4 real trailheads; see Next-steps).
+    is **coupled to access**: the terminus nearest a matched parking/lift
+    (`access.matched_access_points`, same predicate as the booleans), else it
+    keeps `line[0]` when that is already a terminus, so clean routes without access
+    don't move. Candidates are termini only (lollipop start stays at the stem tip).
+    **A pure loop has no terminus, so its start is never coupled** — it stays at the
+    arbitrary head even when parking is matched; low-stakes, loop start is
+    geometrically arbitrary. Live-validated on the "Medvěd*" fixture for the termini
+    (branched *Medvědí okruh* recovers all 4 real trailheads; see Next-steps); the
+    coupling itself is synthetic-tested only — the fixture has no parking/lift data,
+    and that is safe because `start` is a label-only field (no filter reads it).
 - **Closure T-junctions: handled.** `route_cycle_count` now nodes on *every*
   vertex (welded by coordinate), so a way whose endpoint lands on another way's
   interior vertex shares that exact node and the join is seen — a loop closed

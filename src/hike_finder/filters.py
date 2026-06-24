@@ -18,7 +18,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .access import car_accessible, chairlift_access, is_circular, route_endpoints
+from .access import (
+    car_accessible,
+    chairlift_access,
+    is_circular,
+    matched_access_points,
+    route_endpoints,
+)
 from .elevation import ElevationError, ElevationProvider, cumulative_gain_loss
 from .geometry import (
     Coord,
@@ -80,16 +86,33 @@ class Criteria:
         return True
 
 
-def _route_start(line: list[Coord], termini: list[Coord], weld_m: float = 1.0) -> Coord:
+def _route_start(
+    line: list[Coord],
+    termini: list[Coord],
+    access_points: list[Coord] = (),
+    weld_m: float = 1.0,
+) -> Coord:
     """Pick the start-marker coordinate.
 
-    Keep the stitched line's head when it is already a genuine terminus — true of
-    every cleanly connected route, so correct starts never move. Only on a branched
+    When the route has matched access (a parking lot or lift station near one of
+    its ends) AND genuine termini, start at the terminus nearest a matched access
+    feature — so the marker lands on the trailhead you actually drive or ride to,
+    not an arbitrary geometric end. Ties break by coordinate, keeping the pick
+    member-order independent.
+
+    Otherwise (no access matched, or a pure loop with no degree-1 vertex) keep the
+    stitched line's head when it is already a genuine terminus — true of every
+    cleanly connected route, so correct starts never move. Only on a branched
     relation, whose head ``stitch_ways`` can leave mid-route (an interior junction),
     fall through to a deterministic terminus: the smallest by coordinate, so the
     pick is member-order independent. With no termini (a loop) the head is the
     conventional single start point.
     """
+    if termini and access_points:
+        return min(
+            termini,
+            key=lambda t: (min(haversine_m(t, ap) for ap in access_points), t),
+        )
     head = line[0]
     if not termini or any(haversine_m(head, t) <= weld_m for t in termini):
         return head
@@ -133,6 +156,18 @@ def measure_geometry(
     car = car_accessible(endpoints, parking, car_radius_m)
     lift_ok, lift_kind = chairlift_access(endpoints, lifts, lift_radius_m)
 
+    # Couple the start marker to the access result: aim it at the terminus
+    # nearest a parking lot / lift station that actually granted access, so a
+    # route's `start` points at the trailhead you drive or ride to. The matched
+    # features come from the SAME `<= radius` predicate as the car/lift booleans
+    # above, so the verdict and the start can't disagree. Note this only fires
+    # for routes WITH termini: a pure loop has none, so its start stays at the
+    # conventional head even when parking is matched (a known limitation — loop
+    # start is geometrically arbitrary anyway).
+    access_points = matched_access_points(
+        endpoints, parking, lifts, car_radius_m=car_radius_m, lift_radius_m=lift_radius_m
+    )
+
     hike = Hike(
         osm_id=route["id"],
         name=route["name"],
@@ -140,7 +175,7 @@ def measure_geometry(
         circular=circular,
         car_access=car,
         chairlift_access=lift_ok,
-        start=_route_start(line, termini),
+        start=_route_start(line, termini, access_points),
         lift_type=lift_kind,
         ref=route.get("ref"),
     )

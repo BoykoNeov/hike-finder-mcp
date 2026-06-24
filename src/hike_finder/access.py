@@ -118,3 +118,36 @@ def chairlift_access(
                     best_d = d
                     best_kind = lift.get("kind")
     return (best_kind is not None, best_kind)
+
+
+def matched_access_points(
+    endpoints: list[Coord],
+    parking: list[dict],
+    lifts: list[dict],
+    *,
+    car_radius_m: float = 300.0,
+    lift_radius_m: float = 400.0,
+) -> list[Coord]:
+    """Coordinates of the parking lots / lift stations that actually grant access.
+
+    A feature qualifies when it sits within its access radius of *some* endpoint
+    — the **exact same** ``<= radius`` test, with the same car and lift radii,
+    that ``car_accessible`` and ``chairlift_access`` use to return their
+    booleans. Keeping the predicate byte-identical is the whole point: it
+    guarantees ``car_accessible(...) or chairlift_access(...)[0]`` is True iff
+    this returns a non-empty list, so the access *verdict* and the points we
+    couple a route's start marker to can never silently disagree (the same drift
+    hazard the shared ``_vertex_graph`` removed between closure and termini).
+
+    Used by the cheap pass to aim ``start`` at the trailhead that has the access
+    (the parking/lift you drive or ride to), instead of an arbitrary route end.
+    """
+    points: list[Coord] = []
+    for p in parking:
+        if any(haversine_m(e, p["coord"]) <= car_radius_m for e in endpoints):
+            points.append(p["coord"])
+    for lift in lifts:
+        for station in lift.get("stations", []):
+            if any(haversine_m(e, station) <= lift_radius_m for e in endpoints):
+                points.append(station)
+    return points
