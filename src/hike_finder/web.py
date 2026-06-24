@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .filters import Criteria
 from .format import hike_to_dict
-from .search import download_area, search_hikes, search_snapshot
+from .search import compose_loops, download_area, search_hikes, search_snapshot
 from .snapshot import default_snapshot_dir, load_snapshot, save_snapshot
 
 INDEX_HTML = """<!doctype html>
@@ -104,6 +104,9 @@ INDEX_HTML = """<!doctype html>
       <div><label>Max dist (km)</label><input id="max_distance_km" type="number" step="0.1"></div>
     </div>
 
+    <label style="margin-top:12px;"><input type="checkbox" id="compose_loops" style="width:auto; vertical-align:middle;"> Compose loops from connected trails</label>
+    <p class="muted">Stitch several marked trails into day-loops of your target distance (uses min/max dist above; default 3–15 km). Live map only.</p>
+
     <button id="search">Search this map area</button>
     <div id="status"></div>
     <div id="results"></div>
@@ -147,6 +150,8 @@ async function search(){
     const b = map.getBounds();
     params.set('south', b.getSouth()); params.set('west', b.getWest());
     params.set('north', b.getNorth()); params.set('east', b.getEast());
+    // Loop composition is a live-map-only mode (it builds a graph from fetched OSM).
+    if (document.getElementById('compose_loops').checked) params.set('compose_loops', 'true');
   }
   for (const f of FIELDS){ const id = (f === 'user_agent') ? 'ua' : f; const v = val(id); if (v !== null) params.set(f, v); }
 
@@ -211,13 +216,17 @@ function render(hikes){
     const gain = (h.gain_m != null) ? ('+' + h.gain_m + ' m / -' + h.loss_m + ' m') : 'gain n/a';
     const note = (h.near_miss && h.notes && h.notes.length)
       ? '<div class="note">near miss: ' + esc(h.notes.join('; ')) + '</div>' : '';
+    // A composed loop has no single relation id — name its constituent trails.
+    const ident = h.composed
+      ? ('composed of ' + esc((h.composed_of || []).join(' + ')))
+      : ('OSM relation ' + h.osm_id);
     const el = document.createElement('div');
     el.className = h.near_miss ? 'hike near' : 'hike';
     el.innerHTML = '<div class="name">' + esc(h.name) + '</div>'
       + '<div class="meta">' + h.distance_km + ' km &middot; ' + gain + '</div>'
       + '<div class="flags">' + flags.map(f => '<span>' + f + '</span>').join('') + '</div>'
       + note
-      + '<div class="muted">OSM relation ' + h.osm_id + '</div>';
+      + '<div class="muted">' + ident + '</div>';
     el.onclick = () => { map.setView([h.start.lat, h.start.lon], 15); marker.openPopup(); };
     results.appendChild(el);
   });
@@ -407,8 +416,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": "south/west/north/east are required"})
             return
 
+        # Loop composition: synthesise loops from connected trails inside the box.
+        search = compose_loops if _tri(qs, "compose_loops") else search_hikes
         try:
-            hikes = search_hikes(bbox, criteria, user_agent=_str(qs, "user_agent"), near_miss=near_miss)
+            hikes = search(bbox, criteria, user_agent=_str(qs, "user_agent"), near_miss=near_miss)
         except Exception as e:
             msg = str(e)
             if "406" in msg:

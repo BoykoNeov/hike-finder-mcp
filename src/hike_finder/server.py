@@ -27,7 +27,7 @@ from mcp.types import TextContent, Tool
 from . import config as _config
 from .filters import Criteria
 from .format import format_hike
-from .search import download_area, search_hikes, search_snapshot
+from .search import compose_loops, download_area, search_hikes, search_snapshot
 from .snapshot import load_snapshot, save_snapshot
 
 app = Server("hike-finder")
@@ -55,7 +55,12 @@ async def list_tools() -> list[Tool]:
                 "to get there.\n\n"
                 "Bounding box: pass south/west/north/east for a live search, OR `area` "
                 "(a snapshot path from download_area) to search offline with no API calls "
-                "— then the box is taken from the snapshot."
+                "— then the box is taken from the snapshot.\n\n"
+                "Set `compose_loops` true to SYNTHESISE loops by combining connected "
+                "marked trails inside the box, instead of reporting each OSM relation "
+                "as-is — useful for day-loops that aren't mapped as a single relation. "
+                "Target length comes from min/max_distance_km (default 3-15 km); results "
+                "are stitched from several trails and have no single relation id."
             ),
             inputSchema={
                 "type": "object",
@@ -91,6 +96,12 @@ async def list_tools() -> list[Tool]:
                         "description": "Path to a snapshot from download_area. When set, the "
                         "search runs OFFLINE against the snapshot and south/west/north/east "
                         "are ignored.",
+                    },
+                    "compose_loops": {
+                        "type": "boolean",
+                        "description": "true = synthesise loops from connected marked trails "
+                        "inside the box (live only; ignored with `area`). Target length from "
+                        "min/max_distance_km. Results are stitched from several trails.",
                     },
                 },
                 "required": [],
@@ -167,8 +178,9 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
                 )
             ]
         bbox = (arguments["south"], arguments["west"], arguments["north"], arguments["east"])
-        # search_hikes is synchronous (network + math); run it off the event loop.
-        hikes = await asyncio.to_thread(search_hikes, bbox, criteria, CFG, near_miss=near_miss)
+        # search_hikes / compose_loops are synchronous (network + math); run off the loop.
+        search = compose_loops if arguments.get("compose_loops") else search_hikes
+        hikes = await asyncio.to_thread(search, bbox, criteria, CFG, near_miss=near_miss)
 
     if not hikes:
         return [TextContent(type="text", text="No matching hikes found in that area.")]

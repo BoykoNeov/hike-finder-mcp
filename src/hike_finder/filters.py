@@ -68,6 +68,13 @@ class Hike:
     notes: tuple[str, ...] = ()
     car_distance_m: float | None = None
     lift_distance_m: float | None = None
+    # Composed-loop provenance. A composed loop is synthesised from several connected
+    # marked trails (see compose.py), so it has NO single OSM relation id — `composed`
+    # flags it and `composed_of` lists the constituent trail refs/colours, which the
+    # renderer shows instead of a (dishonest) single relation id. Default off for every
+    # ordinary route.
+    composed: bool = False
+    composed_of: tuple[str, ...] = ()
 
 
 @dataclass

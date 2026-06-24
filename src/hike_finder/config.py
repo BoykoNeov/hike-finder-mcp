@@ -45,6 +45,14 @@
   HIKE_OVERPASS_CACHE_TTL_DAYS  how long a cached Overpass area stays fresh, days
                         (default 30; trails change slowly). 0 disables Overpass
                         caching (elevation, being immutable terrain, is never TTL'd).
+
+  HIKE_COMPOSE_MIN_KM   compose mode: default min loop length when no --min-distance (3)
+  HIKE_COMPOSE_MAX_KM   compose mode: default max loop length when no --max-distance (15)
+  HIKE_COMPOSE_MAX_SEGMENTS  compose mode: max trail segments per composed loop (12)
+  HIKE_COMPOSE_OVERLAP_FRAC  compose mode: drop a loop sharing more than this fraction
+                        of its length with an already-kept loop (0.6)
+  HIKE_COMPOSE_MAX_LOOPS  compose mode: max loops returned, ranked by compactness;
+                        bounds the per-loop elevation cost (15)
 """
 from __future__ import annotations
 
@@ -88,6 +96,17 @@ class Config:
     cache_enabled: bool = _env_bool("HIKE_CACHE", True)
     cache_dir: str | None = os.getenv("HIKE_CACHE_DIR")
     overpass_cache_ttl_days: float = float(os.getenv("HIKE_OVERPASS_CACHE_TTL_DAYS", "30"))
+
+    # Loop composition (compose.py): default target length band when the user gives no
+    # --min/--max-distance, plus the cycle-search bounds (segments per loop, near-
+    # duplicate overlap fraction). The expansion budget is an internal runaway guard.
+    compose_min_km: float = float(os.getenv("HIKE_COMPOSE_MIN_KM", "3"))
+    compose_max_km: float = float(os.getenv("HIKE_COMPOSE_MAX_KM", "15"))
+    compose_max_segments: int = int(os.getenv("HIKE_COMPOSE_MAX_SEGMENTS", "12"))
+    compose_overlap_frac: float = float(os.getenv("HIKE_COMPOSE_OVERLAP_FRAC", "0.6"))
+    # Cap on composed loops returned (ranked by compactness). Bounds the elevation cost
+    # — the caller looks up elevation per returned loop — and keeps the list manageable.
+    compose_max_loops: int = int(os.getenv("HIKE_COMPOSE_MAX_LOOPS", "15"))
 
 
 def load() -> Config:

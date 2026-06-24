@@ -87,3 +87,29 @@ def test_hikes_unknown_area_is_404(server):
     with pytest.raises(urllib.error.HTTPError) as ei:
         _get(server + "/api/hikes?area=nope")
     assert ei.value.code == 404
+
+
+def test_hikes_compose_loops_routes_to_compose_engine(server, monkeypatch):
+    # compose_loops=true on the live bbox route must call the composition engine
+    # (NOT search_hikes) and serialise the composed loop's provenance with no relation id.
+    from hike_finder.filters import Hike
+
+    def _fail(*a, **k):
+        raise AssertionError("search_hikes must not run when compose_loops is set")
+
+    def _stub(bbox, criteria, *, user_agent=None, near_miss=False, **k):
+        return [
+            Hike(osm_id=-1, name="Composed loop", distance_km=9.0, circular=True,
+                 car_access=False, chairlift_access=False, start=(50.7, 15.6),
+                 gain_m=200, loss_m=200, composed=True, composed_of=("0402", "1801")),
+        ]
+
+    monkeypatch.setattr(web, "search_hikes", _fail)
+    monkeypatch.setattr(web, "compose_loops", _stub)
+    status, hikes = _get(
+        server + "/api/hikes?south=50.72&west=15.58&north=50.74&east=15.62&compose_loops=true"
+    )
+    assert status == 200 and len(hikes) == 1
+    h = hikes[0]
+    assert h["composed"] is True and h["composed_of"] == ["0402", "1801"]
+    assert h["osm_id"] is None

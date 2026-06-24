@@ -26,16 +26,24 @@ def format_hike(h: Hike) -> str:
         elev = "gain n/a"
     prefix = "~ " if h.near_miss else ""
     suffix = f"  [near miss: {'; '.join(h.notes)}]" if h.near_miss and h.notes else ""
+    # A composed loop has no single OSM relation — name its constituent trails instead
+    # of a (dishonest) relation id, so it always reads as a stitched-together suggestion.
+    if h.composed:
+        ident = f"composed of {' + '.join(h.composed_of)}" if h.composed_of else "composed loop"
+    else:
+        ident = f"OSM relation {h.osm_id}"
     return (
         f"{prefix}{h.name} — {h.distance_km} km, {elev} [{', '.join(flags)}] "
-        f"(start {h.start[0]:.4f},{h.start[1]:.4f}, OSM relation {h.osm_id}){suffix}"
+        f"(start {h.start[0]:.4f},{h.start[1]:.4f}, {ident}){suffix}"
     )
 
 
 def hike_to_dict(h: Hike) -> dict:
     """JSON-serialisable view of a hike (for CLI --json and the web UI)."""
     return {
-        "osm_id": h.osm_id,
+        # A composed loop carries no single OSM relation id — expose None and list its
+        # constituent trails in `composed_of` instead.
+        "osm_id": None if h.composed else h.osm_id,
         "name": h.name,
         "ref": h.ref,
         "distance_km": h.distance_km,
@@ -48,4 +56,6 @@ def hike_to_dict(h: Hike) -> dict:
         "start": {"lat": h.start[0], "lon": h.start[1]},
         "near_miss": h.near_miss,
         "notes": list(h.notes),
+        "composed": h.composed,
+        "composed_of": list(h.composed_of),
     }

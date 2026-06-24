@@ -17,15 +17,20 @@ Three entry points, all returning the same filtered ``Hike`` list:
 """
 from __future__ import annotations
 
+import logging
+
 from . import cache as _cache
 from . import config as _config
+from .compose import build_trail_graph, clip_routes_to_bbox, find_loops
 from .config import Config
 from .elevation import get_provider
 from .filters import Criteria, Hike, find_hikes
-from .overpass import DEFAULT_OVERPASS_URL, build_query, fetch_area
+from .overpass import AreaData, DEFAULT_OVERPASS_URL, build_query, fetch_area
 from .snapshot import AreaSnapshot, RecordingElevationProvider, SnapshotElevationProvider
 
 Bbox = tuple[float, float, float, float]
+
+_log = logging.getLogger(__name__)
 
 
 def _provider(cfg: Config, elevation_mode: str | None, dem_dir: str | None, cache=None):
@@ -116,6 +121,113 @@ def search_hikes(
         near_miss=near_miss,
         **_near_miss_kwargs(cfg),
     )
+
+
+def compose_loops(
+    bbox: Bbox,
+    criteria: Criteria,
+    cfg: Config | None = None,
+    *,
+    user_agent: str | None = None,
+    overpass_url: str | None = None,
+    elevation_mode: str | None = None,
+    dem_dir: str | None = None,
+    near_miss: bool | str = False,
+) -> list[Hike]:
+    """Synthesise loops from connected marked-trail segments, then measure them.
+
+    Where ``search_hikes`` reports each OSM relation as-is (so ``circular`` only finds
+    loops mapped as a single relation), this builds ONE graph from every relation's
+    member ways and searches it for cycles of a target length — the day-loops that are
+    really ad-hoc combinations of several marked trails (see compose.py).
+
+    The target length band comes from ``criteria.min/max_distance_km`` (falling back to
+    ``cfg.compose_min_km``/``compose_max_km``). Each composed loop is wrapped as a
+    synthetic ``roundtrip=yes`` route and run through the *unchanged* ``find_hikes``, so
+    its elevation/gain, distance, and car/lift access are computed exactly as for a real
+    route — and offline == online holds by construction. Composed loops carry no single
+    OSM id; ``Hike.composed_of`` lists their constituent trail refs for the renderer.
+
+    The graph is clipped to ``bbox`` first, so a loop stays inside the searched area.
+    """
+    cfg = cfg or _config.load()
+    cache = _cache.from_config(cfg)
+    area = _fetch_area(
+        bbox, cfg, cache, user_agent=user_agent, overpass_url=overpass_url, read_cache=True
+    )
+
+    graph = build_trail_graph(clip_routes_to_bbox(area.routes, bbox))
+    min_km = criteria.min_distance_km if criteria.min_distance_km is not None else cfg.compose_min_km
+    max_km = (
+        criteria.max_distance_km
+        if criteria.max_distance_km is not None
+        else max(cfg.compose_max_km, min_km)
+    )
+    result = find_loops(
+        graph,
+        min_m=min_km * 1000.0,
+        max_m=max_km * 1000.0,
+        max_segments=cfg.compose_max_segments,
+        max_loops=cfg.compose_max_loops,
+        overlap_frac=cfg.compose_overlap_frac,
+    )
+    # Logged, never silent: how many distinct loops exist vs how many we elevation+show,
+    # and whether the bounded search hit its budget — so a truncated/capped result is
+    # never mistaken for "that's all there is".
+    truncated = (
+        f" (showing the {len(result.loops)} most loop-like; raise HIKE_COMPOSE_MAX_LOOPS for more)"
+        if result.distinct > len(result.loops) else ""
+    )
+    _log.warning(
+        "compose: %d distinct loop(s) in %.0f-%.0f km from %d trail segments%s%s",
+        result.distinct, min_km, max_km, len(graph.segments), truncated,
+        " [cycle search capped — results may be incomplete; narrow the distance band]"
+        if result.capped else "",
+    )
+
+    # Wrap each loop as a synthetic route and run the SAME engine. The negative id keys
+    # the loop back to its provenance after find_hikes (which preserves osm_id per Hike).
+    loop_by_id: dict[int, object] = {}
+    syn_routes: list[dict] = []
+    for i, loop in enumerate(result.loops):
+        sid = -(i + 1)
+        loop_by_id[sid] = loop
+        syn_routes.append(
+            {
+                "id": sid,
+                "name": "Composed loop",
+                "ref": None,
+                "osmc_color": None,
+                "tags": {"roundtrip": "yes"},
+                "ways": [loop.coords],
+            }
+        )
+    syn_area = AreaData(routes=syn_routes, parking=area.parking, lifts=area.lifts)
+    provider = _provider(cfg, elevation_mode, dem_dir, cache)
+    hikes = find_hikes(
+        syn_area,
+        provider,
+        criteria,
+        bbox=bbox,
+        # Composed loops are already clipped to the bbox and bounded by the length band,
+        # so the through-route over-length guard (meant for relations that merely cross
+        # the area) doesn't apply — disabling it avoids wrongly dropping a big in-area loop.
+        max_route_factor=float("inf"),
+        sample_interval_m=cfg.sample_interval_m,
+        gain_threshold_m=cfg.gain_threshold_m,
+        smooth_window=cfg.smooth_window,
+        loop_tolerance_m=cfg.loop_tolerance_m,
+        car_radius_m=cfg.car_radius_m,
+        lift_radius_m=cfg.lift_radius_m,
+        near_miss=near_miss,
+        **_near_miss_kwargs(cfg),
+    )
+    for h in hikes:
+        loop = loop_by_id.get(h.osm_id)
+        if loop is not None:
+            h.composed = True
+            h.composed_of = loop.refs
+    return hikes
 
 
 def download_area(

@@ -106,6 +106,42 @@ This is what makes repeat exploration cheap *and* keeps the tool a polite OSM
 citizen. (Unlike a snapshot, the cache isn't a portable file you manage — it's just
 plumbing. A `--download` snapshot stays the way to search a fixed area fully offline.)
 
+### Composing loops (stitch connected trails into a day-loop)
+
+Most KČT relations are *linear* marked segments (a coloured trail A→B); a circular
+day-hike is usually an ad-hoc combination of several connected segments. So
+`circular=true` only finds the few loops mapped as a single relation, and legitimately
+returns little. **Compose mode** instead builds one graph from *every* relation's member
+ways and searches it for cycles of a target length — synthesising loops that aren't
+mapped as a single trail:
+
+```bash
+hike-finder --bbox 50.72 15.58 50.74 15.62 --compose-loops \
+            --min-distance 5 --max-distance 12 --user-agent you@example.com
+```
+
+Each result is stitched from several marked trails, so it has **no single OSM relation
+id** — it's rendered with its constituent trails instead:
+
+```text
+Composed loop — 9.86 km, +540 m / -538 m [loop, car] (start 50.73,15.61, composed of 0402 + 1801 + Medvědí okruh)
+```
+
+The target length comes from `--min-distance`/`--max-distance` (default 3–15 km).
+Composed loops are kept **inside the searched bbox** (a loop that would wander out on a
+through-route is excluded), so widen the area for longer loops. On a dense area there can
+be dozens of candidates; the tool returns the **15 most loop-like** (ranked by
+compactness, so thin out-and-back shapes sink — tune with `HIKE_COMPOSE_MAX_LOOPS`) and
+logs how many distinct loops it found. Elevation, distance, and car/lift access are
+computed exactly as for a real route, and a composed loop is circular by construction
+(gain ≈ loss). The web UI exposes this as a **"Compose loops from connected trails"**
+checkbox; MCP via a `compose_loops` argument on `find_hikes`.
+
+> **Honesty note:** a composed loop is a *suggestion* — it asserts only that these
+> connected marked segments form a loop of that length, not that anyone signs or walks it
+> as one route. Loop closure itself is high-confidence (exact shared OSM nodes); the
+> composition is geometric, not editorial.
+
 ## Two elevation backends (both supported)
 
 | Mode | Source | Setup | Accuracy | Limits |
@@ -153,7 +189,7 @@ hike-finder --help                 # prints usage → the entry points resolve
 ```
 
 For deeper assurance, `pip install -e ".[dev]"` then `pytest` runs the full
-offline suite (169 tests; 166 pass without `bash`). From here, pick a frontend: the **Web UI** (Option A),
+offline suite (186 tests; 183 pass without `bash`). From here, pick a frontend: the **Web UI** (Option A),
 **command line** (Option B), or **MCP server** (Option C) below.
 
 Want the slower, fully-explained version of all of this — with sample output and
@@ -216,6 +252,8 @@ three boolean filters are **tri-state**: omit = don't care, `--circular` = requi
 `--no-circular` = exclude (same for `--car-access` and `--chairlift-access`).
 Numeric filters: `--min-gain`/`--max-gain` (m), `--min-distance`/`--max-distance`
 (km). Add `--json` for machine-readable output. `hike-finder --help` lists all.
+Add `--compose-loops` to synthesise loops from connected trails (see
+[Composing loops](#composing-loops-stitch-connected-trails-into-a-day-loop)).
 
 Each match prints as one line:
 
@@ -249,7 +287,8 @@ claude mcp add hike-finder --env HIKE_OVERPASS_UA=you@example.com -- hike-finder
 
 Then ask in plain language ("find loop hikes near Špindlerův Mlýn reachable by
 chairlift") and the client calls `find_hikes(south, west, north, east, …)` with
-the same filters as the CLI.
+the same filters as the CLI — plus `compose_loops` (stitch connected trails into
+loops) and `area` (search a snapshot offline).
 
 > The server is **validated live**: with `mcp` 1.28 it was driven over real OS
 > stdio (`python -m hike_finder.server`) — `list_tools` advertises `find_hikes`,
@@ -362,6 +401,11 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 | `HIKE_CACHE` | Transparent on-disk cache of Overpass + elevation results, so repeat/overlapping searches don't re-hit the public servers. `0`/`false`/`no`/`off` disables (same as `--no-cache`) | on |
 | `HIKE_CACHE_DIR` | Directory for the cache SQLite file | per-user cache (`…/hike-finder`) |
 | `HIKE_OVERPASS_CACHE_TTL_DAYS` | How long a cached Overpass area stays fresh, days (trails change slowly). `0` disables Overpass caching; elevation is immutable terrain and never expires | `30` |
+| `HIKE_COMPOSE_MIN_KM` | Compose mode: default min loop length when no `--min-distance` | `3` |
+| `HIKE_COMPOSE_MAX_KM` | Compose mode: default max loop length when no `--max-distance` | `15` |
+| `HIKE_COMPOSE_MAX_SEGMENTS` | Compose mode: max trail segments stitched per loop | `12` |
+| `HIKE_COMPOSE_OVERLAP_FRAC` | Compose mode: drop a loop sharing more than this fraction of its length with an already-kept loop (near-duplicate collapse) | `0.6` |
+| `HIKE_COMPOSE_MAX_LOOPS` | Compose mode: max loops returned, ranked by compactness (roundest first); bounds the per-loop elevation cost | `15` |
 
 > **Snapshot caveat:** `--area` locks the snapshot's sample interval (the saved
 > elevation points were taken at it), so `HIKE_SAMPLE_INTERVAL` can't break an
@@ -375,7 +419,11 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
   to a real contact. The public server rejects the default Python User-Agent.
 - **No hikes returned** → widen the bbox or loosen the filters. Note that loops are
   genuinely sparse in KČT data (most relations are linear marked segments), so
-  `circular=true` legitimately returns few results.
+  `circular=true` legitimately returns few results — try `--compose-loops` to stitch
+  connected trails into loops instead (see
+  [Composing loops](#composing-loops-stitch-connected-trails-into-a-day-loop)).
+- **`--compose-loops` returns few/no loops** → the target loop must fit *inside* the
+  searched bbox; widen the area or the `--min/--max-distance` band.
 - **Slow / occasional `504`** → public Overpass overload; the client retries with
   backoff. Point `HIKE_OVERPASS_URL` at a regional instance for heavy use.
 
@@ -386,14 +434,16 @@ elevation-API client (including its rate-limit throttle, transient-error
 retry/backoff, and a persistent daily-request counter that degrades to `n/a`
 before blowing the API's daily cap), a **transparent SQLite cache** at the
 Overpass + elevation seams (so repeat/overlapping searches don't re-hit the
-public servers), the CLI argument/formatter layer, **and the MCP server's tool
+public servers), **loop composition** (synthesising day-loops from connected marked
+trails), the CLI argument/formatter layer, **and the MCP server's tool
 schema / argument-mapping / rendering glue** (driven through the real MCP protocol
-over an in-memory session): **implemented and unit-tested** (169 tests, all
-offline; 166 pass on a box without `bash` — the 3 `.sh` launcher cases need it).
+over an in-memory session): **implemented and unit-tested** (186 tests, all
+offline; 183 pass on a box without `bash` — the 3 `.sh` launcher cases need it).
 The Overpass HTTP call, the API elevation backend, **the local-DEM backend, the
-MCP server over real stdio, and the cache** are all **validated live** (CLI + web
-+ MCP), with computed gain cross-checked against the loop invariant (gain ≈ loss)
-— the local DEM read Sněžka at 1601 m vs the known 1603 m on a Copernicus GLO-30
-tile, and a warm cached search returned byte-identical results in 0.4 s vs 4.2 s
-cold. All three frontends are now exercised end-to-end. See `HANDOFF.md` for
-exactly what's done and what's next.
+MCP server over real stdio, the cache, and loop composition** are all **validated
+live** (CLI + web + MCP), with computed gain cross-checked against the loop invariant
+(gain ≈ loss) — the local DEM read Sněžka at 1601 m vs the known 1603 m on a
+Copernicus GLO-30 tile, a warm cached search returned byte-identical results in 0.4 s
+vs 4.2 s cold, and a composed Špindl loop (3.38 km, +114/−112 m) came back identical
+across all three frontends. All three frontends are now exercised end-to-end. See
+`HANDOFF.md` for exactly what's done and what's next.

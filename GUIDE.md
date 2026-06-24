@@ -71,8 +71,8 @@ hike-finder --help
 
 You should see the usage block (`usage: hike-finder [-h] --bbox SOUTH WEST NORTH
 EAST ...`). If that prints, the install worked. If you want deeper assurance,
-`pip install -e ".[dev]"` then `pytest` runs the full **offline** suite (169
-tests; 166 pass without `bash`) — all green means the engine is sound on your machine.
+`pip install -e ".[dev]"` then `pytest` runs the full **offline** suite (186
+tests; 183 pass without `bash`) — all green means the engine is sound on your machine.
 
 ---
 
@@ -502,6 +502,62 @@ Add `--near-misses` to always list them, `--no-near-misses` to never. The defaul
 `HIKE_NEAR_MISS_DIST_KM` (2 km), `HIKE_NEAR_MISS_RADIUS_FRAC` (0.5 = parking/lift up to
 1.5× the radius still counts). In the Web UI it's the **"Near misses"** dropdown
 (auto / always / never); over MCP, a `near_misses` boolean on `find_hikes`.
+
+---
+
+## Composing loops from connected trails
+
+You ask for loops (`--circular`) and get almost nothing. That's not a bug: in the KČT
+data most relations are **linear** marked segments (a coloured trail from A to B). The
+circular day-hikes people actually walk are usually *combinations* of several connected
+segments — and the tool, by default, reports each relation as-is rather than inventing
+combinations. So `--circular` honestly returns only the handful of loops someone mapped
+as a single relation.
+
+**`--compose-loops` builds the combinations for you.** It takes every marked trail in the
+area, joins them at their shared junctions into one network graph, and searches that
+graph for cycles of a length you ask for:
+
+```bash
+hike-finder --bbox 50.72 15.58 50.74 15.62 --compose-loops \
+            --min-distance 5 --max-distance 12 --user-agent you@example.com
+```
+
+**What you get** — loops stitched from several trails. Because a composed loop isn't a
+single mapped trail, it has no OSM relation number; instead it names the trails it's made
+of:
+
+```text
+Composed loop — 9.86 km, +540 m / -538 m [loop, car] (start 50.73,15.61, composed of 0402 + 1801 + Medvědí okruh)
+```
+
+**How to read it** — the distance, the gain/loss, and the car/lift flags are computed the
+same way as for any route, so they're as trustworthy here as anywhere. A composed loop is
+circular by construction, so its gain and loss come back roughly equal — a good sanity
+check (you end where you started). The "composed of …" list is its provenance.
+
+**The two knobs that matter:**
+
+- **Length** — `--min-distance` / `--max-distance` set the target band (default 3–15 km).
+  Want a ~10 km loop? `--min-distance 8 --max-distance 12`.
+- **Area size** — a composed loop is kept **inside the box you searched**. A 12 km loop
+  simply can't fit inside a 2 km-wide view, so if you get nothing, **widen the map / bbox**
+  (this is the most common reason for an empty result). Pan out and try again.
+
+A dense area can yield dozens of candidate loops. Rather than flood you (and rather than
+spend an elevation lookup on every one), the tool returns the **15 most "loop-like"** —
+ranked by how round/compact they are, so thin out-and-back shapes sink to the bottom and
+drop off — and tells you how many distinct loops it found in total. Want more? Raise
+`HIKE_COMPOSE_MAX_LOOPS`.
+
+**In the Web UI** it's the **"Compose loops from connected trails"** checkbox (live map
+only — it needs the fetched trail network); over MCP, a `compose_loops: true` argument on
+`find_hikes`. The same `--min/--max-distance` (or `min/max_distance_km`) set the band.
+
+**Honesty note** — a composed loop is a *suggestion*. It's geometrically real (the trails
+genuinely connect at shared OpenStreetMap nodes), but nobody necessarily signs or walks it
+as one named route. Loop closure is high-confidence; the *composition* is the tool's idea,
+not the trail network's.
 
 ---
 

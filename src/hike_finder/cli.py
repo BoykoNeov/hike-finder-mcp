@@ -21,7 +21,7 @@ from . import config as _config
 from .elevation import api_quota_snapshot
 from .filters import Criteria
 from .format import format_hike, hike_to_dict
-from .search import download_area, search_hikes, search_snapshot
+from .search import compose_loops, download_area, search_hikes, search_snapshot
 from .snapshot import load_snapshot, save_snapshot
 
 
@@ -74,6 +74,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also list routes that just miss the filters, annotated with how (e.g. "
         "gain 80 m short). Default: shown only when nothing matches. --near-misses = "
         "always show; --no-near-misses = never.",
+    )
+    g.add_argument(
+        "--compose-loops",
+        action="store_true",
+        help="Synthesise loops by combining connected marked trails, instead of "
+        "reporting each OSM relation as-is — finds day-loops that aren't mapped as a "
+        "single relation. Target length comes from --min-distance/--max-distance "
+        "(default 3-15 km). Each result is stitched from several trails (shown as "
+        "'composed of ...'). Loops are kept inside the --bbox area.",
     )
 
     s = p.add_argument_group("saved areas (fetch once, then search offline)")
@@ -132,13 +141,13 @@ def build_criteria(args: argparse.Namespace) -> Criteria:
     )
 
 
-def _emit(hikes: list, as_json: bool) -> None:
+def _emit(hikes: list, as_json: bool, empty_msg: str = "No matching hikes found in that area.") -> None:
     """Print results: JSON array, or one text line per hike (near-misses flagged)."""
     if as_json:
         print(json.dumps([hike_to_dict(h) for h in hikes], ensure_ascii=False, indent=2))
         return
     if not hikes:
-        print("No matching hikes found in that area.")
+        print(empty_msg)
         return
     for h in hikes:
         print(format_hike(h))
@@ -185,6 +194,14 @@ def run(args: argparse.Namespace) -> int:
         print("error: --area and --download are mutually exclusive.", file=sys.stderr)
         return 2
 
+    if getattr(args, "compose_loops", False) and (args.area or args.download):
+        print(
+            "error: --compose-loops is a live search; it can't be combined with "
+            "--area or --download.",
+            file=sys.stderr,
+        )
+        return 2
+
     # Offline: search a saved snapshot. No network, no API calls, no quota line.
     if args.area:
         try:
@@ -229,10 +246,12 @@ def run(args: argparse.Namespace) -> int:
         _quota_line(cfg, used_before)
         return 0
 
-    # Live search.
+    # Live search. --compose-loops swaps in the loop-composition engine; everything
+    # else (rendering, quota line, error handling) is shared.
+    search = compose_loops if getattr(args, "compose_loops", False) else search_hikes
     used_before, _ = api_quota_snapshot(cfg)
     try:
-        hikes = search_hikes(
+        hikes = search(
             bbox,
             build_criteria(args),
             cfg=cfg,
@@ -247,7 +266,13 @@ def run(args: argparse.Namespace) -> int:
         return 1
 
     _quota_line(cfg, used_before)
-    _emit(hikes, args.json)
+    empty_msg = (
+        "No loops could be composed in that area — try a wider --bbox or a wider "
+        "--min-distance/--max-distance band."
+        if getattr(args, "compose_loops", False)
+        else "No matching hikes found in that area."
+    )
+    _emit(hikes, args.json, empty_msg)
     return 0
 
 

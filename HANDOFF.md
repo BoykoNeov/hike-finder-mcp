@@ -165,6 +165,19 @@ Tests: `test_snapshot.py`, `test_near_miss.py`, `test_web.py`, plus new cases in
 `test_cli.py`/`test_server.py`. Suite now 144 offline (excludes the 3 env-broken
 `.sh` launcher cases on this WSL-less box; `.ps1` equivalents pass).
 
+### Loop composition (compose.py) — added 2026-06-24
+
+A fourth, opt-in search mode beside `search_hikes`/`download_area`/`search_snapshot`:
+`search.compose_loops(bbox, criteria, …)` builds one trail-network graph from every
+relation's member ways (`compose.build_trail_graph`, clipped to the bbox), searches it
+for cycles of a target length (`compose.find_loops`), and wraps each as a synthetic
+`roundtrip=yes` route fed through the **unchanged** `find_hikes` — so a composed loop's
+elevation/distance/access are computed by the same engine, and it sorts/filters alongside
+ordinary routes. It is NOT folded into `circular=true` (that still reports mapped loops
+as-is). Surfaced as `--compose-loops` (CLI) / a checkbox (web) / `compose_loops` arg
+(MCP). Full design, knobs, and the live byte-for-byte validation are in **Known
+limitations → "Loop composition — DONE and VALIDATED LIVE"** below.
+
 ## What is DONE and PROVEN (unit-tested, runs offline)
 
 - `geometry.py` — haversine distance, polyline length, **`total_way_length_m`
@@ -231,7 +244,7 @@ Tests: `test_snapshot.py`, `test_near_miss.py`, `test_web.py`, plus new cases in
   nodata→fill, out-of-coverage→raise/fill, and the empty-dir error. Pins the
   sampling/merge/nodata logic that the live Copernicus run exercised.
 
-Run it: `pytest` → 169 tests (166 pass; the 3 `.sh` launcher cases need bash).
+Run it: `pytest` → 186 tests (183 pass; the 3 `.sh` launcher cases need bash).
 
 ## What is now VALIDATED LIVE (run against real OSM, 2026-06-23)
 
@@ -661,11 +674,64 @@ validated `search_hikes` path and returns correct UTF-8 JSON.)
 - **Loops are genuinely sparse in the raw data** (observed live: 1 of 12 around
   Špindl). Most KČT `route=hiking` relations are *linear* marked segments (a
   coloured trail A→B); circular day-hikes are usually ad-hoc *combinations* of
-  segments. This tool reports each relation as-is — it does NOT compose loops from
-  multiple segments. So `circular=true` returns the genuinely-mapped loops, which
-  is correct but will feel thin. Composing loops (graph search over connected
-  segments returning to start) is the natural future feature if the user wants
-  "give me a loop of ~12 km" rather than "find mapped loops."
+  segments. The plain search reports each relation as-is, so `circular=true`
+  returns the genuinely-mapped loops — correct but thin.
+- **Loop composition — DONE and VALIDATED LIVE (2026-06-24).** `compose.py` (pure,
+  network-free) answers "give me a loop of ~N km" by combining connected marked
+  trails, the natural fix for the sparsity above. Two stages:
+  - `build_trail_graph` welds every relation's member ways into ONE full-vertex
+    multigraph (same weld rule / 1 m tolerance as `geometry._vertex_graph`, so
+    junctions are exact shared OSM nodes — **NOT** raised to bridge gaps, which is the
+    live-falsified endpoint-cluster bug from the Medvěd* closure work), then
+    **dedups coincident micro-edges by welded node-pair** (the same OSM way belongs
+    to many relations → without dedup every shared interior node inflates to degree-4
+    and spawns zero-area *sliver* loops; observed: dedup cut the Špindl graph from
+    1042 noisy segments to 67 clean ones, degree dist 15 dead-ends / 32 T / 5 X),
+    and **contracts** degree-2 chains into `Segment`s (junctions = degree≠2). Genuine
+    parallel trails keep distinct intermediate nodes, so they survive as a real
+    two-segment loop; an all-degree-2 component is itself a loop (self-loop segment).
+  - `find_loops` is a bounded, **deterministic** simple-cycle search: min-node-start +
+    edge-set-frozenset dedup collapse both directions/rotations; length-prune the
+    instant a partial path exceeds `max_m`; cap segments/loop (`compose_max_segments`,
+    12) and a global expansion budget that aborts with `capped=True` (logged, never
+    silent); leaf-prune dead-ends to the 2-edge-connected core; **near-duplicate
+    collapse** drops a loop sharing > `compose_overlap_frac` (0.6) of its length with
+    an already-kept shorter loop. Sorted neighbours + stable seg ids ⇒ identical output
+    run-to-run.
+  - **`max_loops` cap (`compose_max_loops`, 15) — load-bearing, not cosmetic.** A
+    realistic-bbox run (broader Krkonoše, 50.68/15.50/50.80/15.70, 269 segments) found
+    **72** distinct loops in 8–15 km. Since `compose_loops` pays an elevation lookup
+    *per returned loop*, an uncapped set would break the two-pass economy and blow the
+    elevation quota (72 × ~400 pts over the ~1 req/s public API = hours). So the
+    survivors are ranked by **Polsby–Popper compactness** (4πA/P²; roundest first, which
+    also demotes any thin near-sliver for free) and truncated to `max_loops`;
+    `ComposeResult.distinct` carries the pre-cap count so `compose_loops` can log
+    "N distinct … showing top M" (truncation never silent). The realistic run returned
+    a clean, varied 15 (compactness 0.42–0.62, 8–12.4 km, 6–13 trails each) in 127 ms,
+    not capped. NB the compactness check also empirically retired the sliver worry:
+    **0 of 72** loops were below 0.10 compactness, so a dedicated sliver filter stays v2.
+  - **Clipped to the bbox** (`clip_routes_to_bbox`): a composed loop must lie inside
+    the searched area — without it 13 of 14 Špindl loops wandered out on a through-
+    route. Coarse vertex-granularity clip (the deferred true bbox-clip is still future).
+  - **Wiring:** `search.compose_loops` wraps each loop as a synthetic `roundtrip=yes`
+    route (one way = the closed loop line) and runs the **unchanged** `find_hikes`, so
+    elevation/gain, distance, and car/lift access are computed identically and offline==
+    online holds by construction. A composed loop carries no OSM id (`Hike.composed` +
+    `composed_of` = constituent trail refs; `format_hike`/`hike_to_dict` show "composed
+    of …", `osm_id: None`). The over-length guard is disabled for composed loops (they're
+    already clipped + length-banded). Live on the Špindl bbox: **3.38 km, +114/−112 m**
+    (gain≈loss invariant holds), `composed of 0402 + 1801 + Medvědí okruh + …` —
+    **byte-identical across CLI, Web UI (HTTP), and MCP over real stdio.** Frontends:
+    `--compose-loops` (CLI), a "Compose loops" checkbox (web), `compose_loops` arg on
+    `find_hikes` (MCP). Knobs: `HIKE_COMPOSE_MIN_KM`/`MAX_KM`/`MAX_SEGMENTS`/
+    `OVERLAP_FRAC`. Pinned by `tests/test_compose.py` (synthetic graphs: square, T-
+    junction, figure-eight, parallel bigon, coincident dedup, determinism, budget cap,
+    near-dup collapse, clipping) + `tests/test_compose_live.py` (Špindl fixture:
+    go-signal connectivity, degree sanity, the known in-bbox loop, full pipeline).
+    Residual future work: a *sliver/compactness* filter (a long thin out-and-back-on-
+    parallel-trails loop can still pass), true geometric bbox-clipping (vs vertex-
+    granularity), and **access-anchored loops** ("a 12 km loop from where I park" —
+    seed/close the cycle at a matched parking/lift), the natural v2.
 
 ## Conventions
 
@@ -679,7 +745,7 @@ validated `search_hikes` path and returns correct UTF-8 JSON.)
 
 ```bash
 pip install -e .             # CLI + web UI (no LLM); extras: ".[mcp]" ".[local-dem]" ".[dev]"
-pytest -q                    # 169 tests, all offline (pure math + Overpass parser + CLI + MCP server (incl. a real-stdio subprocess) + elevation API + daily quota + transparent cache + local-DEM synthetic tiles + live closure & coupling fixtures + launcher scripts); 166 pass on a WSL-less box (the 3 `.sh` launcher cases need bash); MCP tests skip without the `mcp` extra
+pytest -q                    # 186 tests, all offline (pure math + Overpass parser + CLI + MCP server (incl. a real-stdio subprocess) + elevation API + daily quota + transparent cache + local-DEM synthetic tiles + loop composition (synthetic graphs + Špindl fixture) + live closure & coupling fixtures + launcher scripts); 183 pass on a WSL-less box (the 3 `.sh` launcher cases need bash); MCP tests skip without the `mcp` extra
 hike-finder --bbox 50.72 15.58 50.74 15.62 --user-agent you@example.com
 hike-finder --clear-cache    # empty the on-disk cache; --no-cache bypasses it for a run
 hike-finder-web              # local web UI on http://127.0.0.1:8765

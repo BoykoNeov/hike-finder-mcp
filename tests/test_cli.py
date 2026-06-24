@@ -86,10 +86,11 @@ def test_hike_to_dict_shape():
     assert set(d) == {
         "osm_id", "name", "ref", "distance_km", "gain_m", "loss_m",
         "circular", "car_access", "chairlift_access", "lift_type", "start",
-        "near_miss", "notes",
+        "near_miss", "notes", "composed", "composed_of",
     }
-    # A plain match serialises as not-a-near-miss with no notes.
+    # A plain match serialises as not-a-near-miss with no notes, and not composed.
     assert d["near_miss"] is False and d["notes"] == []
+    assert d["composed"] is False and d["composed_of"] == []
 
 
 def test_format_hike_near_miss_is_flagged():
