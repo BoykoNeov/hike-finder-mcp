@@ -10,7 +10,7 @@ from hike_finder.access import (
     is_circular,
     route_endpoints,
 )
-from hike_finder.filters import Criteria, Hike
+from hike_finder.filters import Criteria, Hike, measure_geometry
 from hike_finder.overpass import parse_area
 
 # A degree of longitude at ~50°N is ~71 km; 0.001° ~= 71 m. Handy for spacing
@@ -137,6 +137,48 @@ def test_chairlift_access_out_of_range():
     lifts = [{"stations": [(49.9, 13.9)], "kind": "chair_lift", "name": "C"}]
     ok, kind = chairlift_access(endpoints, lifts, radius_m=400.0)
     assert ok is False and kind is None
+
+
+# ----------------------------------------------------------------------------
+# measure_geometry: access + start from genuine termini, not the stitched line
+# ----------------------------------------------------------------------------
+
+
+def test_measure_geometry_access_uses_dropped_member_terminus():
+    # Branched relation: stitch keeps leg A and DROPS the disconnected leg B, whose
+    # far end is the only one near parking. Testing the stitched line's two ends
+    # (old behaviour) misses it; testing the route's termini sees leg B's real end.
+    leg_a = [(50.0, 14.0), (50.0, 14.01)]
+    far_end = (50.1, 14.2)
+    leg_b = [far_end, (50.1, 14.21)]  # disconnected -> stitch cannot chain it
+    route = {"id": 1, "name": "Branched", "ways": [leg_a, leg_b], "tags": {}}
+    parking = [{"coord": (50.1, 14.2001), "name": "P"}]  # ~7 m from leg_b's far end
+    measured = measure_geometry(route, parking, [])
+    assert measured is not None
+    hike, _ = measured
+    assert hike.car_access is True
+
+
+def test_measure_geometry_start_stays_when_head_is_a_terminus():
+    # Clean linear route: the stitched head is already a genuine end, so the start
+    # marker must NOT move (no churn on already-correct routes).
+    a, b, c = (50.0, 14.0), (50.0, 14.01), (50.0, 14.02)
+    route = {"id": 2, "name": "Linear", "ways": [[a, b], [b, c]], "tags": {}}
+    hike, line = measure_geometry(route, [], [])
+    assert line[0] in (a, c)
+    assert hike.start == line[0]
+
+
+def test_measure_geometry_start_moves_off_interior_head():
+    # The first member starts at a junction the second way passes THROUGH (a
+    # T-junction interior vertex), which stitch can't attach, so the stitched head
+    # lands mid-route. start must move to a real degree-1 terminus.
+    j, e1 = (50.0, 14.01), (50.0, 14.0)
+    a, b = (49.99, 14.01), (50.02, 14.03)
+    route = {"id": 3, "name": "Tee", "ways": [[j, e1], [a, j, b]], "tags": {}}
+    hike, line = measure_geometry(route, [], [])
+    assert line[0] == j  # stitch left an interior head (the through-way was dropped)
+    assert hike.start in {e1, a, b} and hike.start != j
 
 
 # ----------------------------------------------------------------------------

@@ -111,6 +111,59 @@ class _UnionFind:
         return len({self.find(i) for i in range(len(self._parent))})
 
 
+def _vertex_graph(
+    ways: list[list[Coord]], weld_m: float = 1.0
+) -> tuple[list[tuple[int, int]], list[Coord]]:
+    """Build the welded vertex multigraph shared by closure and termini.
+
+    Nodes are every distinct *vertex* (welded by coordinate) — not just way
+    endpoints — so two OSM ways that connect, including at a T-junction where one
+    passes through the other's interior vertex, map to the same node. Edges are
+    the consecutive-vertex segments of each way, kept as a *multigraph* (parallel
+    edges preserved, e.g. a route mapped both forward and backward). Returns
+    ``(edges, coords)`` where ``edges`` are ``(u, v)`` node-id pairs and
+    ``coords[i]`` is a representative original coordinate for node ``i``.
+
+    This is the single construction behind both ``route_cycle_count`` (closure)
+    and ``route_termini`` (open ends), so the two can never drift on ``weld_m`` or
+    on what counts as the same node — the graph is the project's trust anchor.
+
+    ``weld_m`` is a small coincidence tolerance (metres) that merges vertices
+    representing the same node despite float noise; it sits well below trail
+    vertex spacing (~5-15 m), so it never fuses genuinely distinct points. Grid-
+    welds on latitude metres in O(V) — identical OSM nodes hash to one cell, while
+    distinct vertices (metres apart) do not; no pairwise scan.
+    """
+    cell = weld_m / 111_320.0 if weld_m > 0 else 0.0
+
+    def key(pt: Coord):
+        if cell <= 0:
+            return pt
+        return (round(pt[0] / cell), round(pt[1] / cell))
+
+    node_id: dict = {}
+    coords: list[Coord] = []
+    edges: list[tuple[int, int]] = []
+
+    def intern(k, pt: Coord) -> int:
+        i = node_id.get(k)
+        if i is None:
+            i = len(coords)
+            node_id[k] = i
+            coords.append(pt)
+        return i
+
+    for w in ways:
+        if len(w) < 2:
+            continue
+        for a, b in zip(w, w[1:]):
+            ka, kb = key(a), key(b)
+            if ka == kb:
+                continue  # zero-length or sub-weld segment contributes no edge
+            edges.append((intern(ka, a), intern(kb, b)))
+    return edges, coords
+
+
 def route_cycle_count(ways: list[list[Coord]], weld_m: float = 1.0) -> int:
     """Independent cycles in a route's member ways (its circuit rank), built from
     the FULL vertex graph.
@@ -136,37 +189,48 @@ def route_cycle_count(ways: list[list[Coord]], weld_m: float = 1.0) -> int:
     closed only by a digitization *gap* wider than ``weld_m`` reads as open here —
     ``access.is_circular`` catches that with its start≈end line fallback.
     """
-    # Grid-weld on latitude metres: identical OSM nodes hash to the same cell,
-    # while distinct vertices (metres apart) do not. O(V) — no pairwise scan.
-    cell = weld_m / 111_320.0 if weld_m > 0 else 0.0
-
-    def key(pt: Coord):
-        if cell <= 0:
-            return pt
-        return (round(pt[0] / cell), round(pt[1] / cell))
-
-    node_id: dict = {}
-    edges: list[tuple[int, int]] = []
-    for w in ways:
-        if len(w) < 2:
-            continue
-        for a, b in zip(w, w[1:]):
-            ka, kb = key(a), key(b)
-            if ka == kb:
-                continue  # zero-length or sub-weld segment contributes no edge
-            u = node_id.setdefault(ka, len(node_id))
-            v = node_id.setdefault(kb, len(node_id))
-            edges.append((u, v))
-
+    edges, coords = _vertex_graph(ways, weld_m=weld_m)
     e = len(edges)
     if e == 0:
         return 0
-    v = len(node_id)  # only vertices that carry an edge are registered
+    v = len(coords)  # only vertices that carry an edge are registered
     comp = _UnionFind(v)
     for u, w_ in edges:
         comp.union(u, w_)
     c = comp.num_components()
     return e - v + c
+
+
+def route_termini(ways: list[list[Coord]], weld_m: float = 1.0) -> list[Coord]:
+    """The route's genuine open ends: the degree-1 vertices of the full vertex graph.
+
+    A route's termini — where you actually start and finish — are the vertices that
+    exactly one segment touches (dead-ends). Built from the SAME welded vertex graph
+    as closure (``_vertex_graph``), so it is stitch-order- and orientation-
+    independent and — unlike the greedy stitched line's two ends — captures EVERY
+    end, including ones on members ``stitch_ways`` drops on a branched or gap-split
+    relation. That is the point: car/lift access is tested at these ends, and a real
+    trailhead on a dropped member would otherwise be missed.
+
+    Returns each degree-1 vertex's representative coordinate, in node-discovery
+    order. Two cases yield NO degree-1 vertex, both correct and not regressions:
+      * a pure loop — every vertex has even degree (callers fall back to the
+        stitched line's ends, i.e. one representative point on the loop);
+      * a route mapping the same stretch both forward and backward — the parallel
+        edges give every vertex even degree too (no gain over today, no loss).
+    A gap-split relation yields the two real outer ends PLUS two spurious interior
+    ends at the gap; testing all four only *improves* recall — the real outer ends,
+    which the stitch may drop, are now included — at the low-stakes cost of a
+    possible access hit at a mid-route gap.
+    """
+    edges, coords = _vertex_graph(ways, weld_m=weld_m)
+    if not edges:
+        return []
+    degree = [0] * len(coords)
+    for u, v in edges:
+        degree[u] += 1
+        degree[v] += 1
+    return [coords[i] for i in range(len(coords)) if degree[i] == 1]
 
 
 def resample_by_distance(points: list[Coord], interval_m: float = 25.0) -> list[Coord]:

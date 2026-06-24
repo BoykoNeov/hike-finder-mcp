@@ -5,6 +5,7 @@ from hike_finder.geometry import (
     polyline_length_m,
     resample_by_distance,
     route_cycle_count,
+    route_termini,
     stitch_ways,
     total_way_length_m,
 )
@@ -101,6 +102,45 @@ def test_route_cycle_count_ignores_unshared_near_endpoints():
     a, b = (50.0, 14.0), (50.01, 14.01)
     a2 = (50.00005, 14.0)  # ~5.5 m from a, a distinct node (well over weld_m)
     assert route_cycle_count([[a, b], [b, a2]]) == 0
+
+
+def test_route_termini_point_to_point_two_ends():
+    # A clean linear route has exactly its two outer ends as degree-1 vertices.
+    a, b, c = (50.0, 14.0), (50.0, 14.01), (50.0, 14.02)
+    assert set(route_termini([[a, b], [b, c]])) == {a, c}
+
+
+def test_route_termini_loop_has_none():
+    # Every vertex on a closed loop has even degree -> no open end.
+    a, b, c, d = (50.0, 14.0), (50.0, 14.01), (50.01, 14.01), (50.01, 14.0)
+    assert route_termini([[a, b, c], [c, d, a]]) == []
+
+
+def test_route_termini_y_branch_three_ends():
+    # Branched relation: three legs off a junction -> three genuine trailheads.
+    # The stitched line could only ever surface two of them; termini sees all.
+    j = (50.0, 14.01)
+    e1, e2, e3 = (50.0, 14.0), (50.01, 14.01), (50.0, 14.02)
+    assert set(route_termini([[j, e1], [j, e2], [j, e3]])) == {e1, e2, e3}
+
+
+def test_route_termini_lollipop_keeps_only_stem_tip():
+    # Loop a-b-c-a plus an approach stem c-d: only the stem tip d is degree 1.
+    a, b, c, d = (50.0, 14.0), (50.0, 14.01), (50.01, 14.01), (50.02, 14.02)
+    assert route_termini([[a, b], [b, c], [c, a], [c, d]]) == [d]
+
+
+def test_route_termini_forward_backward_duplicate_has_none():
+    # The route maps the same stretch both ways: parallel edges make every vertex
+    # even degree, so there is no degree-1 end. Documented fallback case — callers
+    # use the stitched ends, no improvement but no regression.
+    a, b = (50.0, 14.0), (50.0, 14.01)
+    assert route_termini([[a, b], [b, a]]) == []
+
+
+def test_route_termini_independent_of_member_order():
+    a, b, c = (50.0, 14.0), (50.0, 14.01), (50.0, 14.02)
+    assert set(route_termini([[a, b], [b, c]])) == set(route_termini([[c, b], [b, a]]))
 
 
 def test_stitch_orders_and_flips():

@@ -172,9 +172,13 @@ latitude, max longitude):
 > hardened here (2026-06-23): it now sums every member way's length rather than
 > the greedily-stitched line, so branched relations that the stitch couldn't
 > chain no longer under-count (validated live by a per-route stitched-vs-summed
-> diff). Remaining caveat: the **local DEM** backend (`mode=local`) is still
-> untested, and the trail's **start/endpoints** (used for car/lift access) still
-> come from the greedy stitch on branched relations — both tracked in `HANDOFF.md`.
+> diff). The trail's **start and car/lift endpoints** were hardened the same way
+> (2026-06-24): they now come from the route's genuine termini (the degree-1
+> vertices of that same vertex graph), so a branched relation whose stitch drops
+> members no longer tests access at the wrong ends — validated live against the
+> "Medvěd*" relations, where the branched *Medvědí okruh* (42% stitch coverage)
+> recovers all four real trailheads. Remaining caveat: the **local DEM** backend
+> (`mode=local`) is still untested — tracked in `HANDOFF.md`.
 
 ### Configuration (environment variables)
 

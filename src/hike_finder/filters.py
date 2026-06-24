@@ -24,6 +24,7 @@ from .geometry import (
     Coord,
     haversine_m,
     resample_by_distance,
+    route_termini,
     stitch_ways,
     total_way_length_m,
 )
@@ -79,6 +80,22 @@ class Criteria:
         return True
 
 
+def _route_start(line: list[Coord], termini: list[Coord], weld_m: float = 1.0) -> Coord:
+    """Pick the start-marker coordinate.
+
+    Keep the stitched line's head when it is already a genuine terminus — true of
+    every cleanly connected route, so correct starts never move. Only on a branched
+    relation, whose head ``stitch_ways`` can leave mid-route (an interior junction),
+    fall through to a deterministic terminus: the smallest by coordinate, so the
+    pick is member-order independent. With no termini (a loop) the head is the
+    conventional single start point.
+    """
+    head = line[0]
+    if not termini or any(haversine_m(head, t) <= weld_m for t in termini):
+        return head
+    return min(termini)
+
+
 def measure_geometry(
     route: dict,
     parking: list[dict],
@@ -92,15 +109,24 @@ def measure_geometry(
     line = stitch_ways(route["ways"])
     if len(line) < 2:
         return None
+    ways = route["ways"]
 
     # Distance sums the member ways directly, NOT the stitched line: stitch_ways
     # drops members it can't chain (branched/gap-split relations), so the line
-    # under-counts. The stitched line is still used below for start/endpoints and
-    # the is_circular gap fallback. (Wrong endpoint picks on branched relations
-    # remain a known limitation — see HANDOFF.)
-    distance_km = total_way_length_m(route["ways"]) / 1000.0
-    circular = is_circular(route["ways"], line, route.get("tags", {}), tol_m=loop_tolerance_m)
-    endpoints = route_endpoints(line)
+    # under-counts. The stitched line is still used for the is_circular gap
+    # fallback and as the loop start fallback.
+    distance_km = total_way_length_m(ways) / 1000.0
+    circular = is_circular(ways, line, route.get("tags", {}), tol_m=loop_tolerance_m)
+
+    # Access + start come from the route's GENUINE termini (degree-1 vertices of
+    # the full vertex graph), not the stitched line's two ends. stitch_ways drops
+    # members on branched/gap-split relations, so its ends — and line[0] — can fall
+    # mid-route and hide a real trailhead's parking/lift. Termini are stitch-order
+    # independent and include ends on dropped members. A pure loop (or a fwd+back
+    # duplicated route) has no degree-1 vertex; fall back to the stitched ends,
+    # preserving today's loop behaviour.
+    termini = route_termini(ways)
+    endpoints = termini or route_endpoints(line)
     car = car_accessible(endpoints, parking, car_radius_m)
     lift_ok, lift_kind = chairlift_access(endpoints, lifts, lift_radius_m)
 
@@ -111,7 +137,7 @@ def measure_geometry(
         circular=circular,
         car_access=car,
         chairlift_access=lift_ok,
-        start=line[0],
+        start=_route_start(line, termini),
         lift_type=lift_kind,
         ref=route.get("ref"),
     )

@@ -291,12 +291,25 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
      it as a local hike; the fix improves recall correctness. So
      `max_route_factor=4.0` was left as-is (no retune, no bbox-clip needed — no
      genuine in-bbox route sits near the boundary).
-   - **Still deferred (the endpoint/`start`-pick half):** `stitch_ways` still
-     drives `start` and the car/lift endpoints, so a branched/disconnected
-     relation can still pick wrong ends. Distance no longer depends on the stitch;
-     closure never did (it reads `ways` via the vertex graph). The live test
-     earlier exposed that the *old* loop detection was partly propped by the
-     stitch collapsing to gap≈0 — the vertex graph removed that dependence.
+   - **Endpoint/`start`-pick half — DONE and VALIDATED LIVE 2026-06-24.** `start`
+     and the car/lift access endpoints now come from `geometry.route_termini` —
+     the **degree-1 vertices of the same full vertex graph** that drives closure
+     (`_vertex_graph` is now the single shared builder, so the two can't drift) —
+     not the greedy stitched line's two ends. A branched/disconnected relation
+     whose stitch drops members therefore tests access at the route's *genuine*
+     open ends, including ends on dropped members. `measure_geometry` uses
+     `termini or route_endpoints(line)` (a pure loop / fwd+back-duplicated route
+     has no degree-1 vertex → falls back to the stitched ends, today's behaviour),
+     and `_route_start` keeps `line[0]` when it is already a terminus (zero churn
+     on clean routes) else moves to the smallest terminus by coordinate. Validated
+     live on the "Medvěd*" fixture: the branched *Medvědí okruh* (rel 6285306,
+     only 42% stitch coverage) recovers **4 genuine termini ~2.46 km apart**
+     (the old code tested 2 ends, only 1 a real terminus); the real KČT okruhs are
+     lollipops whose single stem tip is now the access point; every clean linear
+     route is unchanged. Pinned by `tests/test_closure_live.py` termini ground
+     truth. Distance no longer depends on the stitch; closure never did. **Nothing
+     in this relation's geometry pipeline still rides on the greedy stitch except
+     the `is_circular` gap fallback and the loop `start` fallback (both benign).**
 4. ~~Add API retry/backoff on transient 5xx / daily-cap 429.~~ **DONE.**
    `_lookup_batch` now retries 429/5xx/network up to `max_retries` (default 3)
    with exponential backoff (`backoff_base_s` × 2^attempt), honouring a
@@ -336,11 +349,15 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
     now double-count, but the public KČT relations checked live carry no such
     members (all role-empty), so the honest member-sum strictly beats the
     arbitrary greedy subset. Closure never depended on the stitch (vertex graph).
-  - *Endpoints / `start`:* **still greedy.** The picked ends (car/lift access,
-    `start`) still come from the stitched line, so a branched/disconnected
-    relation can pick wrong ends. Robust fix: order members by role/sequence, or
-    traverse the **vertex graph** (`route_cycle_count` already builds one) to find
-    the true termini. Deferred — it's a recall/labelling issue, not a wrong number.
+  - *Endpoints / `start`:* **fixed.** No longer read from the stitched line —
+    `measure_geometry` derives them from `geometry.route_termini`, the **degree-1
+    vertices of the vertex graph** (`_vertex_graph` is the single builder shared
+    with `route_cycle_count`, so closure and termini can't drift). Stitch-order
+    independent; captures ends on members the stitch drops. Fallback to the
+    stitched ends only when there is no degree-1 vertex (a pure loop, or a
+    fwd+back-duplicated route); `start` keeps `line[0]` when it is already a
+    terminus, so clean routes don't move. Live-validated on the "Medvěd*" fixture
+    (branched *Medvědí okruh* recovers all 4 real trailheads; see Next-steps).
 - **Closure T-junctions: handled.** `route_cycle_count` now nodes on *every*
   vertex (welded by coordinate), so a way whose endpoint lands on another way's
   interior vertex shares that exact node and the join is seen — a loop closed

@@ -11,8 +11,8 @@ ground truth so the regression can't silently return.
 import json
 from pathlib import Path
 
-from hike_finder.access import endpoints_closed, is_circular
-from hike_finder.geometry import stitch_ways
+from hike_finder.access import endpoints_closed, is_circular, route_endpoints
+from hike_finder.geometry import haversine_m, route_termini, stitch_ways
 from hike_finder.overpass import parse_area
 
 FIXTURE = Path(__file__).parent / "fixtures" / "medved_relations.json"
@@ -59,3 +59,55 @@ def test_real_genuine_okruh_is_circular_end_to_end():
     r = _routes()[3992873]
     line = stitch_ways(r["ways"])
     assert is_circular(r["ways"], line, r["tags"]) is True
+
+
+# Ground truth for route_termini (degree-1 vertices of the full vertex graph) on
+# the same real relations. Pins the genuine-open-ends count so the branched-route
+# recall fix can't silently regress. Counts read off the live geometry:
+#   - clean linear / point-to-point -> 2 ends;
+#   - real KČT "okruh" relations here are lollipops (loop + approach stem) -> the
+#     single stem tip is the one degree-1 end (the loops are not pure rings);
+#   - the branched #6285306 -> 4 genuine ends the greedy stitch (42% coverage)
+#     could never all surface.
+EXPECTED_TERMINI = {
+    3215491: 1,    # lollipop okruh — stem tip
+    3992873: 1,    # lollipop okruh — stem tip
+    6643167: 1,    # lollipop okruh — stem tip
+    6285306: 4,    # branched linear — the headline recall case
+    254733: 2,     # point-to-point
+    1631097: 2,    # linear
+    3215492: 2,    # short branch
+    20442995: 2,   # linear
+}
+
+
+def test_real_relations_termini_ground_truth():
+    routes = _routes()
+    got = {rid: len(route_termini(r["ways"])) for rid, r in routes.items()}
+    assert got == EXPECTED_TERMINI
+
+
+def test_real_branched_okruh_termini_recovers_dropped_ends():
+    # #6285306 is branched: the greedy stitch weaves in only ~42% of the mapped
+    # length, so its two line ends miss the route's real trailheads. The full
+    # vertex graph recovers all four genuine open ends (~2.46 km apart), and at
+    # least one stitched-line end is NOT a real terminus — the bug this fixes.
+    r = _routes()[6285306]
+    termini = route_termini(r["ways"])
+    assert len(termini) == 4
+    span = max(haversine_m(p, q) for i, p in enumerate(termini) for q in termini[i + 1:])
+    assert 2_300 < span < 2_600
+    old_ends = route_endpoints(stitch_ways(r["ways"]))
+    matched = sum(any(haversine_m(o, t) <= 5.0 for t in termini) for o in old_ends)
+    assert matched < len(old_ends)  # the stitched ends did not all land on real termini
+
+
+def test_real_clean_linear_termini_match_stitched_ends():
+    # No-regression guard: on a cleanly connected linear route the genuine termini
+    # ARE the stitched line's two ends, so the fix changes nothing on easy routes.
+    r = _routes()[1631097]
+    termini = route_termini(r["ways"])
+    old_ends = route_endpoints(stitch_ways(r["ways"]))
+    assert len(termini) == len(old_ends) == 2
+    for o in old_ends:
+        assert any(haversine_m(o, t) <= 5.0 for t in termini)
