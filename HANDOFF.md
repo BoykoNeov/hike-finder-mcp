@@ -276,8 +276,14 @@ Run it: `pytest` → 102 passing.
     documented API **+678/−251 m** — two independent anchors confirming local gains track
     the API (~2–7% higher, as expected; raw 30 m DEM wants a higher gain threshold — a
     documented per-source tuning TODO, not retuned here on one bbox).
-  - **CLI gate doubled as a live check:** `auto --dem-dir <tiles>` answered every point
-    from disk and left the daily counter unchanged → no quota line (see the gate fix below).
+  - **Exercised through both no-LLM frontends, not just the provider:** the real
+    `hike-finder` CLI in `--elevation-mode local --dem-dir <tiles>` returned all 11
+    routes with gains and an empty stderr (no quota line — local never hits the API);
+    `auto --dem-dir` likewise answered from disk and left the daily counter unchanged
+    (the gate fix below); and the real `hike-finder-web` server (env `HIKE_ELEVATION_MODE=local`)
+    served `/api/hikes` → HTTP 200, 11 routes, 0 nulls, identical gains, with `/api/quota`
+    reading 0→0 across the request. So local DEM is validated live on CLI **and** web,
+    both via the shared `search_hikes` path.
   - Code note: `self._nodata = srcs[0].nodata` uses only the first tile's nodata; Copernicus
     reports `nodata=None`, so a void/ocean point would leak a raw value — but the bounds-check
     catches off-tile regardless. Pinned offline by `tests/test_local_dem.py` (synthetic tiles).
