@@ -145,10 +145,14 @@ Then ask in plain language ("find loop hikes near Špindlerův Mlýn reachable b
 chairlift") and the client calls `find_hikes(south, west, north, east, …)` with
 the same filters as the CLI.
 
-> The MCP registration form isn't live-verified in this repo (the build env has no
-> `mcp` SDK). The SDK's decorator API has shifted across versions — if the server
-> won't start, check the imports in `src/hike_finder/server.py` against your
-> installed `mcp` version (see `HANDOFF.md`).
+> The server is **validated live**: with `mcp` 1.28 it was driven over real OS
+> stdio (`python -m hike_finder.server`) — `list_tools` advertises `find_hikes`,
+> and a `find_hikes` call against Špindlerův Mlýn returned real engine-computed
+> hikes (e.g. *Špindlerův mlýn - okruh — 1.11 km, +34 m / -34 m [loop, car,
+> lift:chair_lift]*). It is also pinned offline by `tests/test_server.py` (the
+> real MCP protocol over an in-memory session). The SDK's decorator API has
+> shifted across versions — if the server won't start, check the imports in
+> `src/hike_finder/server.py` against your installed `mcp` version.
 
 ### Getting a bounding box (CLI / MCP)
 
@@ -185,8 +189,9 @@ latitude, max longitude):
 > conventional head).
 > The **local DEM** backend (`mode=local`) is now validated live too — Copernicus
 > GLO-30 tiles, Sněžka read 1601 m vs the known 1603 m, loop invariant holds.
-> Remaining caveat: only the **MCP** entry point is still unvalidated — tracked in
-> `HANDOFF.md`.
+> The **MCP** server is validated live as well — driven over real stdio with the
+> `mcp` SDK and pinned offline by `tests/test_server.py`. All three frontends are
+> now exercised end-to-end.
 
 ### Configuration (environment variables)
 
@@ -228,10 +233,12 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 Core geometry, gain, access/shape math, the Overpass response parser, the
 elevation-API client (including its rate-limit throttle, transient-error
 retry/backoff, and a persistent daily-request counter that degrades to `n/a`
-before blowing the API's daily cap), and the CLI argument/formatter layer:
-**implemented and unit-tested** (102 tests, all offline). The Overpass HTTP call,
-the API elevation backend, **and the local-DEM backend** are **validated live**
-(CLI + web), with computed gain cross-checked against the loop invariant
-(gain ≈ loss) — the local DEM read Sněžka at 1601 m vs the known 1603 m on a
-Copernicus GLO-30 tile. Only the MCP entry point is **implemented; validate on a
-networked machine**. See `HANDOFF.md` for exactly what's done and what's next.
+before blowing the API's daily cap), the CLI argument/formatter layer, **and the
+MCP server's tool schema / argument-mapping / rendering glue** (driven through
+the real MCP protocol over an in-memory session): **implemented and unit-tested**
+(107 tests, all offline). The Overpass HTTP call, the API elevation backend,
+**the local-DEM backend, and the MCP server over real stdio** are all
+**validated live** (CLI + web + MCP), with computed gain cross-checked against
+the loop invariant (gain ≈ loss) — the local DEM read Sněžka at 1601 m vs the
+known 1603 m on a Copernicus GLO-30 tile. All three frontends are now exercised
+end-to-end. See `HANDOFF.md` for exactly what's done and what's next.

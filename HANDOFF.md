@@ -38,6 +38,7 @@ results are identical:
   the bbox). **No LLM/MCP, no web framework.**
 - `server.py` → `hike-finder-mcp` (MCP over stdio, for LLM clients). `mcp` is now
   an **optional** extra (`pip install -e ".[mcp]"`); the base install omits it.
+  **Validated live over stdio and pinned by `tests/test_server.py`** (2026-06-24).
 
 ```
 frontends (pick one; cli/web need no LLM):
@@ -290,15 +291,33 @@ Run it: `pytest` → 102 passing.
 
 ## What is WRITTEN but UNVALIDATED (needs a networked machine)
 
-Logic is complete; you still need to exercise this live (Overpass, the API
-elevation backend, and the local DEM backend above are now all done):
+**Nothing left here — all three frontends are now validated live.** Overpass,
+the API elevation backend, the local DEM backend, and the MCP server are all
+exercised end-to-end.
 
-1. `server.py` — confirm it speaks MCP over stdio with your `mcp` SDK version
-   (the decorator API has shifted across versions; adjust imports if needed).
-   Now needs the optional `mcp` extra (`pip install -e ".[mcp]"`).
+`server.py` — **VALIDATED LIVE (2026-06-24)** with `mcp` 1.28 on Python 3.14.
+Spawned `python -m hike_finder.server` and spoke MCP over real OS stdio (the
+SDK's `stdio_client`): `initialize` + `list_tools` advertised `find_hikes` with
+`required = [south, west, north, east]` and all 11 properties; `call_tool
+find_hikes` against the Špindlerův Mlýn bbox returned a real engine-computed,
+`format_hike`-rendered result (*Špindlerův mlýn - okruh — 1.11 km, +34 m / -34 m
+[loop, car, lift:chair_lift]*, OSM relation 6282999); an impossible filter gave
+the friendly "No matching hikes found" message (`isError=False`); an unknown
+tool surfaced as `isError=True` "unknown tool: …". Pinned offline by
+`tests/test_server.py` (5 tests) — driven through the **real MCP protocol over an
+in-memory client/server session**, with `search_hikes` stubbed for the glue
+tests (schema, the tri-state argument→Criteria mapping, shared rendering, empty
+case, unknown-tool error) and only the two network boundaries (`fetch_area`,
+`get_provider`) stubbed for one engine-integration test against the live
+`spindl_area.json` fixture. The test body is a sync `asyncio.run(...)` wrapper,
+not a bare `async def`, so it runs regardless of whether `pytest-asyncio` is
+present. The `mcp` extra is now also in the `dev` extra, and the module
+`pytest.importorskip("mcp")`s so a base install stays green. The SDK's decorator
+API has shifted across versions; adjust imports in `server.py` if a different
+`mcp` version won't start.
 
-(`web.py` is now validated live too — `/` serves the page, `/api/hikes` reuses
-the validated `search_hikes` path and returns correct UTF-8 JSON.)
+(`web.py` is validated live too — `/` serves the page, `/api/hikes` reuses the
+validated `search_hikes` path and returns correct UTF-8 JSON.)
 
 ## Next steps, in priority order
 
@@ -419,8 +438,10 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
    loop invariant holds, gains track the API. Offline regression in
    `tests/test_local_dem.py`. Remaining DEM work is only the large-region VRT
    (below) — the in-memory merge is fine for a single tile / small region.
-7. **Wire MCP end-to-end** and call `find_hikes` from Claude Code (the last
-   unvalidated frontend), then the polish items below.
+7. ~~**Wire MCP end-to-end** and call `find_hikes` from Claude Code (the last
+   unvalidated frontend).~~ **DONE and VALIDATED LIVE (2026-06-24)** — driven
+   over real OS stdio with `mcp` 1.28, pinned offline by `tests/test_server.py`.
+   See "What is WRITTEN but UNVALIDATED" above. Only the polish items below remain.
 
 ## Known limitations / TODOs (design notes, not bugs)
 
@@ -530,7 +551,7 @@ the validated `search_hikes` path and returns correct UTF-8 JSON.)
 
 ```bash
 pip install -e .             # CLI + web UI (no LLM); extras: ".[mcp]" ".[local-dem]" ".[dev]"
-pytest -q                    # 102 tests, all offline (pure math + Overpass parser + CLI + elevation API + daily quota + local-DEM synthetic tiles + live closure & coupling fixtures)
+pytest -q                    # 107 tests, all offline (pure math + Overpass parser + CLI + MCP server + elevation API + daily quota + local-DEM synthetic tiles + live closure & coupling fixtures); MCP tests skip without the `mcp` extra
 hike-finder --bbox 50.72 15.58 50.74 15.62 --user-agent you@example.com
 hike-finder-web              # local web UI on http://127.0.0.1:8765
 hike-finder-mcp              # MCP server over stdio (needs the `mcp` extra)

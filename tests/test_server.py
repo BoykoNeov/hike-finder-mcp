@@ -1,0 +1,186 @@
+"""Pin the MCP frontend the way test_cli.py pins the CLI.
+
+The MCP server (``src/hike_finder/server.py``) is the third frontend over the
+one shared engine. ``test_cli.py`` pins the CLI's own glue *offline* — the
+args->Criteria tri-state mapping and the shared formatter — without running
+``search_hikes``. This does the same for the MCP server: it drives the REAL
+server through the REAL MCP protocol (an in-memory client/server session — the
+same JSON-RPC machinery as stdio, just without OS pipes), with the
+network-touching engine stubbed, and asserts:
+
+  - ``list_tools`` advertises ``find_hikes`` with the right schema (the four
+    required corners and the tri-state boolean filters);
+  - ``call_tool`` maps the flat arguments dict onto a bbox in (S, W, N, E)
+    order and a ``Criteria`` with every field, INCLUDING the tri-state booleans
+    (omit -> None, true -> True, false -> False) — the easy-to-break part,
+    exactly as test_cli emphasises for the CLI;
+  - the result is rendered with the SAME ``format_hike`` as the CLI/web, the
+    empty case is the friendly message, and an unknown tool surfaces as an error.
+
+A final test runs the call through the REAL engine (geometry + access + format)
+against the live Spindleruv Mlyn fixture, with only the two network boundaries
+(Overpass fetch, elevation provider) stubbed — confirming the MCP entry point
+reaches the shared engine and ships sane, real-data hikes.
+
+The end-to-end run over a real OS-pipe subprocess (``python -m hike_finder.server``)
+is a manual, network-touching validation, not part of this offline suite (see
+HANDOFF.md). This module needs the optional ``mcp`` extra; it is skipped without it.
+"""
+import asyncio
+import json
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("mcp")  # the MCP server is an optional extra; skip if absent
+from mcp.shared.memory import create_connected_server_and_client_session
+
+from hike_finder import server
+from hike_finder.filters import Criteria, Hike
+from hike_finder.format import format_hike
+
+
+# A bare `async def test_*` would be COLLECTED and reported PASSED without ever
+# running — the dev extra has no pytest-asyncio to await it. So every test body
+# is a sync function that drives its coroutine to completion through asyncio.run,
+# and patches `server.search_hikes` BEFORE the run (the server task resolves the
+# module global at call time, so set-then-run is sufficient).
+
+
+SAMPLE_HIKES = [
+    Hike(osm_id=1, name="Alpha loop", distance_km=8.3, circular=True,
+         car_access=True, chairlift_access=True, start=(50.7, 15.6),
+         gain_m=540, loss_m=535, lift_type="chair_lift", ref="A1"),
+    Hike(osm_id=2, name="Beta traverse", distance_km=12.0, circular=False,
+         car_access=False, chairlift_access=False, start=(50.8, 15.7),
+         gain_m=None, loss_m=None, lift_type=None, ref=None),
+]
+
+
+def test_list_tools_advertises_find_hikes(monkeypatch):
+    monkeypatch.setattr(server, "search_hikes", lambda *a, **k: [])
+
+    async def _impl():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.list_tools()
+
+    result = asyncio.run(_impl())
+    tools = {t.name: t for t in result.tools}
+    assert set(tools) == {"find_hikes"}
+
+    schema = tools["find_hikes"].inputSchema
+    assert schema["type"] == "object"
+    assert schema["required"] == ["south", "west", "north", "east"]
+    # the tri-state filters are advertised as booleans
+    for key in ("circular", "car_access", "chairlift_access"):
+        assert schema["properties"][key]["type"] == "boolean"
+
+
+def test_call_tool_maps_arguments_and_renders(monkeypatch):
+    captured = {}
+
+    def _stub(bbox, criteria, cfg=None, **kwargs):
+        captured["bbox"] = bbox
+        captured["criteria"] = criteria
+        return SAMPLE_HIKES
+
+    monkeypatch.setattr(server, "search_hikes", _stub)
+
+    async def _impl():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.call_tool(
+                "find_hikes",
+                {
+                    "south": 50.72, "west": 15.58, "north": 50.74, "east": 15.62,
+                    "min_gain_m": 100, "max_gain_m": 800,
+                    "min_distance_km": 5, "max_distance_km": 20,
+                    "circular": True, "car_access": False,
+                    # chairlift_access omitted on purpose -> must map to None
+                },
+            )
+
+    result = asyncio.run(_impl())
+    assert not result.isError
+
+    # bbox is forwarded as (south, west, north, east) IN THAT ORDER
+    assert captured["bbox"] == (50.72, 15.58, 50.74, 15.62)
+
+    crit = captured["criteria"]
+    assert isinstance(crit, Criteria)
+    assert crit.min_gain_m == 100 and crit.max_gain_m == 800
+    assert crit.min_distance_km == 5 and crit.max_distance_km == 20
+    # the crown jewel, same as test_cli: tri-state booleans
+    assert crit.circular is True            # present  -> require
+    assert crit.car_access is False         # false    -> exclude
+    assert crit.chairlift_access is None    # omitted  -> don't care
+
+    # rendered through the SAME formatter the CLI prints and the web serialises
+    assert len(result.content) == 1
+    assert result.content[0].text == "\n".join(format_hike(h) for h in SAMPLE_HIKES)
+
+
+def test_call_tool_empty_result_is_friendly(monkeypatch):
+    monkeypatch.setattr(server, "search_hikes", lambda *a, **k: [])
+
+    async def _impl():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.call_tool(
+                "find_hikes", {"south": 1, "west": 2, "north": 3, "east": 4}
+            )
+
+    result = asyncio.run(_impl())
+    assert not result.isError
+    assert result.content[0].text == "No matching hikes found in that area."
+
+
+def test_unknown_tool_is_an_error(monkeypatch):
+    monkeypatch.setattr(server, "search_hikes", lambda *a, **k: [])
+
+    async def _impl():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.call_tool("does_not_exist", {})
+
+    result = asyncio.run(_impl())
+    assert result.isError
+    assert "unknown tool" in result.content[0].text.lower()
+
+
+# --- the call reaches the REAL engine, against live fixture data --------------
+
+FIXTURE = Path(__file__).parent / "fixtures" / "spindl_area.json"
+
+
+class _FlatElevation:
+    """Offline elevation provider: flat ground, so gain/loss are a deterministic
+    0. Keeps the engine fully offline while still exercising the real geometry,
+    access, and formatting path end-to-end behind the MCP boundary."""
+
+    def lookup(self, points):
+        return [0.0] * len(points)
+
+
+def test_call_tool_runs_the_real_engine_on_fixture(monkeypatch):
+    from hike_finder import search as search_mod
+    from hike_finder.overpass import parse_area
+
+    area = parse_area(json.loads(FIXTURE.read_text(encoding="utf-8"))["elements"])
+
+    # Stub ONLY the two network boundaries; the engine (filters, geometry,
+    # access, format) runs for real, through the server's own call_tool -> CFG.
+    monkeypatch.setattr(search_mod, "fetch_area", lambda *a, **k: area)
+    monkeypatch.setattr(search_mod, "get_provider", lambda *a, **k: _FlatElevation())
+
+    async def _impl():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.call_tool(
+                "find_hikes",
+                {"south": 50.72, "west": 15.58, "north": 50.74, "east": 15.62},
+            )
+
+    result = asyncio.run(_impl())
+    assert not result.isError
+
+    lines = result.content[0].text.splitlines()
+    assert len(lines) >= 5                                  # 11 survive on this bbox
+    assert all("OSM relation" in ln for ln in lines)        # all real formatted hikes
+    assert any("OSM relation 6282999" in ln for ln in lines)  # the known Spindl loop
