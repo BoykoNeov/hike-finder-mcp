@@ -53,6 +53,46 @@ elevation backend is only queried for routes that already match.
 
 Set via `HIKE_ELEVATION_MODE`. See `src/hike_finder/config.py`.
 
+## Getting started (from a fresh clone)
+
+New here? Five steps from nothing to a working tool. Already have the repo and a
+Python environment? Skip to [Quickstart](#quickstart).
+
+**1. Prerequisites** — [Python 3.10+](https://www.python.org/downloads/) and
+[git](https://git-scm.com/downloads). Confirm with `python --version`.
+
+**2. Clone the repo**
+
+```bash
+git clone https://github.com/BoykoNeov/hike-finder-mcp.git
+cd hike-finder-mcp
+```
+
+**3. Create and activate a virtual environment** (recommended — keeps the deps isolated)
+
+```bash
+python -m venv .venv
+source .venv/bin/activate          # Linux / macOS
+# .venv\Scripts\Activate.ps1       # Windows PowerShell
+```
+
+**4. Install** — base install gives the CLI and web UI (no LLM / MCP stack). See
+[Install](#install) below for the `mcp`, `local-dem`, and `dev` extras.
+
+```bash
+pip install -e .
+```
+
+**5. Verify** — offline, no network or contact needed:
+
+```bash
+hike-finder --help                 # prints usage → the entry points resolve
+```
+
+For deeper assurance, `pip install -e ".[dev]"` then `pytest` runs the full
+offline suite (108 tests). From here, pick a frontend: the **Web UI** (Option A),
+**command line** (Option B), or **MCP server** (Option C) below.
+
 ## Quickstart
 
 ```bash
