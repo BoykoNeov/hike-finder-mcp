@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **GPX/GeoJSON export now embeds per-point elevation.** When a route's elevation
+  was computed, the export carries the full profile: GPX writes a single
+  walking-order `<trkseg>` with an `<ele>` on every `<trkpt>`, and GeoJSON writes a
+  3D `[lon, lat, ele]` line (RFC 7946's optional altitude element). This is recorded
+  only when the stitched walking line faithfully covers every member way, so a
+  fragmented relation whose stitch drops legs still exports its full raw geometry
+  (no elevation) rather than a track missing legs. Composed loops (a single
+  synthesised ring) carry their profile too. Gain/loss and all other output are
+  unchanged.
+
 ### Changed
 
 - **Local DEM tiles are now mosaicked through a GDAL VRT instead of an in-memory

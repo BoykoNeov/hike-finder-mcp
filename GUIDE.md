@@ -605,9 +605,9 @@ Medvědí okruh — 11.7 km, +505 m / -505 m [loop, car] (start 50.7312,15.6044,
 Wrote 4 route(s) to loops.gpx (GPX).        ← this confirmation goes to stderr
 ```
 
-- **`--gpx FILE`** writes **GPX 1.1**: one track per route (one segment per mapped leg),
-  preceded by a waypoint at each **start** (the trailhead you drive/ride to). Drop it into
-  **Komoot, OsmAnd, Gaia GPS, a Garmin, or mapy.cz** and the route is there to navigate.
+- **`--gpx FILE`** writes **GPX 1.1**: one track per route, preceded by a waypoint at each
+  **start** (the trailhead you drive/ride to). Drop it into **Komoot, OsmAnd, Gaia GPS, a
+  Garmin, or mapy.cz** and the route is there to navigate — with the elevation profile.
 - **`--geojson FILE`** writes **GeoJSON** (RFC 7946): a `FeatureCollection` of route lines
   with the full computed stats in each feature's `properties` — handy for QGIS, a web map,
   or any data pipeline.
@@ -621,10 +621,13 @@ hike-finder --bbox 50.72 15.58 50.74 15.62 --compose-loops --gpx day.gpx    # co
 ```
 
 **Read it** — the confirmation prints to *stderr* (so `--json --gpx out.gpx` keeps stdout a
-clean JSON pipe). **Near-misses are exported too**, flagged exactly as on screen. The track
-is the route's **raw mapped geometry** — every member way, so it keeps all legs and matches
-the reported distance (it does not re-stitch, which can silently drop a leg). Per-point
-elevation is **not** embedded; the gain/loss numbers ride in each track's description.
+clean JSON pipe). **Near-misses are exported too**, flagged exactly as on screen. When a
+route's elevation was computed, the exported track carries the **full per-point profile**
+(GPX `<ele>` on every point of one clean walking-order track; GeoJSON 3D `[lon, lat, ele]`
+coordinates) — so your GPS draws the climb, not just the line. A fragmented relation whose
+legs can't be stitched into one continuous line falls back instead to the **raw mapped
+geometry** — every member way, no elevation — so it keeps all legs and matches the reported
+distance rather than dropping a leg; its gain/loss still ride in the track's description.
 
 **In the Web UI**, the same two formats are **Download GPX / Download GeoJSON** buttons —
 they hand you the routes currently listed — and the map now **draws each route line** (amber

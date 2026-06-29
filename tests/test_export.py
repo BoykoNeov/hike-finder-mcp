@@ -123,6 +123,33 @@ def test_gpx_desc_carries_the_one_line_summary():
     assert "8.3 km" in xml and "+540 m / -535 m" in xml
 
 
+def test_gpx_track_emits_single_segment_with_per_point_elevation():
+    # A hike carrying a per-point track exports as ONE <trkseg> in walking order, each
+    # <trkpt> bearing an <ele> — the v2 "single clean track", not the raw-ways multi-seg.
+    h = _hike(track=((50.0, 14.0, 100.0), (50.01, 14.0, 137.5), (50.02, 14.0, 90.0)))
+    root = ET.fromstring(hikes_to_gpx([h]))
+    segs = root.findall(".//g:trkseg", GPX_NS)
+    assert len(segs) == 1
+    pts = segs[0].findall("g:trkpt", GPX_NS)
+    assert len(pts) == 3
+    # Axis order is preserved and the elevation rides on each point.
+    assert float(pts[0].get("lat")) == 50.0 and float(pts[0].get("lon")) == 14.0
+    assert pts[0].find("g:ele", GPX_NS).text == "100.0"
+    assert pts[1].find("g:ele", GPX_NS).text == "137.5"
+
+
+def test_gpx_track_takes_precedence_over_raw_ways():
+    # With a track present the multi-way `ways` is NOT emitted as separate segments —
+    # the single clean elevated track wins (and is the only <trkseg>).
+    h = _hike(
+        ways=(((50.0, 14.0), (50.1, 14.0)), ((50.2, 14.1), (50.3, 14.2))),
+        track=((50.0, 14.0, 10.0), (50.1, 14.0, 20.0)),
+    )
+    segs = ET.fromstring(hikes_to_gpx([h])).findall(".//g:trkseg", GPX_NS)
+    assert len(segs) == 1
+    assert len(segs[0].findall("g:trkpt", GPX_NS)) == 2
+
+
 # --- GeoJSON ------------------------------------------------------------------
 
 
@@ -162,6 +189,18 @@ def test_geojson_empty_input_is_a_valid_empty_collection():
 def test_geojson_no_geometry_when_ways_absent():
     obj = json.loads(hikes_to_geojson([_hike(ways=())]))
     assert obj["features"][0]["geometry"] is None
+
+
+def test_geojson_track_is_one_3d_line_keeping_multilinestring_type():
+    # A track exports as a single 3D line [lon, lat, ele] (RFC 7946 altitude element),
+    # still wrapped as MultiLineString so the geometry TYPE never varies between hikes.
+    h = _hike(track=((50.0, 14.0, 100.0), (50.5, 14.5, 250.0)))
+    f = json.loads(hikes_to_geojson([h]))["features"][0]
+    assert f["geometry"]["type"] == "MultiLineString"
+    coords = f["geometry"]["coordinates"]
+    assert len(coords) == 1                 # one continuous line, not per-way segments
+    assert coords[0][0] == [14.0, 50.0, 100.0]   # lon, lat, ele
+    assert coords[0][1] == [14.5, 50.5, 250.0]
 
 
 def test_geojson_preserves_unicode():

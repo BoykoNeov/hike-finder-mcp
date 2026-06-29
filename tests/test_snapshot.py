@@ -113,6 +113,35 @@ def test_offline_search_matches_online_gain(tmp_path):
     assert all(g is not None for g in offline_gain.values())
 
 
+def test_offline_search_track_matches_online(tmp_path):
+    # The per-point elevation track (export's <ele> source) must be byte-for-byte
+    # identical offline, exactly like gain: same resample, same replayed elevations.
+    area = _area()
+    online = find_hikes(area, _LatRamp(), Criteria(), bbox=(49.9, 13.9, 50.2, 14.2))
+    online_track = {h.osm_id: h.track for h in online}
+
+    snap = _record_snapshot()
+    path = tmp_path / "area.json"
+    save_snapshot(snap, path)
+    loaded = load_snapshot(path)
+    offline = find_hikes(
+        loaded.area,
+        SnapshotElevationProvider(loaded.elevations),
+        Criteria(),
+        bbox=loaded.bbox,
+        sample_interval_m=loaded.sample_interval_m,
+    )
+    offline_track = {h.osm_id: h.track for h in offline}
+
+    assert offline_track == online_track
+    # The clean single-way routes here are faithful, so tracks were actually built.
+    assert all(t for t in online_track.values())
+    # And each track point carries the ramp elevation for its latitude.
+    for t in online_track.values():
+        for lat, _lon, ele in t:
+            assert ele == pytest.approx((lat - 50.0) * _LatRamp.SCALE)
+
+
 def test_search_snapshot_applies_filters_offline(tmp_path):
     snap = _record_snapshot()
     path = tmp_path / "area.json"

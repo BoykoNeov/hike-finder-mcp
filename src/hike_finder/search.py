@@ -311,6 +311,7 @@ def compose_loops(
     loop_by_id: dict[int, object] = {}
     syn_routes: list[dict] = []
     pre_elev_by_id: dict[int, list[float]] = {}
+    pre_points_by_id: dict[int, list] = {}
     for i, loop in enumerate(result.loops):
         sid = -(i + 1)
         loop_by_id[sid] = loop
@@ -327,6 +328,12 @@ def compose_loops(
         series = assemble_loop_series(graph, loop, seg_elev)
         if series is not None:
             pre_elev_by_id[sid] = series
+            # The resampled points behind that series, assembled identically (same
+            # traversal, same junction-dedup), so they align 1:1 with the elevations
+            # and let find_hikes record a per-point `track` for the GPS export. Built
+            # only when the series exists (elevation succeeded) — a degraded loop has
+            # no usable track anyway.
+            pre_points_by_id[sid] = assemble_loop_series(graph, loop, seg_points)
     syn_area = AreaData(routes=syn_routes, parking=area.parking, lifts=area.lifts)
     hikes = find_hikes(
         syn_area,
@@ -345,6 +352,7 @@ def compose_loops(
         lift_radius_m=cfg.lift_radius_m,
         near_miss=near_miss,
         pre_elevations_by_id=pre_elev_by_id,
+        pre_points_by_id=pre_points_by_id,
         **_near_miss_kwargs(cfg),
     )
     for h in hikes:

@@ -31,6 +31,7 @@ from .elevation import ElevationError, ElevationProvider, cumulative_gain_loss
 from .geometry import (
     Coord,
     haversine_m,
+    polyline_length_m,
     resample_by_distance,
     route_termini,
     stitch_ways,
@@ -93,6 +94,17 @@ class Hike:
     # off so every prior Hike construction and output stays byte-for-byte unchanged.
     unnamed: bool = False
     place_name: str | None = None
+    # Per-point elevation track — the "single clean track" for GPS export. The
+    # walking-order resampled line zipped with its sampled elevations, as
+    # (lat, lon, ele_m). Filled by `add_elevation` ONLY when the elevation lookup
+    # succeeded AND the stitched walking line faithfully covers all member ways (see
+    # `_stitch_is_faithful`), so a fragmented relation whose stitch drops legs is
+    # NEVER exported as a track missing them — it falls back to the raw-`ways`
+    # multi-segment export (full geometry, no `<ele>`). A composed loop is a single
+    # synthesised ring, so it is faithful by construction. Like `ways`, it is left out
+    # of `hike_to_dict` / `format_hike`, so ordinary output is byte-for-byte unchanged.
+    # Default empty so every Hike construction that predates it keeps working.
+    track: tuple[tuple[float, float, float], ...] = ()
 
 
 @dataclass
@@ -374,6 +386,26 @@ def measure_geometry(
     return hike, line
 
 
+def _stitch_is_faithful(line: list[Coord], ways, *, rel_tol: float = 0.02) -> bool:
+    """True if the stitched walking ``line`` covers (within ``rel_tol``) all member-way
+    length — i.e. ``stitch_ways`` dropped no meaningful leg.
+
+    The elevation track is sampled along the stitched ``line``, but ``stitch_ways``
+    greedily drops members it can't chain (branched / gap-split relations), so on such
+    a route the stitched line — and any track built from it — omits whole legs. We
+    export the single elevated track only when it is faithful; otherwise we keep the
+    raw-``ways`` multi-segment export, which drops nothing. Clean linear routes (the
+    common case) pass comfortably (stitched ≈ summed, the bridge gaps stitch adds are
+    negligible); the fragmented relations that recover length via ``total_way_length_m``
+    are exactly the ones this rejects (they dropped large fractions — 36/70, 19/31 of
+    members in the live fixtures).
+    """
+    summed = total_way_length_m([list(w) for w in ways])
+    if summed <= 0:
+        return False
+    return polyline_length_m(line) >= summed * (1.0 - rel_tol)
+
+
 def add_elevation(
     hike: Hike,
     line: list[Coord],
@@ -383,6 +415,7 @@ def add_elevation(
     gain_threshold_m: float = 10.0,
     smooth_window: int = 3,
     pre_elevations: list[float] | None = None,
+    pre_points: list[Coord] | None = None,
     use_presampled: bool = False,
 ) -> None:
     """Expensive pass: fill gain/loss in place. Leaves them None on failure.
@@ -397,11 +430,21 @@ def add_elevation(
     ``pre_elevations`` of ``None`` under ``use_presampled`` means the series was
     unavailable (e.g. a segment's lookup failed / quota ran out), so gain/loss stay
     None and the loop degrades to n/a — exactly as a failed direct lookup would.
+
+    On success it also records ``hike.track`` — the resampled walking line zipped with
+    its sampled elevations — for the GPX/GeoJSON exporters' per-point ``<ele>``. On the
+    direct path that needs the stitched line to faithfully cover all member ways
+    (``_stitch_is_faithful``); on the presampled path the caller passes the matching
+    ``pre_points`` and the route is a single synthesised ring, so it is always faithful.
+    When the track can't be built faithfully (or its points are unavailable) it stays
+    empty and the export falls back to the raw-``ways`` geometry — gain/loss are
+    unaffected either way.
     """
     if use_presampled:
         if pre_elevations is None:
             return  # series unavailable -> gain/loss stay None (degraded to n/a)
         elevations = pre_elevations
+        sampled = pre_points  # caller-supplied points aligned with the series (or None)
     else:
         sampled = resample_by_distance(line, sample_interval_m)
         try:
@@ -413,6 +456,15 @@ def add_elevation(
     )
     hike.gain_m = round(gain)
     hike.loss_m = round(loss)
+
+    # Per-point elevation track for export. Build it only with points aligned 1:1 to
+    # the looked-up elevations, and — on the direct path — only when the stitched line
+    # didn't drop legs (a presampled composed loop is a single faithful ring).
+    if sampled is not None and len(sampled) >= 2 and len(sampled) == len(elevations):
+        if use_presampled or _stitch_is_faithful(line, hike.ways):
+            hike.track = tuple(
+                (lat, lon, float(ele)) for (lat, lon), ele in zip(sampled, elevations)
+            )
 
 
 def _gain_desc(h: Hike) -> float:
@@ -439,6 +491,7 @@ def find_hikes(
     near_miss_radius_frac: float = 0.5,
     near_miss_trigger: int = 1,
     pre_elevations_by_id: dict[int, list[float]] | None = None,
+    pre_points_by_id: dict[int, list[Coord]] | None = None,
 ) -> list[Hike]:
     """Run the two-pass filter and return matches, optionally with near-misses.
 
@@ -463,7 +516,10 @@ def find_hikes(
     ``add_elevation``'s ``use_presampled``. This lets compose look each shared trail
     segment up once (not once per loop). A route absent from the map (or mapped to a
     failed series) keeps gain/loss None. ``None`` (the default) leaves the ordinary
-    path byte-for-byte unchanged.
+    path byte-for-byte unchanged. ``pre_points_by_id`` (compose only) maps the same ids
+    to the resampled points behind each series, so the presampled route can still record
+    a per-point elevation ``track`` for export; absent it, gain/loss are unaffected and
+    only the track is skipped.
     """
     use_pre = pre_elevations_by_id is not None
     want_band = near_miss is True or near_miss == "auto"
@@ -523,6 +579,7 @@ def find_hikes(
             gain_threshold_m=gain_threshold_m,
             smooth_window=smooth_window,
             pre_elevations=pre_elevations_by_id.get(hike.osm_id) if use_pre else None,
+            pre_points=pre_points_by_id.get(hike.osm_id) if pre_points_by_id else None,
             use_presampled=use_pre,
         )
 
@@ -542,6 +599,7 @@ def find_hikes(
                 gain_threshold_m=gain_threshold_m,
                 smooth_window=smooth_window,
                 pre_elevations=pre_elevations_by_id.get(hike.osm_id) if use_pre else None,
+                pre_points=pre_points_by_id.get(hike.osm_id) if pre_points_by_id else None,
                 use_presampled=use_pre,
             )
         # Candidates: strict survivors that failed only on gain, plus the relaxed

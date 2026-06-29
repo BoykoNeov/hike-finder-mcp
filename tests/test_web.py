@@ -107,8 +107,10 @@ def test_geojson_download_offline(server):
     assert "hikes.geojson" in headers["Content-Disposition"]
     obj = json.loads(body)
     assert obj["type"] == "FeatureCollection" and len(obj["features"]) == 1
-    # GeoJSON is [lon, lat] (RFC 7946) — the opposite axis order from /api/hikes.
-    assert obj["features"][0]["geometry"]["coordinates"][0][0] == [14.0, 50.0]
+    # The clean single-way route gets a faithful per-point elevation track, so the offline
+    # GeoJSON carries it through as 3D positions: [lon, lat, ele] (RFC 7946's optional 3rd
+    # element) — the opposite axis order from /api/hikes. The ramp reads 0 m at lat 50.0.
+    assert obj["features"][0]["geometry"]["coordinates"][0][0] == [14.0, 50.0, 0.0]
 
 
 def test_gpx_unknown_area_is_404(server):

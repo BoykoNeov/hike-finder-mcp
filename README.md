@@ -176,17 +176,19 @@ hike-finder --area krkonose.json --min-gain 600 --geojson picks.geojson    # off
 hike-finder --bbox 50.72 15.58 50.74 15.62 --compose-loops --gpx day.gpx   # composed loops too
 ```
 
-- **GPX 1.1** — one `<trk>` per route (one `<trkseg>` per mapped leg) plus a `<wpt>` at
-  each start (the trailhead you drive/ride to). Loads into Komoot, OsmAnd, Gaia GPS,
-  Garmin, **mapy.cz**, …
+- **GPX 1.1** — one `<trk>` per route plus a `<wpt>` at each start (the trailhead you
+  drive/ride to). Loads into Komoot, OsmAnd, Gaia GPS, Garmin, **mapy.cz**, …
 - **GeoJSON** (RFC 7946) — a `FeatureCollection` of route lines carrying the full computed
   stats in `properties` (gain/loss, distance, shape, access, provenance).
 
-The exported track is the route's **raw mapped geometry** (every member way), so it keeps
-all legs and matches the reported distance — it does *not* re-stitch (which can drop legs).
-Per-point elevation isn't embedded; gain/loss live in each track's description. The web UI
-has **Download GPX / Download GeoJSON** buttons (and draws the route lines on the map);
-MCP's `find_hikes` takes a `format: "gpx"｜"geojson"` argument that returns the file as text.
+When a route's elevation was computed, the exported track carries the **full per-point
+profile** — GPX puts an `<ele>` on every point of one clean walking-order track; GeoJSON
+writes 3D `[lon, lat, ele]` coordinates. For a fragmented relation whose legs can't be
+stitched into one line, the export instead falls back to the **raw mapped geometry** (every
+member way, no elevation) so it keeps all legs and matches the reported distance rather than
+shipping a track missing legs. The web UI has **Download GPX / Download GeoJSON** buttons
+(and draws the route lines on the map); MCP's `find_hikes` takes a `format:
+"gpx"｜"geojson"` argument that returns the file as text.
 
 ### Naming unnamed routes (reverse geocoding)
 

@@ -895,9 +895,55 @@ validated `search_hikes` path and returns correct UTF-8 JSON.)
   uses (GPS lists show the name, not the desc; GeoJSON keeps the structured `near_miss`/
   `notes` properties). Pure + frontend tests in `test_export.py` (19 cases), `test_cli.py`,
   `test_web.py`, `test_server.py`, plus a composed-loop `ways` assertion in
-  `test_compose_live.py`. **Suite 228**. v2 left: embed per-point `<ele>` (needs the
-  resampled line + elevation array `add_elevation` currently discards), walking-order
-  stitching for the single-track ideal.
+  `test_compose_live.py`. **Suite 228**.
+
+- **GPX / GeoJSON export v2 — per-point `<ele>` + single clean track — DONE (2026-06-29).**
+  The export v1 "left" item. The gain pass already resamples the walking line and looks up
+  an elevation per point, then *discarded* both. Now `filters.add_elevation` keeps them as a
+  new `Hike.track` — the resampled walking-order line zipped with its sampled elevations as
+  `(lat, lon, ele)`. The export prefers it when present: **GPX** emits ONE `<trkseg>` with an
+  `<ele>` on every `<trkpt>` (the "single clean track", walking order), **GeoJSON** emits one
+  3D `[lon, lat, ele]` line (RFC 7946's optional altitude element) — still wrapped as
+  `MultiLineString` so the geometry *type* never varies between hikes. With no track it falls
+  back to the v1 raw-`ways` multi-segment export unchanged.
+  - **Honesty gate (the load-bearing decision):** the track is sampled along the *stitched*
+    line, which `stitch_ways` builds by dropping members it can't chain — so on a branched /
+    gap-split relation a track would silently omit whole legs (the very thing the v1 export
+    avoids by reading raw `ways`). So the track is recorded ONLY when the stitch is *faithful*:
+    `_stitch_is_faithful` checks `polyline_length_m(line) >= total_way_length_m(ways)*(1-2%)`.
+    Clean linear routes (the common case — 13/15 live) pass comfortably; the fragmented
+    relations that recover length via `total_way_length_m` (36/70, 19/31 members dropped) fail
+    it and keep the full-geometry raw-`ways` export (no `<ele>`). Gain/loss are unaffected
+    either way (still computed from the partial line, exactly as before). A route whose
+    elevation lookup fails gets no track (and no gain), as before.
+  - **Composed loops covered too:** a composed loop is a single synthesised ring (faithful by
+    construction). `search.compose_loops` already assembles the per-segment elevation series;
+    it now also assembles the matching *points* (`assemble_loop_series(graph, loop, seg_points)`)
+    and passes them via the new `find_hikes(pre_points_by_id=…)` → `add_elevation(pre_points=…,
+    use_presampled=True)` hook, so the presampled path builds the track without re-touching the
+    provider and without the faithfulness gate. Absent the points, gain is unaffected and only
+    the track is skipped (back-compat).
+  - **Zero churn elsewhere:** `track` defaults `()` and is left out of `hike_to_dict` /
+    `format_hike` (like `ways`), so every other frontend output is byte-for-byte unchanged.
+    The web map still draws from `ways` (2D Leaflet). Built deterministically from the same
+    resample + elevations as gain, so the **offline==live byte-for-byte invariant extends to
+    the track** (pinned by `test_snapshot.py::test_offline_search_track_matches_online`).
+  - **Validated on the live fixture (matches v1's bar).** `test_track_live.py` drives all
+    **15 real routes** of `spindl_area.json` (one Overpass round-trip) through
+    `measure_geometry` + `add_elevation` with a deterministic ramp (the gate is geometry-only)
+    and pins the discriminator: a per-point track exists IFF the stitch is faithful. Result
+    matches the HANDOFF's earlier closure/distance finding **exactly** — **13 clean routes get
+    a single elevated `<trkseg>` / `<ele>` + GeoJSON 3D**, and the gate falls back to the
+    full raw-`ways` export (no `<ele>`, GeoJSON 2D) on **precisely the two fragmented
+    relations**: the route named "4207" (id 237097, stitched/summed 7.54/18.28 km = 0.41) and
+    "Medvědí okruh" (id 6285306, 3.37/7.98 = 0.42). The fragmented fallback keeps full
+    geometry (≥2 way segments) and still reports gain. Unit coverage: `test_track.py` (6:
+    direct-path aligned track, gate drops the track on a member-dropping stitch while keeping
+    gain, lookup-failure no-op, presampled track from supplied points / no-points / degraded
+    series), `test_export.py` (+3: GPX single elevated trkseg, track-wins-over-raw-ways,
+    GeoJSON 3D line keeping the MultiLineString type), `test_snapshot.py` (+1 offline==live
+    track byte-identical), `test_web.py` (offline GeoJSON download now carries 3D coords).
+    **Suite 285** (282 pass; the 3 `.sh` launcher cases still need bash).
 
 - **Repo hygiene — DONE and CI-GREEN (2026-06-24).** The public repo now carries
   the basics a serious project needs: an **MIT `LICENSE`**, a **`CHANGELOG.md`**
