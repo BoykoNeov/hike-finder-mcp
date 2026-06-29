@@ -227,6 +227,7 @@ def compose_loops(
         max_segments=cfg.compose_max_segments,
         max_loops=cfg.compose_max_loops,
         overlap_frac=cfg.compose_overlap_frac,
+        min_compactness=cfg.compose_min_compactness,
         anchors=anchors or None,
     )
     # Logged, never silent: how many distinct loops exist vs how many we elevation+show,
@@ -242,17 +243,26 @@ def compose_loops(
         " [cycle search capped — results may be incomplete; narrow the distance band]"
         if result.capped else ""
     )
+    # Never silent: report how many in-band cycles the compactness floor dropped as
+    # degenerate slivers (out-and-backs along near-parallel trails), so a filtered-down
+    # result isn't mistaken for "that's all there is".
+    sliver_note = (
+        f" ({result.slivered} thin sliver(s) dropped below compactness "
+        f"{cfg.compose_min_compactness:g})"
+        if result.slivered else ""
+    )
     if anchored:
         _log.warning(
             "compose: %d loop(s) in %.0f-%.0f km reachable from the requested "
-            "car/lift access, of %d cycle(s) found in band from %d trail segments%s%s",
+            "car/lift access, of %d cycle(s) found in band from %d trail segments%s%s%s",
             result.distinct, min_km, max_km, result.found, len(graph.segments),
-            truncated, capped_note,
+            sliver_note, truncated, capped_note,
         )
     else:
         _log.warning(
-            "compose: %d distinct loop(s) in %.0f-%.0f km from %d trail segments%s%s",
-            result.distinct, min_km, max_km, len(graph.segments), truncated, capped_note,
+            "compose: %d distinct loop(s) in %.0f-%.0f km from %d trail segments%s%s%s",
+            result.distinct, min_km, max_km, len(graph.segments),
+            sliver_note, truncated, capped_note,
         )
 
     provider = _provider(cfg, elevation_mode, dem_dir, cache)

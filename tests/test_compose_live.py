@@ -185,7 +185,7 @@ def test_compose_looks_up_each_shared_segment_once_not_per_loop(monkeypatch):
     res = find_loops(
         graph, min_m=cfg.compose_min_km * 1000, max_m=cfg.compose_max_km * 1000,
         max_segments=cfg.compose_max_segments, max_loops=cfg.compose_max_loops,
-        overlap_frac=cfg.compose_overlap_frac,
+        overlap_frac=cfg.compose_overlap_frac, min_compactness=cfg.compose_min_compactness,
     )
     used = set().union(*(L.seg_ids for L in res.loops))
     distinct_pts = sum(

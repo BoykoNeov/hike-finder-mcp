@@ -777,11 +777,19 @@ validated `search_hikes` path and returns correct UTF-8 JSON.)
     `ComposeResult.distinct` carries the pre-cap count so `compose_loops` can log
     "N distinct … showing top M" (truncation never silent). The realistic run returned
     a clean, varied 15 (compactness 0.42–0.62, 8–12.4 km, 6–13 trails each) in 127 ms,
-    not capped. NB the compactness check also empirically retired the sliver worry:
-    **0 of 72** loops were below 0.10 compactness, so a dedicated sliver filter stays v2.
+    not capped. NB the ranking empirically showed slivers are rare: **0 of 72** loops were
+    below 0.10 compactness. A dedicated **sliver filter is now DONE** (`min_compactness`,
+    default `HIKE_COMPOSE_MIN_COMPACTNESS=0.05`): a hard compactness *floor* that DROPS a
+    degenerate near-zero-area loop (out-and-back along two near-parallel trails) outright —
+    before the near-dup collapse and the cap, so a sliver can neither sway a collapse nor
+    eat a returned slot. The 0.05 default is a provable no-op on real data (observed min
+    compactness 0.18 on the wide Špindl bbox, 0.39 on the known loop), while the pure
+    `find_loops` default stays 0.0 (inert). `ComposeResult.slivered` carries the drop count
+    so `compose_loops` logs it (never silent).
   - **Clipped to the bbox** (`clip_routes_to_bbox`): a composed loop must lie inside
     the searched area — without it 13 of 14 Špindl loops wandered out on a through-
-    route. Coarse vertex-granularity clip (the deferred true bbox-clip is still future).
+    route. Coarse vertex-granularity clip (true geometric bbox-clip was deferred, then
+    found to be a no-op for loops — boundary stems never sit on a cycle; see below).
   - **Wiring:** `search.compose_loops` wraps each loop as a synthetic `roundtrip=yes`
     route (one way = the closed loop line) and runs the **unchanged** `find_hikes`, so
     elevation/gain, distance, and car/lift access are computed identically and offline==
@@ -797,10 +805,13 @@ validated `search_hikes` path and returns correct UTF-8 JSON.)
     junction, figure-eight, parallel bigon, coincident dedup, determinism, budget cap,
     near-dup collapse, clipping) + `tests/test_compose_live.py` (Špindl fixture:
     go-signal connectivity, degree sanity, the known in-bbox loop, full pipeline).
-    Residual future work: a *sliver/compactness* filter (a long thin out-and-back-on-
-    parallel-trails loop can still pass), true geometric bbox-clipping (vs vertex-
-    granularity), and **access-anchored loops** ("a 12 km loop from where I park" —
-    seed/close the cycle at a matched parking/lift), the natural v2.
+    Residual future work: true geometric bbox-clipping (vs vertex-granularity) — but this
+    is now understood to be a **provable no-op for composed loops**: a boundary-clipped
+    trail ends at a degree-1 vertex, which `_active_segments` always prunes, so a boundary
+    segment can never lie on a cycle; loop membership and length come from the 2-edge-
+    connected core, which never touches the bbox edge. So it's not implemented (it would
+    change no loop and no length). The *sliver filter* and *access-anchored loops* once
+    listed here are both now DONE (see above).
   - **Elevation cost — segment-level shared sampling — DONE (2026-06-24).** Earlier this
     bullet claimed a dense compose run "exhausts the 1000/day quota" by assuming **~1 API
     request per point** (~5716 points → ~5716 requests). That was WRONG: `ApiElevationProvider`

@@ -62,6 +62,9 @@
                         of its length with an already-kept loop (0.6)
   HIKE_COMPOSE_MAX_LOOPS  compose mode: max loops returned, ranked by compactness;
                         bounds the per-loop elevation cost (15)
+  HIKE_COMPOSE_MIN_COMPACTNESS  compose mode: drop a loop below this compactness
+                        (4πA/P²) — a degenerate thin sliver, not a real loop (0.05).
+                        0 disables.
 """
 from __future__ import annotations
 
@@ -125,6 +128,12 @@ class Config:
     # Cap on composed loops returned (ranked by compactness). Bounds the elevation cost
     # — the caller looks up elevation per returned loop — and keeps the list manageable.
     compose_max_loops: int = int(os.getenv("HIKE_COMPOSE_MAX_LOOPS", "15"))
+    # Sliver filter: drop a composed loop whose Polsby–Popper compactness (4πA/P²) is
+    # below this floor — a degenerate near-zero-area out-and-back along two near-parallel
+    # trails, not a real loop. 0.05 is a safe floor: real marked-trail loops sit well
+    # above it (observed ≥ 0.18 on a dense real bbox), so this drops nothing on real data
+    # while guarding the degenerate case. 0 disables the filter.
+    compose_min_compactness: float = float(os.getenv("HIKE_COMPOSE_MIN_COMPACTNESS", "0.05"))
 
 
 def load() -> Config:

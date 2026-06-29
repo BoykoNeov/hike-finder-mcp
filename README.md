@@ -133,9 +133,11 @@ Composed loop — 9.86 km, +540 m / -538 m [loop, car] (start 50.73,15.61, compo
 The target length comes from `--min-distance`/`--max-distance` (default 3–15 km).
 Composed loops are kept **inside the searched bbox** (a loop that would wander out on a
 through-route is excluded), so widen the area for longer loops. On a dense area there can
-be dozens of candidates; the tool returns the **15 most loop-like** (ranked by
-compactness, so thin out-and-back shapes sink — tune with `HIKE_COMPOSE_MAX_LOOPS`) and
-logs how many distinct loops it found. Elevation, distance, and car/lift access are
+be dozens of candidates; degenerate near-zero-area **slivers** (an out-and-back along two
+near-parallel trails) are dropped outright by a compactness floor (`HIKE_COMPOSE_MIN_COMPACTNESS`),
+then the tool returns the **15 most loop-like** of the rest (ranked by compactness, so thin
+shapes sink — tune with `HIKE_COMPOSE_MAX_LOOPS`) and logs how many distinct loops it found
+(and how many slivers it dropped). Elevation, distance, and car/lift access are
 computed exactly as for a real route, and a composed loop is circular by construction
 (gain ≈ loss). The web UI exposes this as a **"Compose loops from connected trails"**
 checkbox; MCP via a `compose_loops` argument on `find_hikes`.
@@ -494,6 +496,7 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 | `HIKE_COMPOSE_MAX_SEGMENTS` | Compose mode: max trail segments stitched per loop | `12` |
 | `HIKE_COMPOSE_OVERLAP_FRAC` | Compose mode: drop a loop sharing more than this fraction of its length with an already-kept loop (near-duplicate collapse) | `0.6` |
 | `HIKE_COMPOSE_MAX_LOOPS` | Compose mode: max loops returned, ranked by compactness (roundest first); bounds the per-loop elevation cost | `15` |
+| `HIKE_COMPOSE_MIN_COMPACTNESS` | Compose mode: drop a loop below this Polsby–Popper compactness (4πA/P²) — a degenerate thin sliver, not a real loop; `0` disables | `0.05` |
 
 > **Snapshot caveat:** `--area` locks the snapshot's sample interval (the saved
 > elevation points were taken at it), so `HIKE_SAMPLE_INTERVAL` can't break an

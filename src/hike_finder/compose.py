@@ -278,6 +278,7 @@ class ComposeResult(NamedTuple):
     found: int  # distinct cycles in band before near-duplicate collapse
     distinct: int  # loops after near-duplicate collapse, before the max_loops cap
     capped: bool  # True if the cycle search hit its expansion budget (results incomplete)
+    slivered: int = 0  # in-band cycles dropped by the min_compactness sliver filter
 
 
 def _compactness(coords: list[Coord]) -> float:
@@ -454,6 +455,7 @@ def find_loops(
     max_loops: int | None = None,
     budget: int = 500_000,
     overlap_frac: float = 0.6,
+    min_compactness: float = 0.0,
     anchors: list[tuple[list[Coord], float]] | None = None,
 ) -> ComposeResult:
     """Search the contracted graph for loops with total length in ``[min_m, max_m]``.
@@ -475,6 +477,18 @@ def find_loops(
         loop is dropped, so "the same loop plus a short detour" doesn't flood the
         results. Self-loop segments (already-closed single-relation loops) in band
         are included directly.
+      * **sliver filter** (``min_compactness`` > 0) — a hard compactness floor that
+        *drops* degenerate near-zero-area loops outright (an out-and-back along two
+        near-parallel marked trails: high perimeter, almost no enclosed area). This
+        runs **before** both the near-duplicate collapse and the cap, so a sliver can
+        neither sway a collapse decision nor consume a returned slot. Compactness
+        (``4πA/P²``, scale-invariant) is the right discriminator — it separates *thin*
+        from merely *small*, and short loops are already excluded by the ``min_m``
+        length band; an absolute-area floor would instead wrongly kill a small but
+        round loop. Off by default (0.0): real marked-trail loops sit well above any
+        sliver (observed ≥ 0.18 on a dense real bbox), so the engine sets a small
+        positive floor while the pure default stays inert. ``ComposeResult.slivered``
+        counts the drops so the filter is never silent.
       * **max_loops cap** — the survivors are ranked by **compactness** (roundest /
         most loop-like first; this also demotes any thin near-sliver) and, if
         ``max_loops`` is set, truncated to it. This is not cosmetic: the caller pays
@@ -551,6 +565,18 @@ def find_loops(
     # cap so both operate on the accessible subset (see the `anchors` note above).
     pool: list[ComposedLoop] = found + selfloops
     in_band = len(pool)
+
+    # Sliver filter (before anchoring, collapse, AND the cap): drop degenerate
+    # near-zero-area loops by a hard compactness floor, so a thin out-and-back along
+    # two near-parallel trails can't reach the results, sway a near-dup collapse, or
+    # eat a returned slot. `found`/`in_band` still counts every in-band cycle, so the
+    # funnel stays visible; `slivered` reports how many of them this dropped.
+    slivered = 0
+    if min_compactness > 0.0:
+        kept_shape = [L for L in pool if L.compactness >= min_compactness]
+        slivered = len(pool) - len(kept_shape)
+        pool = kept_shape
+
     if anchors:
         anchored: list[ComposedLoop] = []
         for L in pool:
@@ -585,4 +611,5 @@ def find_loops(
         found=in_band,
         distinct=len(kept),
         capped=state["capped"],
+        slivered=slivered,
     )

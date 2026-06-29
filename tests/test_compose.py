@@ -187,6 +187,29 @@ def test_loops_ranked_by_compactness_round_before_thin():
     assert res.loops[0].compactness > 0.5 and res.loops[1].compactness < 0.3
 
 
+def test_sliver_filter_drops_thin_loops_before_collapse_and_reports_count():
+    # A compact square and a degenerate near-zero-area sliver ring (~1.4 km wide, ~11 m
+    # tall -> compactness ~0.025), disjoint components. The hard min-compactness floor
+    # drops the sliver outright (before collapse/cap) and reports the drop; with the floor
+    # off (the default 0.0) the sliver is kept — the pure module stays inert by default.
+    square = [(50.00, 15.00), (50.00, 15.01), (50.01, 15.01), (50.01, 15.00), (50.00, 15.00)]
+    sliver = [(52.00, 16.00), (52.00, 16.02), (52.0001, 16.02), (52.0001, 16.00), (52.00, 16.00)]
+    g = build_trail_graph([_route("sq", [square], rid=1), _route("sliver", [sliver], rid=2)])
+
+    off = find_loops(g, min_m=0, max_m=1e9)                      # floor off by default
+    assert len(off.loops) == 2 and off.slivered == 0
+
+    on = find_loops(g, min_m=0, max_m=1e9, min_compactness=0.05)  # floor on
+    assert [L.refs for L in on.loops] == [("sq",)]               # only the real loop survives
+    assert on.found == 2                                          # both in-band cycles still counted
+    assert on.slivered == 1                                       # and the drop is reported, never silent
+    # The filter runs BEFORE the near-duplicate collapse: `distinct` is the post-collapse
+    # kept count, so a sliver removed pre-collapse never reaches it (distinct == 1). Were
+    # the filter moved to after collapse, the disjoint sliver would survive into `kept` and
+    # `distinct` would read 2 — so this pins the ordering, not just the final-output count.
+    assert on.distinct == 1
+
+
 # --------------------------------------------------------------------------- access anchoring
 
 
