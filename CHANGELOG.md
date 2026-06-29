@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-29
+
 ### Added
 
 - **GPX/GeoJSON export now embeds per-point elevation.** When a route's elevation
@@ -17,27 +19,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (no elevation) rather than a track missing legs. Composed loops (a single
   synthesised ring) carry their profile too. Gain/loss and all other output are
   unchanged.
-
-### Changed
-
-- **Local DEM tiles are now mosaicked through a GDAL VRT instead of an in-memory
-  merge.** Multiple GeoTIFF tiles in `HIKE_DEM_DIR` are assembled into a virtual
-  raster that is point-sampled, so memory stays flat regardless of region size
-  (the previous `rasterio.merge` loaded the whole mosaic and didn't scale). The
-  VRT is built directly from the tiles' georeferencing — no `gdalbuildvrt` CLI or
-  `osgeo` bindings needed (neither ships with the `local-dem` extra). A
-  user-supplied `*.vrt` in the directory is used as-is (escape hatch for
-  mixed-resolution tiles needing resampling); mixed CRS/resolution otherwise
-  raises a clear error rather than silently misregistering.
-
-### Fixed
-
-- **Local DEM nodata was read from the first tile only**, so a void/ocean pixel
-  in any other tile could leak a raw value. Each VRT source now declares its own
-  nodata, masked against a single band nodata value, so voids in any tile resolve
-  correctly.
-
-### Added
 
 - **Reverse-geocode naming (opt-in).** Routes with no OSM `name`/`ref` (which fall
   back to `route/<id>`) can be labelled from the place names at their ends — e.g.
@@ -58,6 +39,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   honest no-op: an offline naming request on it logs that it has no baked names and to
   re-download. Existing snapshots remain readable (the on-disk format is unchanged and the
   new place-name map is optional).
+
+- **Loop composition drops degenerate "sliver" loops.** A hard Polsby–Popper
+  compactness floor (`HIKE_COMPOSE_MIN_COMPACTNESS`, default `0.05`) removes
+  near-zero-area loops (an out-and-back along two near-parallel trails) before the
+  near-duplicate collapse and the result cap, so a sliver can neither sway a collapse
+  nor consume a returned slot. The default is a no-op on real data (observed minimum
+  compactness ~0.18 on a wide bbox); the dropped count is logged, never silent.
+
+### Changed
+
+- **Local DEM tiles are now mosaicked through a GDAL VRT instead of an in-memory
+  merge.** Multiple GeoTIFF tiles in `HIKE_DEM_DIR` are assembled into a virtual
+  raster that is point-sampled, so memory stays flat regardless of region size
+  (the previous `rasterio.merge` loaded the whole mosaic and didn't scale). The
+  VRT is built directly from the tiles' georeferencing — no `gdalbuildvrt` CLI or
+  `osgeo` bindings needed (neither ships with the `local-dem` extra). A
+  user-supplied `*.vrt` in the directory is used as-is (escape hatch for
+  mixed-resolution tiles needing resampling); mixed CRS/resolution otherwise
+  raises a clear error rather than silently misregistering.
+
+### Fixed
+
+- **Local DEM nodata was read from the first tile only**, so a void/ocean pixel
+  in any other tile could leak a raw value. Each VRT source now declares its own
+  nodata, masked against a single band nodata value, so voids in any tile resolve
+  correctly.
 
 ## [0.1.0] - 2026-06-24
 
@@ -101,4 +108,6 @@ filter them by locally-computed elevation gain, distance, loop shape, and access
 - MIT license, CI (GitHub Actions running the test suite on Linux 3.10–3.13 plus a
   Windows smoke job), and this changelog.
 
+[Unreleased]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/BoykoNeov/hike-finder-mcp/releases/tag/v0.1.0
