@@ -108,6 +108,9 @@ INDEX_HTML = """<!doctype html>
     <label style="margin-top:12px;"><input type="checkbox" id="compose_loops" style="width:auto; vertical-align:middle;"> Compose loops from connected trails</label>
     <p class="muted">Stitch several marked trails into day-loops of your target distance (uses min/max dist above; default 3–15 km). Live map only.</p>
 
+    <label><input type="checkbox" id="name_places" style="width:auto; vertical-align:middle;"> Name unnamed routes from places</label>
+    <p class="muted">Label routes with no OSM name (route/&lt;id&gt;) from their endpoints' place names, e.g. “Pec → Sněžka”, via Nominatim. Live map only (needs the network).</p>
+
     <button id="search">Search this map area</button>
     <div class="row" style="margin-top:8px;">
       <div><button id="dl_gpx" style="margin-top:0;" title="Download the listed routes as a GPX track for your GPS / phone">Download GPX</button></div>
@@ -161,6 +164,8 @@ async function search(){
     // Loop composition is a live-map-only mode (it builds a graph from fetched OSM).
     if (document.getElementById('compose_loops').checked) params.set('compose_loops', 'true');
   }
+  // Reverse-geocode naming of unnamed routes — applies live (offline it's a no-op).
+  if (document.getElementById('name_places').checked) params.set('name_places', 'true');
   for (const f of FIELDS){ const id = (f === 'user_agent') ? 'ua' : f; const v = val(id); if (v !== null) params.set(f, v); }
   // Remember exactly what we searched, so the GPX/GeoJSON download reproduces THIS
   // result set (the same area/bbox/filters) rather than the current map view.
@@ -227,8 +232,11 @@ async function showQuota(){
 function render(hikes){
   const results = document.getElementById('results');
   hikes.forEach(h => {
+    // An unnamed route shows its reverse-geocoded place label when one was derived;
+    // otherwise the truthful name (a real OSM name, or the route/<id> fallback).
+    const dispName = h.place_name || h.name;
     const marker = L.marker([h.start.lat, h.start.lon]).addTo(markers)
-      .bindPopup('<b>' + esc(h.name) + '</b><br>' + h.distance_km + ' km'
+      .bindPopup('<b>' + esc(dispName) + '</b><br>' + h.distance_km + ' km'
                  + (h.gain_m != null ? (', +' + h.gain_m + ' m') : ''));
     // Draw the route line(s): near-miss amber, composed loop dashed purple, else blue.
     // geometry is a list of member ways, each an array of [lat, lon] points.
@@ -238,7 +246,7 @@ function render(hikes){
       if (way && way.length >= 2){
         const pl = L.polyline(way, { color, weight: 4, opacity: 0.8,
                                      dashArray: h.composed ? '6 5' : null }).addTo(routeLines);
-        pl.bindPopup('<b>' + esc(h.name) + '</b><br>' + h.distance_km + ' km'
+        pl.bindPopup('<b>' + esc(dispName) + '</b><br>' + h.distance_km + ' km'
                      + (h.gain_m != null ? (', +' + h.gain_m + ' m / -' + h.loss_m + ' m') : ''));
         lines.push(pl);
       }
@@ -249,13 +257,15 @@ function render(hikes){
     const gain = (h.gain_m != null) ? ('+' + h.gain_m + ' m / -' + h.loss_m + ' m') : 'gain n/a';
     const note = (h.near_miss && h.notes && h.notes.length)
       ? '<div class="note">near miss: ' + esc(h.notes.join('; ')) + '</div>' : '';
-    // A composed loop has no single relation id — name its constituent trails.
+    // A composed loop has no single relation id — name its constituent trails. An
+    // unnamed route given a place label is marked "unnamed OSM relation" so the
+    // geocoded label is never mistaken for the route's signed trail name.
     const ident = h.composed
       ? ('composed of ' + esc((h.composed_of || []).join(' + ')))
-      : ('OSM relation ' + h.osm_id);
+      : ((h.place_name ? 'unnamed OSM relation ' : 'OSM relation ') + h.osm_id);
     const el = document.createElement('div');
     el.className = h.near_miss ? 'hike near' : 'hike';
-    el.innerHTML = '<div class="name">' + esc(h.name) + '</div>'
+    el.innerHTML = '<div class="name">' + esc(dispName) + '</div>'
       + '<div class="meta">' + h.distance_km + ' km &middot; ' + gain + '</div>'
       + '<div class="flags">' + flags.map(f => '<span>' + f + '</span>').join('') + '</div>'
       + note
@@ -452,6 +462,8 @@ class Handler(BaseHTTPRequestHandler):
         # near_misses tri-state: absent -> "auto", true -> always, false -> never.
         nm = _tri(qs, "near_misses")
         near_miss = "auto" if nm is None else nm
+        # Reverse-geocode naming of unnamed routes (opt-in checkbox; off by default).
+        name_places = _tri(qs, "name_places")
 
         area_name = _str(qs, "area")
         if area_name:
@@ -461,7 +473,9 @@ class Handler(BaseHTTPRequestHandler):
                 return None, (404, {"error": f"no saved area named {area_name!r}"})
             try:
                 snap = load_snapshot(path)
-                return search_snapshot(snap, criteria, near_miss=near_miss), None
+                return search_snapshot(
+                    snap, criteria, near_miss=near_miss, name_places=name_places
+                ), None
             except (OSError, ValueError) as e:
                 return None, (500, {"error": f"could not search snapshot: {e}"})
 
@@ -476,9 +490,15 @@ class Handler(BaseHTTPRequestHandler):
             return None, (400, {"error": "south/west/north/east are required"})
 
         # Loop composition: synthesise loops from connected trails inside the box.
-        search = compose_loops if _tri(qs, "compose_loops") else search_hikes
+        composing = _tri(qs, "compose_loops")
+        search = compose_loops if composing else search_hikes
+        kwargs = dict(user_agent=_str(qs, "user_agent"), near_miss=near_miss)
+        # Naming applies only to ordinary routes — composed loops already carry their
+        # constituent-trail label, never a route/<id> fallback.
+        if not composing:
+            kwargs["name_places"] = name_places
         try:
-            hikes = search(bbox, criteria, user_agent=_str(qs, "user_agent"), near_miss=near_miss)
+            hikes = search(bbox, criteria, **kwargs)
         except Exception as e:
             msg = str(e)
             if "406" in msg:

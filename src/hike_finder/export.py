@@ -49,8 +49,13 @@ def _display_name(h: Hike) -> str:
     structured near-miss field — so without this a near-miss exported under ``auto`` (when
     nothing matched) would load looking like a clean match. The CLI and web both prefix
     ``~``; the export keeps that contract.
+
+    Uses the reverse-geocoded ``place_name`` when one was derived (so a ``route/<id>``
+    route exports the friendly "Labská → Špindlerův Mlýn" into the GPS, matching what the
+    terminal/web show), else the truthful OSM name. The structured GeoJSON properties keep
+    BOTH (via ``hike_to_dict``), so provenance isn't lost there.
     """
-    return ("~ " if h.near_miss else "") + (h.name or "hike")
+    return ("~ " if h.near_miss else "") + (h.place_name or h.name or "hike")
 
 
 def hikes_to_gpx(hikes: list[Hike], *, creator: str = GPX_CREATOR) -> str:

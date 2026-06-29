@@ -28,12 +28,20 @@ def format_hike(h: Hike) -> str:
     suffix = f"  [near miss: {'; '.join(h.notes)}]" if h.near_miss and h.notes else ""
     # A composed loop has no single OSM relation — name its constituent trails instead
     # of a (dishonest) relation id, so it always reads as a stitched-together suggestion.
+    # An UNNAMED route given a reverse-geocoded place label shows that label as its
+    # name, but the identifier clause says "unnamed OSM relation" so a place-derived
+    # label is never mistaken for the route's signed trail name (which it has none of).
     if h.composed:
         ident = f"composed of {' + '.join(h.composed_of)}" if h.composed_of else "composed loop"
+        display_name = h.name
+    elif h.place_name:
+        ident = f"unnamed OSM relation {h.osm_id}"
+        display_name = h.place_name
     else:
         ident = f"OSM relation {h.osm_id}"
+        display_name = h.name
     return (
-        f"{prefix}{h.name} — {h.distance_km} km, {elev} [{', '.join(flags)}] "
+        f"{prefix}{display_name} — {h.distance_km} km, {elev} [{', '.join(flags)}] "
         f"(start {h.start[0]:.4f},{h.start[1]:.4f}, {ident}){suffix}"
     )
 
@@ -53,6 +61,11 @@ def hike_to_dict(h: Hike, *, geometry: bool = False) -> dict:
         "osm_id": None if h.composed else h.osm_id,
         "name": h.name,
         "ref": h.ref,
+        # `name`/`ref` stay the truthful OSM values (route/<id> when unnamed); a
+        # reverse-geocoded label, when present, is exposed separately so a client can
+        # show it without losing the provenance that the route is `unnamed`.
+        "unnamed": h.unnamed,
+        "place_name": h.place_name,
         "distance_km": h.distance_km,
         "gain_m": h.gain_m,
         "loss_m": h.loss_m,

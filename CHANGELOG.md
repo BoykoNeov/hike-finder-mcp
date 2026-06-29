@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Reverse-geocode naming (opt-in).** Routes with no OSM `name`/`ref` (which fall
+  back to `route/<id>`) can be labelled from the place names at their ends — e.g.
+  `Labská → Špindlerův Mlýn` or `loop near <town>` — via Nominatim. Off by default
+  (`--name-places` / a web checkbox / a `name_places` MCP arg / `HIKE_GEOCODE=1`),
+  since Nominatim's usage policy is strict: a ≥1 req/s throttle, a contact User-Agent,
+  and only the *matched* routes are looked up, cached so a coordinate is fetched at
+  most once. The derived label is carried separately (`Hike.place_name`); the truthful
+  OSM `name`/`ref` are untouched and the route is marked `unnamed` so a geocoded label
+  is never mistaken for a signed trail name. Endpoint configurable (`HIKE_NOMINATIM_URL`);
+  offline `--area` searches log that naming is a no-op (it needs the network).
+
 ## [0.1.0] - 2026-06-24
 
 Initial development release. Find marked hiking routes from OpenStreetMap and

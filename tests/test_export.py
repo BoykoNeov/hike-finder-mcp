@@ -53,6 +53,26 @@ def test_gpx_is_wellformed_with_one_track_and_segment():
     assert len(segs[0].findall("g:trkpt", GPX_NS)) == 2
 
 
+def test_gpx_uses_reverse_geocoded_label_for_unnamed_route():
+    # An unnamed route given a place label exports THAT into the GPS track/waypoint
+    # name (matching the terminal), not the route/<id> fallback.
+    h = _hike(osm_id=99, name="route/99", ref=None, unnamed=True, place_name="Pec → Sněžka")
+    root = ET.fromstring(hikes_to_gpx([h]))
+    trk_name = root.find("g:trk/g:name", GPX_NS).text
+    wpt_name = root.find("g:wpt/g:name", GPX_NS).text
+    assert trk_name == "Pec → Sněžka"
+    assert wpt_name == "Pec → Sněžka (start)"
+    assert "route/99" not in hikes_to_gpx([h])
+
+
+def test_geojson_keeps_name_truthful_and_adds_place_name():
+    h = _hike(osm_id=99, name="route/99", ref=None, unnamed=True, place_name="Pec → Sněžka")
+    props = json.loads(hikes_to_geojson([h]))["features"][0]["properties"]
+    assert props["name"] == "route/99"          # truthful OSM value, untouched
+    assert props["place_name"] == "Pec → Sněžka"  # derived label carried separately
+    assert props["unnamed"] is True
+
+
 def test_gpx_coordinate_order_is_lat_lon():
     # The known point (50.0, 14.0) must land as lat=50.0, lon=14.0 — never swapped.
     root = ET.fromstring(hikes_to_gpx([_hike(ways=(((50.0, 14.0), (50.5, 14.5)),))]))

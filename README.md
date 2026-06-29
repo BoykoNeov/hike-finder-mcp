@@ -186,6 +186,33 @@ Per-point elevation isn't embedded; gain/loss live in each track's description. 
 has **Download GPX / Download GeoJSON** buttons (and draws the route lines on the map);
 MCP's `find_hikes` takes a `format: "gpx"｜"geojson"` argument that returns the file as text.
 
+### Naming unnamed routes (reverse geocoding)
+
+Most KČT relations carry a `name` or `ref`, but some carry **neither** and show up as
+the synthetic `route/<id>`. Opt in to label those from the **place names at their ends**:
+
+```bash
+hike-finder --bbox 50.72 15.58 50.74 15.62 --name-places --user-agent you@example.com
+```
+
+```text
+Labská → Špindlerův Mlýn — 7.65 km, +312 m / -180 m [one-way, car, lift:chair_lift] (start 50.7069,15.6166, unnamed OSM relation 6282997)
+```
+
+A point-to-point route reads `<start place> → <end place>`, a loop reads `loop near
+<place>`. It's **off by default** (also `HIKE_GEOCODE=1`) because
+[Nominatim's usage policy](https://operations.osmfoundation.org/policies/nominatim/) is
+strict — so it throttles to ≤1 request/second, sends your contact as the User-Agent, only
+looks up the routes that already **matched** (not every candidate), and **caches** every
+coordinate so a trailhead is geocoded at most once across runs. A derived label never
+overwrites the real OSM `name`/`ref` (those stay truthful in `--json`); the identifier
+clause says `unnamed OSM relation <id>` so a geocoded label is never mistaken for a signed
+trail name. The web UI exposes a **"Name unnamed routes from places"** checkbox; MCP a
+`name_places` argument. Point `HIKE_NOMINATIM_URL` at your own instance for heavy use.
+
+> **Honesty note:** a place-derived label is a *convenience*, not the route's signed name
+> (it has none). Offline `--area` searches can't geocode (no network) and say so.
+
 ## Two elevation backends (both supported)
 
 | Mode | Source | Setup | Accuracy | Limits |
@@ -300,6 +327,8 @@ Add `--compose-loops` to synthesise loops from connected trails (see
 [Composing loops](#composing-loops-stitch-connected-trails-into-a-day-loop)), and
 `--gpx FILE` / `--geojson FILE` to also write the results as a track you can load
 into a GPS or phone (see [Export](#export--gpx--geojson-load-into-your-phone-or-gps)).
+Add `--name-places` to label unnamed `route/<id>` routes from their endpoints' place
+names (see [Naming unnamed routes](#naming-unnamed-routes-reverse-geocoding)).
 
 Each match prints as one line:
 
@@ -447,6 +476,10 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 | `HIKE_CACHE` | Transparent on-disk cache of Overpass + elevation results, so repeat/overlapping searches don't re-hit the public servers. `0`/`false`/`no`/`off` disables (same as `--no-cache`) | on |
 | `HIKE_CACHE_DIR` | Directory for the cache SQLite file | per-user cache (`…/hike-finder`) |
 | `HIKE_OVERPASS_CACHE_TTL_DAYS` | How long a cached Overpass area stays fresh, days (trails change slowly). `0` disables Overpass caching; elevation is immutable terrain and never expires | `30` |
+| `HIKE_GEOCODE` | Opt-in reverse-geocode naming of **unnamed** routes (`route/<id>`) from place names via Nominatim (same as `--name-places`). Off by default — Nominatim's policy is strict | off |
+| `HIKE_NOMINATIM_URL` | Override the Nominatim reverse-geocoding endpoint (self-host for heavy use) | `nominatim.openstreetmap.org` |
+| `HIKE_NOMINATIM_MIN_INTERVAL` | Min seconds between Nominatim requests (the public server caps at ~1 req/sec) | `1.1` |
+| `HIKE_GEOCODE_CACHE_TTL_DAYS` | How long a cached place name stays fresh, days (place names change slowly). `0` disables geocode caching | `365` |
 | `HIKE_COMPOSE_MIN_KM` | Compose mode: default min loop length when no `--min-distance` | `3` |
 | `HIKE_COMPOSE_MAX_KM` | Compose mode: default max loop length when no `--max-distance` | `15` |
 | `HIKE_COMPOSE_MAX_SEGMENTS` | Compose mode: max trail segments stitched per loop | `12` |

@@ -88,11 +88,13 @@ def test_hike_to_dict_shape():
     assert set(d) == {
         "osm_id", "name", "ref", "distance_km", "gain_m", "loss_m",
         "circular", "car_access", "chairlift_access", "lift_type", "start",
-        "near_miss", "notes", "composed", "composed_of",
+        "near_miss", "notes", "composed", "composed_of", "unnamed", "place_name",
     }
     # A plain match serialises as not-a-near-miss with no notes, and not composed.
     assert d["near_miss"] is False and d["notes"] == []
     assert d["composed"] is False and d["composed_of"] == []
+    # An ordinary named route is not flagged unnamed and carries no derived label.
+    assert d["unnamed"] is False and d["place_name"] is None
 
 
 def test_hike_to_dict_geometry_is_opt_in_and_lat_lon():

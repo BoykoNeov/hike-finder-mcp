@@ -38,6 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .elevation.base import ElevationProvider
+from .geocode import Geocoder
 from .snapshot import SNAPSHOT_VERSION, _area_from_json, _area_to_json, _coord_key
 
 # Bump if the table layout changes incompatibly (folded into the overpass key so a
@@ -137,6 +138,15 @@ class Cache:
                     "CREATE TABLE IF NOT EXISTS overpass ("
                     "key TEXT PRIMARY KEY, fetched_at TEXT NOT NULL, payload TEXT NOT NULL)"
                 )
+                # Reverse-geocoded place names (see geocode.py). Keyed by
+                # (endpoint, rounded coord) like elevation, but place names DO change
+                # (slowly), so a TTL applies — and a resolved-to-nothing point is
+                # stored as "" (a NEGATIVE cache) so we don't re-hit Nominatim for it.
+                con.execute(
+                    "CREATE TABLE IF NOT EXISTS geocode ("
+                    "source TEXT NOT NULL, coord TEXT NOT NULL, place TEXT NOT NULL, "
+                    "fetched_at TEXT NOT NULL, PRIMARY KEY (source, coord))"
+                )
             return True
         except (sqlite3.Error, OSError):
             return False
@@ -229,14 +239,59 @@ class Cache:
         except (sqlite3.Error, OSError, ValueError, TypeError):
             pass
 
+    # -- geocode ------------------------------------------------------------
+
+    def get_place(self, source: str, coord, ttl_seconds: float | None, now=None):
+        """Cached place name for ``coord`` under ``source`` (the geocoder endpoint).
+
+        Returns the stored string — which may be ``""`` for a *negative* hit (the point
+        resolved to no place) — or ``None`` on a miss / expiry. A caller distinguishes
+        "cached as no-name" (``""``) from "never looked up" (``None``) this way, so a
+        point with no settlement isn't re-queried every run.
+        """
+        if not self._ok:
+            return None
+        try:
+            with self._connect() as con:
+                row = con.execute(
+                    "SELECT place, fetched_at FROM geocode WHERE source=? AND coord=?",
+                    (source, _coord_key(coord)),
+                ).fetchone()
+        except (sqlite3.Error, OSError):
+            return None
+        if not row:
+            return None
+        place, fetched_at = row
+        if ttl_seconds is not None:
+            age = _age_seconds(fetched_at, now)
+            if age is None or age > ttl_seconds:
+                return None
+        return place
+
+    def put_place(self, source: str, coord, place: str, now=None) -> None:
+        """Store ``coord -> place`` (``place=""`` records a negative result)."""
+        if not self._ok:
+            return
+        try:
+            stamp = (now or _utcnow()).replace(microsecond=0).isoformat()
+            with self._connect() as con:
+                con.execute(
+                    "INSERT OR REPLACE INTO geocode (source, coord, place, fetched_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (source, _coord_key(coord), place, stamp),
+                )
+        except (sqlite3.Error, OSError):
+            pass
+
     def clear(self) -> None:
-        """Empty both stores (used by ``hike-finder --clear-cache`` and tests)."""
+        """Empty every store (used by ``hike-finder --clear-cache`` and tests)."""
         if not self._ok:
             return
         try:
             with self._connect() as con:
                 con.execute("DELETE FROM elevation")
                 con.execute("DELETE FROM overpass")
+                con.execute("DELETE FROM geocode")
         except (sqlite3.Error, OSError):
             pass
 
@@ -268,3 +323,28 @@ class CachingElevationProvider(ElevationProvider):
             self.cache.put_elevations(self.source, new)
             cached = {**cached, **new}
         return [cached[p] for p in points]
+
+
+class CachingGeocoder(Geocoder):
+    """Wrap a :class:`~hike_finder.geocode.Geocoder` with a persistent place cache.
+
+    A coordinate is reverse-geocoded at most once per TTL window — across runs and
+    across routes that share a trailhead — which is what keeps the opt-in naming
+    feature a polite Nominatim citizen. A negative result ("" — no place mapped) is
+    cached too, so an empty point isn't re-queried. The inner geocoder is best-effort
+    (returns ``None`` on failure), so this never raises either.
+    """
+
+    def __init__(self, cache: Cache, source: str, inner: Geocoder, ttl_seconds: float):
+        self.cache = cache
+        self.source = source
+        self.inner = inner
+        self.ttl_seconds = ttl_seconds
+
+    def reverse(self, point):
+        cached = self.cache.get_place(self.source, point, self.ttl_seconds)
+        if cached is not None:  # hit (possibly "" for a cached negative)
+            return cached or None
+        name = self.inner.reverse(point)
+        self.cache.put_place(self.source, point, name or "")
+        return name

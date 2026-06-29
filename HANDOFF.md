@@ -639,8 +639,59 @@ validated `search_hikes` path and returns correct UTF-8 JSON.)
 - **Round-trip vs point-to-point gain:** we report cumulative gain over the
   stitched line as-is. If a route is one-way, decide whether to report return
   gain too. Currently `loss` gives you the reverse direction's gain.
-- **Naming:** routes without `name`/`ref` fall back to `route/<id>`. Could
-  enrich with start/end place names via reverse geocoding (Felt/TomTom/Nominatim).
+- **Naming (reverse-geocode) — DONE and VALIDATED LIVE (2026-06-29).** Routes with
+  no OSM `name`/`ref` used to render as the synthetic `route/<id>`. They can now be
+  **opt-in** labelled from the place names at their ends — e.g. `Labská → Špindlerův
+  Mlýn`, `loop near <town>`. Design, in the project's seam-and-pure-core style:
+  - **`naming.py` (pure):** `label_endpoints` picks the (start, end) points to look up
+    — start is the coupled start marker; end is the terminus/stitched-end *farthest*
+    from start, tie-broken by coordinate (deterministic); a LOOP has no end (switch on
+    `circular`, so a lollipop still reads "loop near X"). `compose_label` assembles the
+    string ("A → B", "near X" when both ends resolve to one place, "loop near X", or
+    `None` so the `route/<id>` fallback is kept). `enrich_names` is glue over an
+    INJECTED geocoder (testable with a stub), skipping named and composed routes.
+  - **`geocode.py` (network seam):** `NominatimGeocoder` honours Nominatim's policy —
+    a ≥1 req/s throttle (across the search, not per route), a contact `User-Agent`
+    (the Overpass contact, threaded through), and **no retry** (a 429 means back off).
+    Best-effort: ANY failure (network/HTTP/parse/no-place) returns `None`, so a miss
+    just keeps `route/<id>` and never breaks a search. Endpoint configurable
+    (`HIKE_NOMINATIM_URL`). `_parse_place` picks the most specific settlement.
+  - **Cache seam:** a third `geocode` store in `cache.py` (TTL-gated, default 365 d;
+    place names change slowly) + `CachingGeocoder`, so a trailhead coordinate is looked
+    up **at most once across runs and across routes that share it** (the two relations
+    6282997/6282998 that share endpoints geocode once). A **negative** result is cached
+    as `""` so an empty point isn't re-queried. Failure-isolated like the other stores;
+    `--clear-cache` empties it too.
+  - **The "unnamed" signal is carried from the source of truth** (`overpass.parse_area`
+    sets `route["unnamed"] = not (name or ref)`) → `Hike.unnamed`, NOT reconstructed
+    from the `route/<id>` string downstream (the advisor's catch — a reconstructed
+    magic string silently breaks if either side drifts).
+  - **Honesty:** `Hike.name`/`ref` stay the truthful OSM values; the derived label lives
+    in the separate `Hike.place_name` (default `None`, so every prior construction is
+    byte-for-byte unchanged). `format_hike` shows the label but marks the identifier
+    clause `unnamed OSM relation <id>` so a geocoded label is never mistaken for a
+    signed trail name; `hike_to_dict` exposes BOTH `name` and `place_name` + `unnamed`.
+  - **Opt-in everywhere** (Nominatim policy): `--name-places` (CLI), a "Name unnamed
+    routes from places" checkbox (web), a `name_places` arg (MCP), or `HIKE_GEOCODE=1`.
+    Only the *matched* survivors are geocoded (the same two-pass economy as elevation).
+    Composed loops are skipped (they carry "composed of …", never `route/<id>`).
+  - **Export carries the label too** (advisor catch — the "last mile" must agree with the
+    terminal): `export.py`'s GPX `<trk>`/`<wpt>` name uses `place_name or name`, so a GPS
+    gets `Labská → …` not `route/<id>`; GeoJSON keeps `name` truthful and gains `place_name`
+    + `unnamed` via `hike_to_dict`. `--name-places --download` is a logged no-op too (a
+    snapshot stores raw routes). Pinned in `tests/test_export.py`.
+  - **Offline `--area` is an HONEST no-op:** geocoding needs the network a snapshot
+    search never touches, so `search_snapshot(name_places=True)` LOGS a warning rather
+    than silently dropping it (the advisor's point — don't contradict offline==online).
+    v2: record place names into the snapshot at download time, like elevations.
+  - **VALIDATED LIVE (2026-06-29):** the 3 genuinely-unnamed routes in the Špindlerův
+    Mlýn fixture (rels 6133825, 6282997, 6282998) were driven through a REAL Nominatim
+    call (elevation stubbed, since that's already validated) and all 3 got real Czech
+    place labels: `Labská → Štěpanická Lhota` and `Labská → Špindlerův Mlýn` (×2). Pinned
+    offline by `tests/test_naming.py` (pure label logic + enrich + search-layer wiring +
+    offline no-op log + format marker) and `tests/test_geocode.py` (parse + a mocked
+    `requests.get` for request-shape/best-effort-failure + the geocode cache & negative
+    caching & dead-cache degrade). Suite **261** (258 without bash).
 - **Access is best-effort, not ground truth.** `car_access=False` /
   `chairlift_access=False` mean "nothing of that kind is *mapped* in OSM near the
   route's ends," not "you can't get there." The tool description says this; keep

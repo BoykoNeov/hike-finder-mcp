@@ -146,9 +146,10 @@ def test_call_tool_area_searches_snapshot_offline(monkeypatch):
     monkeypatch.setattr(server, "search_hikes", _fail_live)
     monkeypatch.setattr(server, "load_snapshot", lambda path: f"SNAP:{path}")
 
-    def _stub_snapshot(snap, criteria, cfg=None, *, near_miss=False):
+    def _stub_snapshot(snap, criteria, cfg=None, *, near_miss=False, name_places=None):
         captured["snap"] = snap
         captured["near_miss"] = near_miss
+        captured["name_places"] = name_places
         captured["circular"] = criteria.circular
         return SAMPLE_HIKES
 

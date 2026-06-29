@@ -117,6 +117,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     o.add_argument("--dem-dir", help="GeoTIFF DEM tile directory for local/auto, overrides HIKE_DEM_DIR.")
     o.add_argument(
+        "--name-places",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Reverse-geocode UNNAMED routes (route/<id>) to a place-derived label "
+        "(e.g. 'Pec → Sněžka') via Nominatim. Off by default (also HIKE_GEOCODE); only "
+        "the matched routes are looked up, throttled and cached. No effect offline "
+        "(--area needs the network).",
+    )
+    o.add_argument(
         "--no-cache",
         action="store_true",
         help="Bypass the on-disk cache for this run (always re-fetch Overpass + "
@@ -258,7 +267,10 @@ def run(args: argparse.Namespace) -> int:
         except (OSError, ValueError) as e:
             print(f"error: could not read snapshot {args.area!r}: {e}", file=sys.stderr)
             return 1
-        hikes = search_snapshot(snap, build_criteria(args), cfg, near_miss=near_miss)
+        hikes = search_snapshot(
+            snap, build_criteria(args), cfg, near_miss=near_miss,
+            name_places=args.name_places,
+        )
         _emit(hikes, args.json)
         _write_exports(hikes, args)
         return 0
@@ -270,6 +282,14 @@ def run(args: argparse.Namespace) -> int:
 
     # Download: fetch the area + warm elevation for every plausible route, save to file.
     if args.download:
+        if args.name_places:
+            # A download saves a snapshot, it never renders/geocodes — be loud about the
+            # no-op rather than silently ignoring the flag (mirrors the offline --area log).
+            print(
+                "note: --name-places has no effect with --download (a snapshot stores raw "
+                "routes); it applies when you later search the snapshot live, not offline.",
+                file=sys.stderr,
+            )
         used_before, _ = api_quota_snapshot(cfg)
         try:
             snap = download_area(
@@ -298,19 +318,23 @@ def run(args: argparse.Namespace) -> int:
 
     # Live search. --compose-loops swaps in the loop-composition engine; everything
     # else (rendering, quota line, error handling) is shared.
-    search = compose_loops if getattr(args, "compose_loops", False) else search_hikes
+    composing = getattr(args, "compose_loops", False)
+    search = compose_loops if composing else search_hikes
     used_before, _ = api_quota_snapshot(cfg)
+    kwargs = dict(
+        cfg=cfg,
+        user_agent=args.user_agent,
+        overpass_url=args.overpass_url,
+        elevation_mode=args.elevation_mode,
+        dem_dir=args.dem_dir,
+        near_miss=near_miss,
+    )
+    # Reverse-geocode naming only applies to ordinary routes — a composed loop is
+    # already labelled by its constituent trails ("composed of …"), never route/<id>.
+    if not composing:
+        kwargs["name_places"] = args.name_places
     try:
-        hikes = search(
-            bbox,
-            build_criteria(args),
-            cfg=cfg,
-            user_agent=args.user_agent,
-            overpass_url=args.overpass_url,
-            elevation_mode=args.elevation_mode,
-            dem_dir=args.dem_dir,
-            near_miss=near_miss,
-        )
+        hikes = search(bbox, build_criteria(args), **kwargs)
     except Exception as e:  # network/HTTP/elevation errors surface here
         _fetch_hint(e)
         return 1

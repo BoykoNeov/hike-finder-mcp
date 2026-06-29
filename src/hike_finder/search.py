@@ -31,6 +31,8 @@ from .compose import (
 from .config import Config
 from .elevation import ElevationError, get_provider
 from .filters import Criteria, Hike, find_hikes
+from .geocode import DEFAULT_NOMINATIM_URL, NominatimGeocoder
+from .naming import enrich_names
 from .overpass import AreaData, DEFAULT_OVERPASS_URL, build_query, fetch_area
 from .snapshot import AreaSnapshot, RecordingElevationProvider, SnapshotElevationProvider
 
@@ -81,6 +83,28 @@ def _fetch_area(
     return area
 
 
+def _geocoder(cfg: Config, cache):
+    """A reverse geocoder for naming unnamed routes, wrapped in the transparent place
+    cache when caching is on (so a trailhead coordinate is looked up at most once)."""
+    endpoint = cfg.nominatim_url or DEFAULT_NOMINATIM_URL
+    inner = NominatimGeocoder(
+        endpoint,
+        user_agent=cfg.overpass_user_agent,
+        min_interval_s=cfg.nominatim_min_interval_s,
+    )
+    if cache is not None and cfg.geocode_cache_ttl_days > 0:
+        return _cache.CachingGeocoder(
+            cache, endpoint, inner, cfg.geocode_cache_ttl_days * 86400
+        )
+    return inner
+
+
+def _wants_geocode(name_places: bool | None, cfg: Config) -> bool:
+    """Resolve the tri-state naming switch: an explicit frontend flag wins; otherwise
+    fall back to ``HIKE_GEOCODE`` (off by default)."""
+    return cfg.geocode_enabled if name_places is None else bool(name_places)
+
+
 def _near_miss_kwargs(cfg: Config) -> dict:
     return {
         "near_miss_gain_frac": cfg.near_miss_gain_frac,
@@ -99,12 +123,19 @@ def search_hikes(
     elevation_mode: str | None = None,
     dem_dir: str | None = None,
     near_miss: bool | str = False,
+    name_places: bool | None = None,
 ) -> list[Hike]:
     """Fetch OSM data for ``bbox`` and return measured, filtered hikes.
 
     ``bbox`` is ``(south, west, north, east)``. Keyword overrides (used by the
     CLI's flags / the web form) win over ``cfg``; ``cfg`` defaults to the
     environment (see config.py).
+
+    ``name_places`` (tri-state ``None``/``True``/``False``; ``None`` = follow
+    ``HIKE_GEOCODE``) opt-in reverse-geocodes the *unnamed* survivors so a
+    ``route/<id>`` route reads as a place-derived label. It runs only on the routes
+    that already matched — the same two-pass economy the elevation pass uses — and is
+    cached, so it stays a polite Nominatim citizen.
     """
     cfg = cfg or _config.load()
     cache = _cache.from_config(cfg)
@@ -112,7 +143,7 @@ def search_hikes(
         bbox, cfg, cache, user_agent=user_agent, overpass_url=overpass_url, read_cache=True
     )
     provider = _provider(cfg, elevation_mode, dem_dir, cache)
-    return find_hikes(
+    hikes = find_hikes(
         area,
         provider,
         criteria,
@@ -127,6 +158,9 @@ def search_hikes(
         near_miss=near_miss,
         **_near_miss_kwargs(cfg),
     )
+    if _wants_geocode(name_places, cfg):
+        enrich_names(hikes, _geocoder(cfg, cache))
+    return hikes
 
 
 def compose_loops(
@@ -385,6 +419,7 @@ def search_snapshot(
     cfg: Config | None = None,
     *,
     near_miss: bool | str = False,
+    name_places: bool | None = None,
 ) -> list[Hike]:
     """Search a saved snapshot offline (no network).
 
@@ -396,6 +431,15 @@ def search_snapshot(
     without touching the network. The over-length guard reuses the snapshot's own bbox.
     """
     cfg = cfg or _config.load()
+    # Reverse-geocode naming needs the network, which an offline snapshot search
+    # deliberately never touches — so honour the offline==online promise loudly: log
+    # that the request is a no-op here rather than silently dropping it. (v2: record
+    # place names into the snapshot at download time, like elevations, for parity.)
+    if _wants_geocode(name_places, cfg):
+        _log.warning(
+            "name_places: reverse-geocode naming needs the network and is skipped for "
+            "an offline --area search; unnamed routes keep their route/<id> label"
+        )
     provider = SnapshotElevationProvider(snapshot.elevations)
     return find_hikes(
         snapshot.area,

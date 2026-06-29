@@ -84,6 +84,15 @@ class Hike:
     # one-line summary and the default `hike_to_dict`, so ordinary output is byte-for-byte
     # unchanged. Default empty so every Hike construction that predates export keeps working.
     ways: tuple[tuple[Coord, ...], ...] = ()
+    # Reverse-geocode naming (opt-in, see naming.py / search.name_places). `unnamed`
+    # is the truthful "no signed name/ref in OSM" signal carried from overpass.parse_area
+    # — NOT reconstructed from the `route/<id>` fallback string. `place_name` is a
+    # DERIVED label built from the place names at the route's ends (e.g. "Pec → Sněžka");
+    # it never overwrites the honest `name`/`ref`, and the renderer marks the route as
+    # unnamed so a geocoded label is never mistaken for a signed trail name. Both default
+    # off so every prior Hike construction and output stays byte-for-byte unchanged.
+    unnamed: bool = False
+    place_name: str | None = None
 
 
 @dataclass
@@ -358,6 +367,9 @@ def measure_geometry(
         lift_distance_m=lift_distance_m,
         # Carry the raw member-way geometry for export / map draw (immutable copy).
         ways=tuple(tuple(w) for w in ways),
+        # Truthful "no signed name/ref" flag from the parser (default False for the
+        # synthetic compose routes, which carry their own provenance instead).
+        unnamed=bool(route.get("unnamed", False)),
     )
     return hike, line
 

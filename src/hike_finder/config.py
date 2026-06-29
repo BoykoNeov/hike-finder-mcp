@@ -46,6 +46,15 @@
                         (default 30; trails change slowly). 0 disables Overpass
                         caching (elevation, being immutable terrain, is never TTL'd).
 
+  HIKE_GEOCODE          opt-in reverse-geocode naming of UNNAMED routes (route/<id>)
+                        from place names via Nominatim. Off by default (Nominatim's
+                        policy is strict); a frontend flag turns it on per search.
+  HIKE_NOMINATIM_URL    override the Nominatim reverse endpoint (self-host for heavy use)
+  HIKE_NOMINATIM_MIN_INTERVAL  min seconds between Nominatim requests (default 1.1;
+                        the public server caps at ~1 req/sec)
+  HIKE_GEOCODE_CACHE_TTL_DAYS  how long a cached place name stays fresh, days
+                        (default 365; place names change slowly). 0 disables.
+
   HIKE_COMPOSE_MIN_KM   compose mode: default min loop length when no --min-distance (3)
   HIKE_COMPOSE_MAX_KM   compose mode: default max loop length when no --max-distance (15)
   HIKE_COMPOSE_MAX_SEGMENTS  compose mode: max trail segments per composed loop (12)
@@ -96,6 +105,15 @@ class Config:
     cache_enabled: bool = _env_bool("HIKE_CACHE", True)
     cache_dir: str | None = os.getenv("HIKE_CACHE_DIR")
     overpass_cache_ttl_days: float = float(os.getenv("HIKE_OVERPASS_CACHE_TTL_DAYS", "30"))
+
+    # Reverse-geocode naming (opt-in; see geocode.py / naming.py). OFF by default
+    # because Nominatim's policy is strict (1 req/s, no bulk) — a frontend flag turns
+    # it on per search. The Overpass contact UA is reused for Nominatim. Place names
+    # change slowly, so the cache TTL is long (a year); 0 disables geocode caching.
+    geocode_enabled: bool = _env_bool("HIKE_GEOCODE", False)
+    nominatim_url: str | None = os.getenv("HIKE_NOMINATIM_URL")
+    nominatim_min_interval_s: float = float(os.getenv("HIKE_NOMINATIM_MIN_INTERVAL", "1.1"))
+    geocode_cache_ttl_days: float = float(os.getenv("HIKE_GEOCODE_CACHE_TTL_DAYS", "365"))
 
     # Loop composition (compose.py): default target length band when the user gives no
     # --min/--max-distance, plus the cycle-search bounds (segments per loop, near-

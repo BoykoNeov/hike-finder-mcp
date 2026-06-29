@@ -4,7 +4,7 @@ Tools:
   find_hikes(south, west, north, east, min_gain_m, max_gain_m,
              min_distance_km, max_distance_km,
              circular, car_access, chairlift_access,
-             near_misses, area)
+             near_misses, area, compose_loops, name_places, format)
   download_area(south, west, north, east, path)  — fetch an area once and save it
              so find_hikes(area=path) can search it offline with no further API calls.
 
@@ -104,6 +104,13 @@ async def list_tools() -> list[Tool]:
                         "inside the box (live only; ignored with `area`). Target length from "
                         "min/max_distance_km. Results are stitched from several trails.",
                     },
+                    "name_places": {
+                        "type": "boolean",
+                        "description": "true = reverse-geocode UNNAMED routes (route/<id>) to a "
+                        "place-derived label like 'Pec → Sněžka' via Nominatim. Off by default; "
+                        "only matched routes are looked up (throttled + cached). Live only — an "
+                        "offline `area` search can't reach the network.",
+                    },
                     "format": {
                         "type": "string",
                         "enum": ["text", "gpx", "geojson"],
@@ -173,10 +180,14 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
     near_miss = _near_miss(arguments)
     area_path = arguments.get("area")
 
+    name_places = arguments.get("name_places")
+
     # Offline: search a saved snapshot (no network), bbox comes from the snapshot.
     if area_path:
         snap = await asyncio.to_thread(load_snapshot, area_path)
-        hikes = await asyncio.to_thread(search_snapshot, snap, criteria, CFG, near_miss=near_miss)
+        hikes = await asyncio.to_thread(
+            search_snapshot, snap, criteria, CFG, near_miss=near_miss, name_places=name_places
+        )
     else:
         missing = [k for k in ("south", "west", "north", "east") if k not in arguments]
         if missing:
@@ -189,8 +200,13 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
             ]
         bbox = (arguments["south"], arguments["west"], arguments["north"], arguments["east"])
         # search_hikes / compose_loops are synchronous (network + math); run off the loop.
-        search = compose_loops if arguments.get("compose_loops") else search_hikes
-        hikes = await asyncio.to_thread(search, bbox, criteria, CFG, near_miss=near_miss)
+        composing = arguments.get("compose_loops")
+        search = compose_loops if composing else search_hikes
+        # Naming only applies to ordinary routes — composed loops carry their own label.
+        kwargs = {"near_miss": near_miss}
+        if not composing:
+            kwargs["name_places"] = name_places
+        hikes = await asyncio.to_thread(search, bbox, criteria, CFG, **kwargs)
 
     if not hikes:
         composing = arguments.get("compose_loops") and not area_path

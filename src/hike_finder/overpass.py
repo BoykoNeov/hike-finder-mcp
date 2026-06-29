@@ -119,6 +119,11 @@ def parse_area(elements: list[dict]) -> AreaData:
                     "id": el.get("id"),
                     "name": tags.get("name") or tags.get("ref") or f"route/{el.get('id')}",
                     "ref": tags.get("ref"),
+                    # An explicit "this route has no signed name" signal, carried from
+                    # the source of truth (the tags, here) rather than reconstructed
+                    # downstream from the `route/<id>` fallback string. Drives optional
+                    # reverse-geocode naming (see naming.py / search.name_places).
+                    "unnamed": not (tags.get("name") or tags.get("ref")),
                     "osmc_color": tags.get("osmc:symbol"),  # KČT marking, if present
                     "tags": tags,
                     "ways": ways,
