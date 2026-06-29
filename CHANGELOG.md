@@ -6,6 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Local DEM tiles are now mosaicked through a GDAL VRT instead of an in-memory
+  merge.** Multiple GeoTIFF tiles in `HIKE_DEM_DIR` are assembled into a virtual
+  raster that is point-sampled, so memory stays flat regardless of region size
+  (the previous `rasterio.merge` loaded the whole mosaic and didn't scale). The
+  VRT is built directly from the tiles' georeferencing — no `gdalbuildvrt` CLI or
+  `osgeo` bindings needed (neither ships with the `local-dem` extra). A
+  user-supplied `*.vrt` in the directory is used as-is (escape hatch for
+  mixed-resolution tiles needing resampling); mixed CRS/resolution otherwise
+  raises a clear error rather than silently misregistering.
+
+### Fixed
+
+- **Local DEM nodata was read from the first tile only**, so a void/ocean pixel
+  in any other tile could leak a raw value. Each VRT source now declares its own
+  nodata, masked against a single band nodata value, so voids in any tile resolve
+  correctly.
+
 ### Added
 
 - **Reverse-geocode naming (opt-in).** Routes with no OSM `name`/`ref` (which fall

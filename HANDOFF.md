@@ -530,8 +530,8 @@ validated `search_hikes` path and returns correct UTF-8 JSON.)
 6. **Local DEM backend** — **DONE and VALIDATED LIVE (2026-06-24).** Copernicus
    GLO-30 (anonymous AWS), Sněžka read 1601.4 m vs 1603 m, 11/11 routes 0 nulls,
    loop invariant holds, gains track the API. Offline regression in
-   `tests/test_local_dem.py`. Remaining DEM work is only the large-region VRT
-   (below) — the in-memory merge is fine for a single tile / small region.
+   `tests/test_local_dem.py`. **Large-region VRT now DONE + LIVE too (2026-06-29)**
+   — the in-memory merge is replaced by a GDAL VRT, see the resolved item below.
 7. ~~**Wire MCP end-to-end** and call `find_hikes` from Claude Code (the last
    unvalidated frontend).~~ **DONE and VALIDATED LIVE (2026-06-24)** — driven
    over real OS stdio with `mcp` 1.28, pinned offline by `tests/test_server.py`.
@@ -584,12 +584,30 @@ validated `search_hikes` path and returns correct UTF-8 JSON.)
   than that reads as open in `route_cycle_count` — `is_circular`'s start≈end line
   fallback (`HIKE_LOOP_TOLERANCE`, 150 m) is the backstop, and `roundtrip=yes`
   still wins regardless.
-- **Local DEM merges tiles in memory.** Validated live on a single Copernicus
-  GLO-30 tile (~29 MB) — fine for a small region. For large regions, switch to a
-  GDAL VRT over `dem_dir` (`gdalbuildvrt`) and sample the VRT — avoids loading
-  everything. Also: nodata is taken from the first tile only (`srcs[0].nodata`),
-  and Copernicus tiles report `nodata=None`, so a void/ocean point would leak a
-  raw value rather than raise — the off-tile bounds-check is the backstop.
+- **Local DEM large-region VRT — DONE and VALIDATED LIVE (2026-06-29).** The old
+  in-memory `rasterio.merge` (fine for one tile, didn't scale) is replaced by a
+  GDAL **VRT** that is point-sampled, so memory stays flat regardless of region
+  size. We *build the VRT XML directly* from each tile's georeferencing rather
+  than calling `gdalbuildvrt`: rasterio doesn't wrap GDAL's VRT builder, and
+  neither that CLI nor the `osgeo` bindings ship with the `local-dem` (rasterio)
+  extra — confirmed both absent here. The generated doc is what `gdalbuildvrt`
+  would emit for homogeneous single-band tiles; a user-supplied `*.vrt` in
+  `dem_dir` wins (escape hatch for mixed-resolution tiles needing resampling,
+  e.g. GLO-30 across a latitude band — our builder *raises* `ElevationError` on
+  mixed CRS/resolution rather than silently misregistering). The first-tile-only
+  nodata leak (`srcs[0].nodata`) is fixed: each VRT source declares its own
+  nodata, masked against one band nodata value. The extent **bounds-check stays
+  load-bearing** — a `nodata=None` (Copernicus) DEM samples off-coverage points
+  as `0.0` (a valid sea-level reading), so `sample()` alone can't catch them.
+  `lookup()` bounds-checks every point, samples only the in-bounds ones, and
+  scatters results back by index (order/length preserved). Offline gates in
+  `tests/test_local_dem.py` (overlap → no phantom seam + top-tile-wins, single
+  tile, mixed CRS/res raise, no-nodata off-coverage raise, user `.vrt`).
+  Live: two adjacent real GLO-30 tiles (N50_E015 + N50_E016) → 4800×3600 mosaic,
+  18 seam-straddling points sampled identically through the VRT vs each tile
+  standalone (0 mismatches → no off-by-one), Sněžka VRT == tile-A standalone
+  byte-for-byte (1597.66 m), and the Špindl fixture run end-to-end through the
+  2-tile VRT gave 11/11 routes 0 nulls with the pure loop +30/−23 m (gain≈loss).
 - **Caching — DONE and VALIDATED LIVE (2026-06-24).** A transparent SQLite cache
   (`cache.py`, stdlib `sqlite3`) sits at the two network seams so repeat/overlapping
   searches don't re-hit the public servers — the OSM-usage-policy ask, now satisfied.

@@ -223,6 +223,15 @@ trail name. The web UI exposes a **"Name unnamed routes from places"** checkbox;
 
 Set via `HIKE_ELEVATION_MODE`. See `src/hike_finder/config.py`.
 
+For `local`/`auto`, drop the GeoTIFF DEM tiles (`*.tif`) for your region in
+`HIKE_DEM_DIR`. Multiple tiles are mosaicked through a GDAL **VRT** that is
+point-sampled, so only the pixels under each query point are read and memory
+stays flat no matter how large the region. The tiles must share a CRS and
+resolution (true for a single DEM product); for mixed-resolution sets (e.g.
+Copernicus GLO-30 spanning a latitude band, which needs resampling) build your
+own with `gdalbuildvrt *.tif mosaic.vrt` and drop the `.vrt` in the directory —
+it is used as-is.
+
 ## Getting started (from a fresh clone)
 
 New here? Five steps from nothing to a working tool. Already have the repo and a

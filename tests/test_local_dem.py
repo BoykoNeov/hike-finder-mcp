@@ -31,8 +31,17 @@ RES = 0.1
 NODATA = -9999.0
 
 
-def _write_tile(path, west: float, north: float, data: np.ndarray) -> None:
-    transform = from_origin(west, north, RES, RES)
+def _write_tile(
+    path,
+    west: float,
+    north: float,
+    data: np.ndarray,
+    *,
+    res: float = RES,
+    crs: str = "EPSG:4326",
+    nodata: float | None = NODATA,
+) -> None:
+    transform = from_origin(west, north, res, res)
     with rasterio.open(
         path,
         "w",
@@ -41,9 +50,9 @@ def _write_tile(path, west: float, north: float, data: np.ndarray) -> None:
         width=data.shape[1],
         count=1,
         dtype="float32",
-        crs="EPSG:4326",
+        crs=crs,
         transform=transform,
-        nodata=NODATA,
+        nodata=nodata,
     ) as dst:
         dst.write(data.astype("float32"), 1)
 
@@ -110,3 +119,90 @@ def test_out_of_coverage_returns_fill_when_configured(two_tiles):
 def test_empty_dir_raises(tmp_path):
     with pytest.raises(ElevationError, match="no .tif"):
         LocalDemElevationProvider(str(tmp_path))
+
+
+# --- VRT mosaic specifics (the in-memory merge -> GDAL VRT change) ---
+
+
+def test_single_tile_still_works(tmp_path):
+    # Scaling to many tiles is the point, but the one-tile region must still work
+    # (the VRT then wraps a single source).
+    _write_tile(tmp_path / "only.tif", 15.0, 51.0, _grid(1000.0))
+    prov = LocalDemElevationProvider(str(tmp_path))
+    assert prov.lookup([_centre(15.0, 51.0, 1, 2)]) == [1012.0]
+
+
+def test_overlapping_tiles_no_seam_and_top_wins(tmp_path):
+    """Two tiles overlapping by one column must mosaic without a phantom nodata
+    seam, with the later-listed tile painting over the overlap (gdalbuildvrt's
+    rule). An off-by-one in the dst-offset rounding would surface here as a 1-px
+    nodata stripe or a value from the wrong tile."""
+    # A at lon 15.0 (cols 15.0..15.4); B at lon 15.3 (cols 15.3..15.7).
+    # Union is 7 cols wide; col index 3 (lon ~15.35) is the shared overlap, where
+    # B (sorted after A -> on top) must win.
+    _write_tile(tmp_path / "a_tile.tif", 15.0, 51.0, _grid(1000.0))
+    _write_tile(tmp_path / "b_tile.tif", 15.3, 51.0, _grid(2000.0))
+    prov = LocalDemElevationProvider(str(tmp_path))
+
+    lat = 51.0 - 1.5 * RES  # row 1 of both tiles
+    lons = [15.0 + (c + 0.5) * RES for c in range(7)]  # 7 union-column centres
+    vals = prov.lookup([(lat, lon) for lon in lons])
+
+    # cols 0-2 = A row1 (1010,1011,1012); col 3 = overlap -> B row1 col0 (2010);
+    # cols 4-6 = B row1 (2011,2012,2013). No NODATA anywhere across the seam.
+    assert vals == [1010.0, 1011.0, 1012.0, 2010.0, 2011.0, 2012.0, 2013.0]
+    assert NODATA not in vals
+
+
+def test_mixed_crs_raises(tmp_path):
+    _write_tile(tmp_path / "a_tile.tif", 15.0, 51.0, _grid(1000.0))
+    _write_tile(tmp_path / "b_tile.tif", 15.4, 51.0, _grid(2000.0), crs="EPSG:3857")
+    with pytest.raises(ElevationError, match="mixed CRS"):
+        LocalDemElevationProvider(str(tmp_path))
+
+
+def test_mixed_resolution_raises(tmp_path):
+    _write_tile(tmp_path / "a_tile.tif", 15.0, 51.0, _grid(1000.0))
+    _write_tile(tmp_path / "b_tile.tif", 15.4, 51.0, _grid(2000.0), res=0.2)
+    with pytest.raises(ElevationError, match="mixed resolution"):
+        LocalDemElevationProvider(str(tmp_path))
+
+
+def test_tiles_without_nodata_off_coverage_still_raises(tmp_path):
+    # Copernicus-like tiles report nodata=None, so an off-mosaic point sampled
+    # from the VRT reads back 0.0 (a valid elevation). The extent bounds-check,
+    # not sample(), must catch it.
+    _write_tile(tmp_path / "a_tile.tif", 15.0, 51.0, _grid(1000.0), nodata=None)
+    prov = LocalDemElevationProvider(str(tmp_path))
+    assert prov.lookup([_centre(15.0, 51.0, 1, 2)]) == [1012.0]  # in-coverage ok
+    with pytest.raises(ElevationError):
+        prov.lookup([(60.0, 20.0)])  # far off mosaic -> not 0.0
+
+
+def test_mixed_batch_preserves_order_and_scatters_fill(two_tiles):
+    # The one new mechanism the VRT rewrite introduced: lookup() bounds-checks
+    # every point, samples ONLY the in-bounds ones, then scatters results back by
+    # original index. A single call mixing all three categories (in-bounds A,
+    # off-mosaic, seeded-nodata, in-bounds B) must keep order and length exact.
+    prov = LocalDemElevationProvider(two_tiles, nodata_fill=-1.0)
+    pts = [
+        _centre(15.0, 51.0, 1, 2),  # in-bounds tile A -> 1012
+        (60.0, 20.0),               # off-mosaic -> fill
+        _centre(15.0, 51.0, 0, 0),  # seeded nodata cell -> fill
+        _centre(15.4, 51.0, 1, 2),  # in-bounds tile B -> 2012
+    ]
+    assert prov.lookup(pts) == [1012.0, -1.0, -1.0, 2012.0]
+
+
+def test_user_supplied_vrt_is_used(two_tiles):
+    # A .vrt in the directory wins over auto-building from the .tif tiles. Build a
+    # valid one with the same generator and confirm the provider samples through it.
+    from hike_finder.elevation.local_dem import _build_vrt_doc
+    import glob as _glob
+    import os as _os
+
+    tiles = sorted(_glob.glob(_os.path.join(two_tiles, "*.tif")))
+    with open(_os.path.join(two_tiles, "mosaic.vrt"), "w") as f:
+        f.write(_build_vrt_doc(tiles))
+    prov = LocalDemElevationProvider(two_tiles)
+    assert prov.lookup([_centre(15.4, 51.0, 1, 2)]) == [2012.0]
