@@ -16,9 +16,13 @@ from hike_finder.search import search_snapshot
 from hike_finder.snapshot import (
     AreaSnapshot,
     RecordingElevationProvider,
+    RecordingGeocoder,
     SnapshotElevationProvider,
+    SnapshotGeocoder,
     load_snapshot,
     save_snapshot,
+    snapshot_from_json,
+    snapshot_to_json,
 )
 
 
@@ -66,6 +70,34 @@ def test_snapshot_provider_answers_and_raises_on_miss():
         prov.lookup([(50.0, 14.0), (51.0, 14.0)])  # second point unknown
 
 
+# --------------------------------------------------------------------------- geocoder pair
+
+
+class _StubGeocoder:
+    def __init__(self, table):
+        self.table = table
+
+    def reverse(self, point):
+        return self.table.get(point)
+
+
+def test_recording_geocoder_passes_through_and_records_only_hits():
+    inner = _StubGeocoder({(50.0, 14.0): "Alpha", (50.05, 14.0): None})
+    rec = RecordingGeocoder(inner)
+    assert rec.reverse((50.0, 14.0)) == "Alpha"   # delegated value returned unchanged
+    assert rec.reverse((50.05, 14.0)) is None     # a no-place result passes through
+    # Only the successful lookup is recorded — an unrecorded point reads None offline
+    # anyway, so a None result and an absent key behave identically.
+    assert rec.places == {(50.0, 14.0): "Alpha"}
+
+
+def test_snapshot_geocoder_answers_and_misses_to_none():
+    geo = SnapshotGeocoder({(50.0, 14.0): "Alpha"})
+    assert geo.reverse((50.0, 14.0)) == "Alpha"
+    assert geo.reverse((50.000000001, 14.0)) == "Alpha"  # within 7-decimal rounding
+    assert geo.reverse((51.0, 14.0)) is None             # unrecorded -> graceful miss
+
+
 # --------------------------------------------------------------------------- round-trip
 
 
@@ -85,6 +117,31 @@ def test_save_load_round_trip_restores_tuples(tmp_path):
     assert isinstance(loaded.area.lifts[0]["stations"][0], tuple)
     # Elevation map survives intact (same number of samples, same values).
     assert loaded.sample_count == snap.sample_count
+
+
+def test_places_round_trip_through_json(tmp_path):
+    snap = _record_snapshot()
+    snap.places = {(50.0, 14.0): "Alpha", (50.05, 14.0): "Beta"}
+    path = tmp_path / "area.json"
+    save_snapshot(snap, path)
+    loaded = load_snapshot(path)
+    assert loaded.place_count == 2
+    # Keys come back as float tuples (rounded), values intact.
+    assert loaded.places[(50.0, 14.0)] == "Alpha"
+    assert all(isinstance(k, tuple) for k in loaded.places)
+
+
+def test_pre_v2_snapshot_without_places_loads_with_empty_map():
+    # Back-compat: the version stays 1 and `places` is optional, so an older snapshot
+    # JSON (no "places" key) still loads — it just has no baked names.
+    snap = _record_snapshot()
+    d = snapshot_to_json(snap)
+    d.pop("places")  # simulate a snapshot written before naming-v2
+    loaded = snapshot_from_json(d)
+    assert loaded.places == {}
+    assert loaded.place_count == 0
+    # And it still round-trips its elevations/geometry untouched.
+    assert loaded.route_count == snap.route_count
 
 
 def test_offline_search_matches_online_gain(tmp_path):

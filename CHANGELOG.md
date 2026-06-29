@@ -47,8 +47,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and only the *matched* routes are looked up, cached so a coordinate is fetched at
   most once. The derived label is carried separately (`Hike.place_name`); the truthful
   OSM `name`/`ref` are untouched and the route is marked `unnamed` so a geocoded label
-  is never mistaken for a signed trail name. Endpoint configurable (`HIKE_NOMINATIM_URL`);
-  offline `--area` searches log that naming is a no-op (it needs the network).
+  is never mistaken for a signed trail name. Endpoint configurable (`HIKE_NOMINATIM_URL`).
+
+- **Offline naming — bake place names into a snapshot at download time.** Passing the
+  naming opt-in to a download (`--name-places --download`, the web naming checkbox while
+  downloading, or `name_places` on the MCP `download_area` tool) now reverse-geocodes the
+  unnamed routes and records the place names into the snapshot, so a later offline `--area`
+  search labels them with **zero network** — the same way a download already warms
+  elevation. A snapshot downloaded without the opt-in (or an older snapshot) keeps the
+  honest no-op: an offline naming request on it logs that it has no baked names and to
+  re-download. Existing snapshots remain readable (the on-disk format is unchanged and the
+  new place-name map is optional).
 
 ## [0.1.0] - 2026-06-24
 

@@ -141,6 +141,13 @@ async def list_tools() -> list[Tool]:
                     "north": {"type": "number"},
                     "east": {"type": "number"},
                     "path": {"type": "string", "description": "Where to write the snapshot JSON."},
+                    "name_places": {
+                        "type": "boolean",
+                        "description": "true = also bake reverse-geocoded names for the unnamed "
+                        "routes into the snapshot, so a later offline find_hikes(area=path, "
+                        "name_places=true) can label them with no network. Off by default "
+                        "(it queries Nominatim at ~1 req/s for every unnamed route).",
+                    },
                 },
                 "required": ["south", "west", "north", "east", "path"],
             },
@@ -242,14 +249,16 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
 async def _call_download_area(arguments: dict) -> list[TextContent]:
     bbox = (arguments["south"], arguments["west"], arguments["north"], arguments["east"])
     path = arguments["path"]
-    snap = await asyncio.to_thread(download_area, bbox, CFG)
+    name_places = arguments.get("name_places")
+    snap = await asyncio.to_thread(download_area, bbox, CFG, name_places=name_places)
     await asyncio.to_thread(save_snapshot, snap, path)
+    baked = f", {snap.place_count} baked place name(s)" if name_places else ""
     return [
         TextContent(
             type="text",
             text=(
                 f"Saved snapshot to {path}: {snap.route_count} routes, "
-                f"{snap.sample_count} elevation samples. "
+                f"{snap.sample_count} elevation samples{baked}. "
                 f"Search it offline with find_hikes(area=\"{path}\")."
             ),
         )

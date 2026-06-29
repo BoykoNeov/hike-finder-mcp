@@ -281,15 +281,9 @@ def run(args: argparse.Namespace) -> int:
     bbox = tuple(args.bbox)  # (south, west, north, east)
 
     # Download: fetch the area + warm elevation for every plausible route, save to file.
+    # With --name-places it also bakes reverse-geocoded names for the unnamed routes, so
+    # the later offline --area search can label them with zero network.
     if args.download:
-        if args.name_places:
-            # A download saves a snapshot, it never renders/geocodes — be loud about the
-            # no-op rather than silently ignoring the flag (mirrors the offline --area log).
-            print(
-                "note: --name-places has no effect with --download (a snapshot stores raw "
-                "routes); it applies when you later search the snapshot live, not offline.",
-                file=sys.stderr,
-            )
         used_before, _ = api_quota_snapshot(cfg)
         try:
             snap = download_area(
@@ -299,6 +293,7 @@ def run(args: argparse.Namespace) -> int:
                 overpass_url=args.overpass_url,
                 elevation_mode=args.elevation_mode,
                 dem_dir=args.dem_dir,
+                name_places=args.name_places,
             )
         except Exception as e:  # network/HTTP errors surface here
             _fetch_hint(e)
@@ -308,9 +303,10 @@ def run(args: argparse.Namespace) -> int:
         except OSError as e:
             print(f"error: could not write snapshot {args.download!r}: {e}", file=sys.stderr)
             return 1
+        baked = f", {snap.place_count} baked place name(s)" if args.name_places else ""
         print(
             f"Saved snapshot to {args.download}: {snap.route_count} routes, "
-            f"{snap.sample_count} elevation samples. "
+            f"{snap.sample_count} elevation samples{baked}. "
             f"Search it offline with --area {args.download}."
         )
         _quota_line(cfg, used_before)

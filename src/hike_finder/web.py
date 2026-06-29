@@ -204,14 +204,21 @@ async function downloadArea(){
     name, south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast()
   });
   const ua = val('ua'); if (ua !== null) params.set('user_agent', ua);
+  // Reuse the naming checkbox: when checked, bake place names into the snapshot so an
+  // offline search of it can label unnamed routes (otherwise that's a no-op offline).
+  const naming = document.getElementById('name_places').checked;
+  if (naming) params.set('name_places', 'true');
   const status = document.getElementById('status');
-  status.textContent = 'Downloading “' + name + '” (one-time fetch + elevation)…';
+  status.textContent = 'Downloading “' + name + '” (one-time fetch + elevation'
+    + (naming ? ' + place names' : '') + ')…';
   try {
     const resp = await fetch('/api/download?' + params.toString());
     const data = await resp.json();
     if (!resp.ok || data.error){ status.textContent = 'Error: ' + (data.error || resp.status); return; }
     status.textContent = 'Saved “' + data.name + '”: ' + data.routes + ' routes, '
-      + data.samples + ' elevation samples. Now searchable offline.';
+      + data.samples + ' elevation samples'
+      + (naming ? (', ' + (data.places || 0) + ' baked place names') : '')
+      + '. Now searchable offline.';
     await loadAreas(data.name);
     showQuota();
   } catch (e){ status.textContent = 'Download failed: ' + e; }
@@ -415,8 +422,13 @@ class Handler(BaseHTTPRequestHandler):
         except (KeyError, ValueError):
             self._json(400, {"error": "south/west/north/east are required"})
             return
+        # Opt-in (same checkbox as the live search): also bake reverse-geocoded names
+        # for the unnamed routes so an offline search of this snapshot can label them.
+        name_places = _tri(qs, "name_places")
         try:
-            snap = download_area(bbox, user_agent=_str(qs, "user_agent"))
+            snap = download_area(
+                bbox, user_agent=_str(qs, "user_agent"), name_places=name_places
+            )
             save_snapshot(snap, path)
         except Exception as e:  # noqa: BLE001 — surface any fetch/write failure to the UI
             msg = str(e)
@@ -424,7 +436,10 @@ class Handler(BaseHTTPRequestHandler):
                 msg += " — fill in the Contact field (the public Overpass server rejects the default User-Agent)."
             self._json(502, {"error": f"download failed: {msg}"})
             return
-        self._json(200, {"name": path.stem, "routes": snap.route_count, "samples": snap.sample_count})
+        self._json(200, {
+            "name": path.stem, "routes": snap.route_count,
+            "samples": snap.sample_count, "places": snap.place_count,
+        })
 
     def _quota(self) -> None:
         # Separate endpoint so we never reshape /api/hikes (a bare array the JS

@@ -214,19 +214,79 @@ def test_search_hikes_skips_geocode_when_flag_off(monkeypatch):
     assert all(h.place_name is None for h in hikes)
 
 
-def test_search_snapshot_name_places_is_logged_noop(caplog):
-    """Offline naming can't geocode (no network) — honour offline==online loudly:
-    log the no-op rather than silently dropping the request."""
+def test_search_snapshot_without_baked_names_is_logged_noop(caplog):
+    """A snapshot downloaded WITHOUT naming (or a pre-v2 snapshot) has no baked place
+    names; an offline name_places search can't reach the network, so it must log the
+    no-op — and point at re-downloading — rather than silently dropping the request."""
     import logging
 
     from hike_finder.snapshot import AreaSnapshot
 
     snap = AreaSnapshot(
         bbox=(50.69, 15.57, 50.73, 15.63), area=_two_route_area(),
-        elevations={}, sample_interval_m=25.0,
+        elevations={}, sample_interval_m=25.0,  # places defaults to {} -> no baked names
     )
     cfg = config_mod.load()
     with caplog.at_level(logging.WARNING):
         hikes = search_mod.search_snapshot(snap, Criteria(), cfg, name_places=True)
-    assert any("name_places" in r.message for r in caplog.records)  # told the user
-    assert all(h.place_name is None for h in hikes)                 # genuinely no-op
+    assert any("baked place names" in r.message for r in caplog.records)  # told the user
+    assert all(h.place_name is None for h in hikes)                       # genuinely no-op
+
+
+def test_download_area_bakes_place_names_when_opted_in(monkeypatch):
+    """download_area(name_places=True) reverse-geocodes the UNNAMED survivors and bakes
+    the point->place map into the snapshot (the named route is never queried)."""
+    geo = StubGeocoder({(50.70, 15.58): "Alpha", (50.72, 15.60): "Beta"})
+    _patch_seams(monkeypatch, lambda cfg, cache: geo)
+    cfg = config_mod.load()
+    cfg.cache_enabled = False
+    snap = search_mod.download_area(
+        (50.69, 15.57, 50.73, 15.63), cfg, name_places=True
+    )
+    # Exactly the unnamed route's two endpoints were baked.
+    assert snap.places == {(50.70, 15.58): "Alpha", (50.72, 15.60): "Beta"}
+
+
+def test_download_area_does_not_geocode_when_flag_off(monkeypatch):
+    def _no_geocoder(*a, **k):
+        raise AssertionError("geocoder must not be built when name_places is off")
+
+    _patch_seams(monkeypatch, _no_geocoder)
+    cfg = config_mod.load()
+    cfg.cache_enabled = False
+    # name_places omitted -> follows cfg.geocode_enabled (off by default): no baking.
+    snap = search_mod.download_area((50.69, 15.57, 50.73, 15.63), cfg)
+    assert snap.places == {}
+
+
+def test_search_snapshot_applies_baked_names_offline(monkeypatch, tmp_path):
+    """End-to-end ACROSS THE SAVE/LOAD BOUNDARY: bake at download, persist to a file,
+    reload, then an offline search replays the names through the SAME enrich_names with
+    ZERO network (it must never build a live geocoder).
+
+    Crossing save/load is essential, not incidental — both the ``places`` map AND the
+    source-of-truth ``unnamed`` flag must survive serialization, else ``find_hikes``
+    rebuilds every route as named and ``enrich_names`` skips them all (the in-memory snap
+    straight off ``download_area`` keeps the original route dicts and would hide that)."""
+    from hike_finder.snapshot import load_snapshot, save_snapshot
+
+    geo = StubGeocoder({(50.70, 15.58): "Alpha", (50.72, 15.60): "Beta"})
+    _patch_seams(monkeypatch, lambda cfg, cache: geo)
+    cfg = config_mod.load()
+    cfg.cache_enabled = False
+    snap = search_mod.download_area((50.69, 15.57, 50.73, 15.63), cfg, name_places=True)
+    path = tmp_path / "area.json"
+    save_snapshot(snap, path)
+    loaded = load_snapshot(path)
+
+    # The offline path must use the snapshot's SnapshotGeocoder, never a live one:
+    # make building a live geocoder an error to prove it.
+    def _no_geocoder(*a, **k):
+        raise AssertionError("offline search must not build a live (network) geocoder")
+
+    monkeypatch.setattr(search_mod, "_geocoder", _no_geocoder)
+    hikes = search_mod.search_snapshot(loaded, Criteria(), cfg, name_places=True)
+    by_id = {h.osm_id: h for h in hikes}
+    assert by_id[1].unnamed is True               # source-of-truth flag survived save/load
+    assert by_id[1].place_name == "Alpha → Beta"  # baked label applied offline
+    assert by_id[2].place_name is None            # signed route untouched

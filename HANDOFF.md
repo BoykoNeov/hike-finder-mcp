@@ -696,12 +696,45 @@ validated `search_hikes` path and returns correct UTF-8 JSON.)
   - **Export carries the label too** (advisor catch — the "last mile" must agree with the
     terminal): `export.py`'s GPX `<trk>`/`<wpt>` name uses `place_name or name`, so a GPS
     gets `Labská → …` not `route/<id>`; GeoJSON keeps `name` truthful and gains `place_name`
-    + `unnamed` via `hike_to_dict`. `--name-places --download` is a logged no-op too (a
-    snapshot stores raw routes). Pinned in `tests/test_export.py`.
-  - **Offline `--area` is an HONEST no-op:** geocoding needs the network a snapshot
-    search never touches, so `search_snapshot(name_places=True)` LOGS a warning rather
-    than silently dropping it (the advisor's point — don't contradict offline==online).
-    v2: record place names into the snapshot at download time, like elevations.
+    + `unnamed` via `hike_to_dict`. Pinned in `tests/test_export.py`.
+  - **Offline naming v2 — BAKE NAMES INTO THE SNAPSHOT — DONE (2026-06-29).** The "v2"
+    item below the old honest-no-op. The naming seam now extends to snapshots exactly the
+    way the elevation seam does: opt-in at download time, `download_area(name_places=True)`
+    reverse-geocodes the unnamed survivors and **records** every `point -> place` into the
+    snapshot (new `AreaSnapshot.places`), so a later offline `--area --name-places` search
+    LABELS them with **zero network**. New `snapshot.RecordingGeocoder`/`SnapshotGeocoder`
+    mirror `RecordingElevationProvider`/`SnapshotElevationProvider`: the download wraps the
+    *cached* geocoder in `RecordingGeocoder` (so it also warms the persistent place cache),
+    and the offline search replays through `SnapshotGeocoder` driven by the **unchanged**
+    `naming.enrich_names` — one code path, not a parallel "apply a baked map." Key design
+    points (advisor-reviewed):
+      - **`SNAPSHOT_VERSION` stays 1.** `snapshot_from_json` *raises* on a version mismatch,
+        so a bump would brick every existing snapshot. `places` is an OPTIONAL key, read via
+        `d.get("places", {})` and keyed by the same `_coord_key` (7-decimal) scheme as
+        elevations — old snapshots load (no names), old code reads new snapshots (ignores it).
+      - **The honest no-op is retained, sharpened.** A snapshot downloaded WITHOUT naming (or
+        a pre-v2 file) has an empty `places` map; offline `--area --name-places` on it still
+        LOGS a warning — now "this snapshot has no baked place names — re-download …" — rather
+        than silently dropping the request. So `--name-places --download` is no longer a no-op
+        (it bakes); only a *nameless* snapshot warns offline.
+      - **"By construction" is PARTIAL here, by design (the one honest caveat).** Unlike
+        elevation — whose lookup points depend only on geometry + the *locked*
+        `sample_interval_m` — a route's geocode lookup point is its `start`, which is coupled
+        to the access radii, and those stay *tunable* offline. So with radii unchanged (the
+        common case) the offline label equals the live one byte-for-byte; if the radii change
+        between download and search, `start` can move off a recorded point and that route
+        gracefully falls back to `route/<id>` (more honest than showing a now-stale label).
+        Documented in `snapshot.py`'s module docstring; not engineered around.
+      - **Opt-in across all three frontends** (no drift): CLI `--name-places --download`
+        (summary reports "N baked place name(s)"); web — the existing "Name unnamed routes"
+        checkbox now also drives `/api/download` (response carries `places`); MCP — a
+        `name_places` arg on the `download_area` tool.
+    Pinned by `tests/test_snapshot.py` (Recording/Snapshot geocoder pair, `places` JSON
+    round-trip, **pre-v2 back-compat** — a snapshot with no `places` key still loads) and
+    `tests/test_naming.py` (download bakes only the unnamed routes' endpoints; flag-off bakes
+    nothing; **end-to-end** download→offline-search applies the baked label while asserting
+    the offline path NEVER builds a live geocoder; the nameless-snapshot no-op log). Suite
+    **292** (was 285; +7).
   - **VALIDATED LIVE (2026-06-29):** the 3 genuinely-unnamed routes in the Špindlerův
     Mlýn fixture (rels 6133825, 6282997, 6282998) were driven through a REAL Nominatim
     call (elevation stubbed, since that's already validated) and all 3 got real Czech
@@ -709,7 +742,9 @@ validated `search_hikes` path and returns correct UTF-8 JSON.)
     offline by `tests/test_naming.py` (pure label logic + enrich + search-layer wiring +
     offline no-op log + format marker) and `tests/test_geocode.py` (parse + a mocked
     `requests.get` for request-shape/best-effort-failure + the geocode cache & negative
-    caching & dead-cache degrade). Suite **261** (258 without bash).
+    caching & dead-cache degrade). The v2 bake-at-download path reuses this same already-
+    live-validated `NominatimGeocoder`, so only its deterministic record/replay seam is new
+    (fully covered offline above). Suite **261**→**292**.
 - **Access is best-effort, not ground truth.** `car_access=False` /
   `chairlift_access=False` mean "nothing of that kind is *mapped* in OSM near the
   route's ends," not "you can't get there." The tool description says this; keep

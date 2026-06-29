@@ -34,7 +34,13 @@ from .filters import Criteria, Hike, find_hikes
 from .geocode import DEFAULT_NOMINATIM_URL, NominatimGeocoder
 from .naming import enrich_names
 from .overpass import AreaData, DEFAULT_OVERPASS_URL, build_query, fetch_area
-from .snapshot import AreaSnapshot, RecordingElevationProvider, SnapshotElevationProvider
+from .snapshot import (
+    AreaSnapshot,
+    RecordingElevationProvider,
+    RecordingGeocoder,
+    SnapshotElevationProvider,
+    SnapshotGeocoder,
+)
 
 Bbox = tuple[float, float, float, float]
 
@@ -379,6 +385,7 @@ def download_area(
     overpass_url: str | None = None,
     elevation_mode: str | None = None,
     dem_dir: str | None = None,
+    name_places: bool | None = None,
 ) -> AreaSnapshot:
     """Fetch an area and warm elevation for *every* geometry-plausible route.
 
@@ -393,6 +400,13 @@ def download_area(
     so a freshly-named snapshot always reflects current OSM, never a weeks-old cached
     area — but it still refreshes the cache and warms the elevation cache, both pure
     wins for later live searches.
+
+    ``name_places`` (opt-in, like the live search) additionally **bakes** reverse-geocoded
+    names for the unnamed survivors into the snapshot, so an offline ``--area`` search can
+    label them with zero network. It is off by default because it hits Nominatim at the
+    polite ≥1 req/s — and a download geocodes *every* unnamed plausible route, not just a
+    filtered handful — so we only pay it when asked. The recording wraps the *cached*
+    geocoder, so the download also warms the persistent place cache.
     """
     cfg = cfg or _config.load()
     cache = _cache.from_config(cfg)
@@ -422,12 +436,26 @@ def download_area(
     # n/a just because its max_route_factor is looser than this download's.
     kept = {h.osm_id for h in hikes}
     area.routes = [r for r in area.routes if r.get("id") in kept]
+    places: dict = {}
+    if _wants_geocode(name_places, cfg):
+        # Bake place names for the unnamed survivors, recording every point->place the
+        # geocoder resolves. enrich_names mutates these (discarded) hikes' place_name in
+        # passing — harmless; we keep only the recording, which a later offline search
+        # replays through the SAME enrich_names (see search_snapshot).
+        geo = RecordingGeocoder(_geocoder(cfg, cache))
+        labelled = enrich_names(hikes, geo)
+        places = geo.places
+        _log.warning(
+            "download: baked place names for %d unnamed route(s) (%d point(s))",
+            labelled, len(places),
+        )
     return AreaSnapshot(
         bbox=tuple(bbox),
         area=area,
         elevations=recorder.samples,
         sample_interval_m=cfg.sample_interval_m,
         user_agent=user_agent or cfg.overpass_user_agent,
+        places=places,
     )
 
 
@@ -449,17 +477,8 @@ def search_snapshot(
     without touching the network. The over-length guard reuses the snapshot's own bbox.
     """
     cfg = cfg or _config.load()
-    # Reverse-geocode naming needs the network, which an offline snapshot search
-    # deliberately never touches — so honour the offline==online promise loudly: log
-    # that the request is a no-op here rather than silently dropping it. (v2: record
-    # place names into the snapshot at download time, like elevations, for parity.)
-    if _wants_geocode(name_places, cfg):
-        _log.warning(
-            "name_places: reverse-geocode naming needs the network and is skipped for "
-            "an offline --area search; unnamed routes keep their route/<id> label"
-        )
     provider = SnapshotElevationProvider(snapshot.elevations)
-    return find_hikes(
+    hikes = find_hikes(
         snapshot.area,
         provider,
         criteria,
@@ -474,3 +493,20 @@ def search_snapshot(
         near_miss=near_miss,
         **_near_miss_kwargs(cfg),
     )
+    if _wants_geocode(name_places, cfg):
+        if snapshot.places:
+            # v2: replay the names baked at download time through the SAME enrich_names
+            # that drives the live geocoder, with zero network. Offline == online by
+            # construction, modulo access-radius changes that move a route's start off a
+            # recorded point (then it degrades to its route/<id> fallback — see snapshot.py).
+            enrich_names(hikes, SnapshotGeocoder(snapshot.places))
+        else:
+            # No baked names (downloaded without naming, or a pre-v2 snapshot): geocoding
+            # needs the network an offline search never touches, so honour the
+            # offline==online promise loudly rather than silently dropping the request.
+            _log.warning(
+                "name_places: this snapshot has no baked place names — re-download the "
+                "area with naming enabled to label its unnamed routes offline; for now "
+                "they keep their route/<id> label"
+            )
+    return hikes

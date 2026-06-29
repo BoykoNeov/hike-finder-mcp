@@ -17,6 +17,22 @@ parallel code path:
     remembers every ``point -> elevation`` it returns.
   * :class:`SnapshotElevationProvider` answers later from that recording.
 
+The *same* seam bakes reverse-geocoded place names (``naming.py``) into a snapshot so
+an offline ``--area`` search can label its unnamed routes with zero network — opt-in at
+download time, mirroring the elevation pair:
+
+  * :class:`RecordingGeocoder` wraps the real geocoder during a (name-baking) download
+    and remembers every ``point -> place`` it resolves.
+  * :class:`SnapshotGeocoder` answers later from that recording, driven by the unchanged
+    ``naming.enrich_names`` exactly as the live ``NominatimGeocoder`` is.
+
+One caveat the elevation pair does not share: a route's geocode lookup point is its
+``start`` marker, which is coupled to the access radii — and those stay *tunable*
+offline (only ``sample_interval_m`` is locked). So if the access radii change between
+download and search, ``start`` can move off a recorded point and that route gracefully
+falls back to its ``route/<id>`` label. With the radii unchanged (the common case) the
+offline label equals the live one by construction.
+
 Why a snapshot search is faithful: the download samples every geometry-plausible route
 (``find_hikes`` with empty criteria), and the offline search re-derives the *same*
 sample points — same saved ways -> same ``stitch_ways`` line -> same ``resample_by_distance``
@@ -34,11 +50,12 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .elevation.base import Coord, ElevationError, ElevationProvider
+from .geocode import Geocoder
 from .overpass import AreaData
 
 # Bump when the on-disk shape changes incompatibly.
@@ -117,6 +134,47 @@ class SnapshotElevationProvider(ElevationProvider):
         return out
 
 
+class RecordingGeocoder(Geocoder):
+    """Delegate to a real geocoder and remember every place it resolves.
+
+    Used during a name-baking download: it returns exactly what the inner geocoder
+    returns (so the download's naming behaviour is unchanged) while accumulating the
+    ``point -> place`` map that becomes the snapshot's baked names. A point that resolves
+    to nothing (the inner geocoder returns ``None``) is simply not recorded — the offline
+    :class:`SnapshotGeocoder` returns ``None`` for any unrecorded point, so the route
+    degrades to its ``route/<id>`` fallback identically whether the miss was a no-place
+    result or an absent key.
+    """
+
+    def __init__(self, inner: Geocoder):
+        self.inner = inner
+        self.places: dict[Coord, str] = {}
+
+    def reverse(self, point: Coord) -> str | None:
+        name = self.inner.reverse(point)
+        if name is not None:
+            self.places[point] = name
+        return name
+
+
+class SnapshotGeocoder(Geocoder):
+    """Answer reverse-geocoding from a saved snapshot, never touching the network.
+
+    Mirrors :class:`SnapshotElevationProvider`: keys are matched at the snapshot's
+    rounding precision, and an unrecorded point returns ``None`` — exactly the
+    best-effort miss behaviour of the live geocoder, so the route keeps its
+    ``route/<id>`` fallback. Because the *same* ``naming.enrich_names`` drives this as
+    drives the live ``NominatimGeocoder``, an offline labelled search equals the live one
+    by construction, modulo the access-radius caveat noted in this module's docstring.
+    """
+
+    def __init__(self, places: dict[Coord, str]):
+        self._by_key: dict[str, str] = {_coord_key(pt): name for pt, name in places.items()}
+
+    def reverse(self, point: Coord) -> str | None:
+        return self._by_key.get(_coord_key(point))
+
+
 # --------------------------------------------------------------------------- snapshot
 
 
@@ -130,6 +188,10 @@ class AreaSnapshot:
     sample_interval_m: float
     created_at: str = ""
     user_agent: str | None = None
+    # Baked reverse-geocoded names for unnamed routes (``point -> place``), recorded at
+    # download time when naming was opted into. Empty for snapshots downloaded without it
+    # (and for pre-v2 snapshots) — those keep the honest offline no-op (see search.py).
+    places: dict[Coord, str] = field(default_factory=dict)
 
     @property
     def route_count(self) -> int:
@@ -138,6 +200,10 @@ class AreaSnapshot:
     @property
     def sample_count(self) -> int:
         return len(self.elevations)
+
+    @property
+    def place_count(self) -> int:
+        return len(self.places)
 
 
 def _now_iso() -> str:
@@ -152,6 +218,11 @@ def _area_to_json(area: AreaData) -> dict:
                 "name": r.get("name"),
                 "ref": r.get("ref"),
                 "osmc_color": r.get("osmc_color"),
+                # Carry the source-of-truth "unnamed" flag (parse_area sets it). Without
+                # it an offline search rebuilds every route as named=True, so enrich_names
+                # would skip them and the baked place names would never apply — and
+                # hike_to_dict would wrongly report unnamed=False for a route/<id> route.
+                "unnamed": r.get("unnamed", False),
                 "tags": r.get("tags", {}),
                 "ways": [[[lat, lon] for lat, lon in way] for way in r["ways"]],
             }
@@ -181,6 +252,8 @@ def _area_from_json(d: dict) -> AreaData:
                 "name": r.get("name"),
                 "ref": r.get("ref"),
                 "osmc_color": r.get("osmc_color"),
+                # Default False so a pre-v2 snapshot (no "unnamed" key) loads unchanged.
+                "unnamed": r.get("unnamed", False),
                 "tags": r.get("tags", {}) or {},
                 # Restore tuples — geometry de-dup/graph code needs hashable coords.
                 "ways": [[(lat, lon) for lat, lon in way] for way in r["ways"]],
@@ -211,6 +284,11 @@ def snapshot_to_json(snap: AreaSnapshot) -> dict:
         "area": _area_to_json(snap.area),
         # Rounded string keys -> elevation. The dict round-trips exactly through JSON.
         "elevations": {_coord_key(pt): elev for pt, elev in snap.elevations.items()},
+        # Baked reverse-geocoded place names, same rounded-key scheme. Optional: an empty
+        # map (or a pre-v2 snapshot, where the key is absent) reads back as no baked names
+        # — read via ``d.get("places", {})`` below so the version stays 1 (bumping it
+        # would make ``snapshot_from_json`` reject every existing snapshot).
+        "places": {_coord_key(pt): name for pt, name in snap.places.items()},
     }
 
 
@@ -225,6 +303,11 @@ def snapshot_from_json(d: dict) -> AreaSnapshot:
     for key, elev in d.get("elevations", {}).items():
         lat_s, lon_s = key.split(",")
         elevations[(float(lat_s), float(lon_s))] = float(elev)
+    # Optional (added at v1, so pre-v2 files just lack the key): baked place names.
+    places: dict[Coord, str] = {}
+    for key, name in d.get("places", {}).items():
+        lat_s, lon_s = key.split(",")
+        places[(float(lat_s), float(lon_s))] = str(name)
     return AreaSnapshot(
         bbox=bbox,
         area=_area_from_json(d.get("area", {})),
@@ -232,6 +315,7 @@ def snapshot_from_json(d: dict) -> AreaSnapshot:
         sample_interval_m=float(d["sample_interval_m"]),
         created_at=str(d.get("created_at", "")),
         user_agent=d.get("user_agent"),
+        places=places,
     )
 
 
