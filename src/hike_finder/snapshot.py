@@ -57,6 +57,7 @@ from pathlib import Path
 from .elevation.base import Coord, ElevationError, ElevationProvider
 from .geocode import Geocoder
 from .overpass import AreaData
+from .paths import user_cache_dir
 
 # Bump when the on-disk shape changes incompatibly.
 SNAPSHOT_VERSION = 1
@@ -78,12 +79,7 @@ def default_snapshot_dir() -> Path:
     env = os.getenv("HIKE_SNAPSHOT_DIR")
     if env:
         return Path(env)
-    base = (
-        os.getenv("LOCALAPPDATA")
-        or os.getenv("XDG_CACHE_HOME")
-        or os.path.join(Path.home(), ".cache")
-    )
-    return Path(base) / "hike-finder" / "snapshots"
+    return user_cache_dir() / "snapshots"
 
 
 # --------------------------------------------------------------------------- providers

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from importlib.metadata import PackageNotFoundError, version
 
 import requests
 
@@ -36,8 +37,13 @@ DEFAULT_OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 # parsed. A descriptive UA is REQUIRED, not optional — confirmed live. Set a real
 # contact via HIKE_OVERPASS_UA (wired through config.py -> server.py) per OSM
 # etiquette; this default works but names no contact.
+try:
+    _VERSION = version("hike-finder-mcp")
+except PackageNotFoundError:  # raw checkout, not pip-installed
+    _VERSION = "0"
 USER_AGENT = (
-    "hike-finder-mcp/0.1 (OSM hiking route search; set HIKE_OVERPASS_UA with your contact)"
+    f"hike-finder-mcp/{_VERSION} "
+    "(OSM hiking route search; set HIKE_OVERPASS_UA with your contact)"
 )
 
 # The public instance frequently answers small queries with a transient 504/429
@@ -169,6 +175,8 @@ def fetch_area(
             break
         if attempt < max_retries - 1:
             time.sleep(2 ** attempt)  # 1s, 2s, ... brief backoff on overload
+    if resp is None:  # max_retries < 1 sent nothing — fail cleanly, not AttributeError
+        raise ValueError("max_retries must be >= 1")
     resp.raise_for_status()
 
     elements = resp.json().get("elements", [])

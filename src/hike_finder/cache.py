@@ -39,6 +39,7 @@ from pathlib import Path
 
 from .elevation.base import ElevationProvider
 from .geocode import Geocoder
+from .paths import user_cache_dir
 from .snapshot import SNAPSHOT_VERSION, _area_from_json, _area_to_json, _coord_key
 
 # Bump if the table layout changes incompatibly (folded into the overpass key so a
@@ -52,18 +53,14 @@ _BUSY_TIMEOUT_MS = 5000
 
 def _default_cache_dir() -> Path:
     """Per-user cache dir, same convention as ``elevation.quota`` / ``snapshot``."""
-    base = (
-        os.getenv("LOCALAPPDATA")
-        or os.getenv("XDG_CACHE_HOME")
-        or os.path.join(Path.home(), ".cache")
-    )
-    return Path(base) / "hike-finder"
+    return user_cache_dir()
 
 
 def cache_path_from_config(cfg) -> Path:
-    # ``Config`` snapshots env at import time; resolve ``HIKE_CACHE_DIR`` live as a
-    # fallback too (mirrors ``elevation.quota._default_state_dir``), so a test — or a
-    # late env change — can redirect the cache without re-importing config.
+    # Belt-and-suspenders: ``Config.cache_dir`` already reads ``HIKE_CACHE_DIR``
+    # live at ``load()`` time, but resolve it here too (mirrors
+    # ``elevation.quota._default_state_dir``) so a caller passing a bare/legacy cfg
+    # object — or a test poking the env — can still redirect the cache.
     d = getattr(cfg, "cache_dir", None) or os.getenv("HIKE_CACHE_DIR")
     base = Path(d) if d else _default_cache_dir()
     return base / "cache.sqlite3"

@@ -39,15 +39,33 @@ SRC = str(_ROOT / "src")
 FLAVOURS = (".sh", ".ps1")
 
 
+def _usable(interp: str, probe: list[str]) -> bool:
+    """True only if ``interp`` actually *runs*. ``shutil.which`` can find a shim
+    that is present-yet-broken — e.g. a stale WSL ``bash`` relay whose distro is
+    gone answers ``which`` but dies with ``execvpe(/bin/bash) failed`` on exec.
+    A dead relay may hang rather than exit non-zero, so the probe is bounded."""
+    try:
+        proc = subprocess.run(
+            [interp, *probe], capture_output=True, timeout=10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
 def _runner_for(script: Path):
     """Return (interpreter, prefix_args) to run ``script``, or None if the
-    interpreter isn't on this machine."""
+    interpreter isn't on this machine (or is present-yet-broken)."""
     if script.suffix == ".sh":
         bash = shutil.which("bash")
-        return (bash, []) if bash else None
+        if bash and _usable(bash, ["-c", "exit 0"]):
+            return (bash, [])
+        return None
     if script.suffix == ".ps1":
         ps = shutil.which("pwsh") or shutil.which("powershell")
-        return (ps, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]) if ps else None
+        if ps and _usable(ps, ["-NoProfile", "-Command", "exit 0"]):
+            return (ps, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        return None
     return None
 
 

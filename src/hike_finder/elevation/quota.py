@@ -32,6 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+from ..paths import user_cache_dir
+
 # ONE lock for every DailyQuota in this process (see module docstring). A
 # per-instance lock would not serialise the shared file across the concurrent
 # providers a threaded web server creates.
@@ -44,12 +46,7 @@ def _default_state_dir() -> Path:
     env = os.getenv("HIKE_API_STATE_DIR")
     if env:
         return Path(env)
-    base = (
-        os.getenv("LOCALAPPDATA")
-        or os.getenv("XDG_CACHE_HOME")
-        or os.path.join(Path.home(), ".cache")
-    )
-    return Path(base) / "hike-finder"
+    return user_cache_dir()
 
 
 def _host_key(endpoint: str) -> str:
