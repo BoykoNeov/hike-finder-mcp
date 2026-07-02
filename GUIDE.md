@@ -59,8 +59,8 @@ only if you need them — see [Install](README.md#install) for `[mcp]`,
 `[local-dem]`, and `[dev]`.
 
 **Expect** — pip finishes with a line like
-`Successfully installed hike-finder-mcp-0.1.0`. Two new commands are now on your
-PATH.
+`Successfully installed hike-finder-mcp-<version>`. Two new commands are now on
+your PATH.
 
 **Read it** — verify the install resolved the entry points *without touching the
 network*:
@@ -71,8 +71,8 @@ hike-finder --help
 
 You should see the usage block (`usage: hike-finder [-h] --bbox SOUTH WEST NORTH
 EAST ...`). If that prints, the install worked. If you want deeper assurance,
-`pip install -e ".[dev]"` then `pytest` runs the full **offline** suite (186
-tests; 183 pass without `bash`) — all green means the engine is sound on your machine.
+`pip install -e ".[dev]"` then `pytest` runs the full **offline** suite (a few
+`.sh` launcher cases need `bash`) — all green means the engine is sound on your machine.
 
 ---
 
@@ -194,7 +194,7 @@ chips · OSM relation id) **and** as a **pin** on the map at the route's start.
 - **Click a card** → the map flies to that route's start and opens its popup.
   Click the matching pin to see name + distance + gain.
 - The **flag chips** (`loop`/`one-way`, `car`, `lift:chair_lift`) tell you shape
-  and access at a glance — see [Reading your results](#reading-your-results).
+  and access at a glance — see [Reading your results](#reading-your-results--how-to-treat-what-comes-back).
 - **No results?** The map area is genuinely empty for your filters — zoom out, or
   relax a filter (loops especially are sparse; see the troubleshooting section).
 - The **`elevation API: x/1000`** tail is your daily-quota gauge (only shown when
@@ -255,7 +255,7 @@ Dřevařská cesta — 7.9 km, +106 m / -474 m [one-way, car] (start 50.7272,15.
 - `+34 m / -34 m` on a route flagged `loop` is the **loop sanity check working**:
   on a true closed loop gain must ≈ loss, and it does — that cross-checks the
   whole sampling/gain pipeline. (On a `one-way` route the two differ freely.)
-- See [Reading your results](#reading-your-results) for the flags and `gain n/a`.
+- See [Reading your results](#reading-your-results--how-to-treat-what-comes-back) for the flags and `gain n/a`.
 
 **Machine-readable output** — add `--json` (here with `--circular`, a real capture):
 
@@ -577,14 +577,14 @@ as one named route. Loop closure is high-confidence; the *composition* is the to
 not the trail network's.
 
 **One practical caveat — use local elevation tiles for this.** Composed loops are long, so
-each needs hundreds of elevation samples, and unlike re-searching one route, loops in an
-area barely share sample points (each is measured from its own start), so the cache can't
-help across them. On the **public elevation API** (rate-limited to ~1 request/second) a
-compose run over a busy area will burn through the **daily request cap** and the later
-loops come back with **`gain n/a`**. Nothing breaks — those loops just lack a gain number —
-but if you want real gain on *every* composed loop, set up a
-[local DEM](#choosing-an-elevation-backend) (`HIKE_ELEVATION_MODE=local`); it's fast and
-has no limits. On the API backend, keep the area modest or lower `HIKE_COMPOSE_MAX_LOOPS`.
+each needs hundreds of elevation samples. On the **public elevation API** (throttled to ~1
+request/second, batched 100 points per request) a compose run is **slow** — dozens of
+requests, roughly a minute cold — but it does *not* exhaust the daily cap at the defaults (a
+15-loop run is on the order of 50 requests, not 1000). The cap only becomes a risk if you
+raise `HIKE_COMPOSE_MAX_LOOPS` well past its default or do many runs, in which case the later
+loops come back with **`gain n/a`** (nothing breaks — they just lack a gain number). Either
+way, for fast, unlimited elevation on *every* composed loop, set up a
+[local DEM](#choosing-an-elevation-backend) (`HIKE_ELEVATION_MODE=local`).
 
 ---
 

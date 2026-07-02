@@ -154,14 +154,14 @@ trailhead). The loop geometry — and its gain/loss — is unchanged; only the s
 > composition is geometric, not editorial.
 
 > **Use a local DEM for compose.** Composed loops are long (8–15 km), so each one needs
-> hundreds of elevation samples, and loops in one area barely share sample points (each
-> resamples from its own start), so the cache can't dedup across them. On the **public
-> elevation API** (~1 request/second) a dense-area compose run will **exhaust the daily
-> quota** and the later loops come back `gain n/a`. It still works — it just degrades —
-> but for real gain on every composed loop, point it at a
-> [local DEM](#two-elevation-backends-both-supported) (`HIKE_ELEVATION_MODE=local`),
-> which is fast and unlimited. On the API backend, keep the area small or lower
-> `HIKE_COMPOSE_MAX_LOOPS`.
+> hundreds of elevation samples. On the **public elevation API** (throttled to ~1
+> request/second, batched 100 points/request) a default compose run is **slow** — dozens
+> of requests, roughly a minute cold — but it stays well under the daily cap (a default
+> 15-loop run is on the order of 50 requests, not 1000). The cap only becomes a real risk
+> if you raise `HIKE_COMPOSE_MAX_LOOPS` far past the default or do many runs, in which
+> case later loops degrade to `gain n/a`. Either way, for fast, unlimited elevation on
+> every composed loop, point it at a
+> [local DEM](#two-elevation-backends-both-supported) (`HIKE_ELEVATION_MODE=local`).
 
 ### Export — GPX / GeoJSON (load into your phone or GPS)
 
@@ -273,7 +273,8 @@ hike-finder --help                 # prints usage → the entry points resolve
 ```
 
 For deeper assurance, `pip install -e ".[dev]"` then `pytest` runs the full
-offline suite (186 tests; 183 pass without `bash`). From here, pick a frontend: the **Web UI** (Option A),
+offline suite (a few `.sh` launcher cases need `bash`; MCP tests skip without
+the `mcp` extra). From here, pick a frontend: the **Web UI** (Option A),
 **command line** (Option B), or **MCP server** (Option C) below.
 
 Want the slower, fully-explained version of all of this — with sample output and
@@ -421,42 +422,13 @@ latitude, max longitude):
   edges — copy them straight in.
 - Or read the corners off **mapy.cz** for the area you're planning.
 
-> **Validated live** (2026-06-23): the bbox `50.72,15.58,50.74,15.62` (Špindlerův
-> Mlýn) returned 12 routes (each flagged for `car`/`lift`/shape), with a computed
-> gain/loss for **every** one — e.g. *[Z] Richtrovy Boudy → Špindlerův mlýn* at
-> **+678 m / −251 m**. The detected loop *Špindlerův mlýn – okruh* came back
-> **+34 m / −34 m** — gain ≈ loss, exactly as a closed loop must, which
-> cross-checks the whole sampling/gain pipeline. Loop detection was also
-> validated live (2026-06-23) against the real "Medvěd*" relations — which caught
-> and corrected an over-reporting bug; closure now reads the member ways as a
-> vertex graph (circuit rank), independent of way-stitching. Distance was also
-> hardened here (2026-06-23): it now sums every member way's length rather than
-> the greedily-stitched line, so branched relations that the stitch couldn't
-> chain no longer under-count (validated live by a per-route stitched-vs-summed
-> diff). The trail's **start and car/lift endpoints** were hardened the same way
-> (2026-06-24): they now come from the route's genuine termini (the degree-1
-> vertices of that same vertex graph), so a branched relation whose stitch drops
-> members no longer tests access at the wrong ends — validated live against the
-> "Medvěd*" relations, where the branched *Medvědí okruh* (42% stitch coverage)
-> recovers all four real trailheads. The reported **start** point is now coupled
-> to access: when a route has a mapped parking/lift near an end, `start` is the
-> terminus nearest it, so the pin usually lands on the trailhead you drive or
-> ride to (a lollipop with parking out on the ring keeps its start at the
-> stem-tip trailhead; pure loops have no terminus, so their start stays at the
-> conventional head).
-> The **local DEM** backend (`mode=local`) is now validated live too — Copernicus
-> GLO-30 tiles, Sněžka read 1601 m vs the known 1603 m, loop invariant holds.
-> The **MCP** server is validated live as well — driven over real stdio with the
-> `mcp` SDK and pinned offline by `tests/test_server.py`. All three frontends are
-> now exercised end-to-end.
-> **Saved areas + near-misses are validated live too** (2026-06-24): on the
-> Špindlerův Mlýn bbox, `--download` then `--area` (in separate processes, local
-> DEM) reproduced a live search's gain/loss/distance for **all 11 routes
-> byte-for-byte with zero `n/a`** — proving offline == online. A `--min-gain 750`
-> query (which nothing meets) surfaced the two closest routes as near-misses
-> (`+709 m`, 41 m short; `+693 m`, 57 m short), identically across the CLI, the web
-> UI (`/api/download` + offline `/api/hikes?area=`), and the MCP `find_hikes(area=…)`
-> tool.
+> **Example** — the bbox `50.72,15.58,50.74,15.62` (Špindlerův Mlýn) returns ~11
+> routes, each flagged for `car`/`lift`/shape with a locally computed gain/loss;
+> the detected loop *Špindlerův mlýn – okruh* reads **+34 m / −34 m** (gain ≈ loss,
+> as a closed loop must — the pipeline's built-in sanity check). The **start** pin
+> is coupled to access where possible: with a mapped parking/lift near an end,
+> `start` is the terminus nearest it, so it usually lands on the trailhead you'd
+> drive or ride to. See [`HANDOFF.md`](HANDOFF.md) for how each piece was validated.
 
 ### Configuration (environment variables)
 
@@ -522,21 +494,12 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 
 ## Status
 
-Core geometry, gain, access/shape math, the Overpass response parser, the
-elevation-API client (including its rate-limit throttle, transient-error
-retry/backoff, and a persistent daily-request counter that degrades to `n/a`
-before blowing the API's daily cap), a **transparent SQLite cache** at the
-Overpass + elevation seams (so repeat/overlapping searches don't re-hit the
-public servers), **loop composition** (synthesising day-loops from connected marked
-trails), the CLI argument/formatter layer, **and the MCP server's tool
-schema / argument-mapping / rendering glue** (driven through the real MCP protocol
-over an in-memory session): **implemented and unit-tested** (186 tests, all
-offline; 183 pass on a box without `bash` — the 3 `.sh` launcher cases need it).
-The Overpass HTTP call, the API elevation backend, **the local-DEM backend, the
-MCP server over real stdio, the cache, and loop composition** are all **validated
-live** (CLI + web + MCP), with computed gain cross-checked against the loop invariant
-(gain ≈ loss) — the local DEM read Sněžka at 1601 m vs the known 1603 m on a
-Copernicus GLO-30 tile, a warm cached search returned byte-identical results in 0.4 s
-vs 4.2 s cold, and a composed Špindl loop (3.38 km, +114/−112 m) came back identical
-across all three frontends. All three frontends are now exercised end-to-end. See
-`HANDOFF.md` for exactly what's done and what's next.
+The whole pipeline — geometry/gain/access math, the Overpass parser, both
+elevation backends (API with rate-limit throttle, retry/backoff, and a persistent
+daily-request counter; local DEM via a point-sampled GDAL VRT), the transparent
+cache, loop composition, offline snapshots, near-misses, reverse-geocode naming,
+and GPX/GeoJSON export — is **implemented, unit-tested (offline), and validated
+live** across all three frontends (CLI + web + MCP), with computed gain
+cross-checked against the loop invariant (gain ≈ loss). Released as v0.2.0. See
+[`CHANGELOG.md`](CHANGELOG.md) for the per-release breakdown and
+[`HANDOFF.md`](HANDOFF.md) for the architecture and open design notes.
