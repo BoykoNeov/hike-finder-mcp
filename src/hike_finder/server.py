@@ -32,6 +32,7 @@ from .search import (
     compose_loops,
     compose_loops_around,
     download_area,
+    route_via,
     routes_between,
     search_hikes,
     search_snapshot,
@@ -214,6 +215,55 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="route_via",
+            description=(
+                "Draw ONE walking route linking SEVERAL picked points in the order given, each "
+                "snapped to the nearest marked trail. Give `points` (>=2 lat/lon pairs). With "
+                "`loop` false (default) it draws the shortest open route point1 -> point2 -> ... "
+                "-> pointN. With `loop` true it closes the route back to the first point into a "
+                "CIRCULAR route whose return avoids retracing the way out where the trail network "
+                "allows (a genuine loop, not an out-and-back).\n\n"
+                "Use this for 'link these spots into one walk' or 'give me a loop passing through "
+                "these places'. The area is derived from the points — no bounding box needed. "
+                "Points are visited in the order given (no reordering). A point more than ~2 km "
+                "from any trail, or a leg crossing a gap in the network, yields no route. Results "
+                "are stitched from several trails (no single OSM id)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "points": {
+                        "type": "array",
+                        "minItems": 2,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "lat": {"type": "number"},
+                                "lon": {"type": "number"},
+                            },
+                            "required": ["lat", "lon"],
+                        },
+                        "description": "Waypoints to link, in visiting order (>=2).",
+                    },
+                    "loop": {
+                        "type": "boolean",
+                        "description": "true = close into a non-retracing circular route (default false).",
+                    },
+                    "min_distance_km": {"type": "number"},
+                    "max_distance_km": {
+                        "type": "number",
+                        "description": "Drop the linked route if it runs longer than this, km.",
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["text", "gpx", "geojson"],
+                        "description": "Output format (default 'text').",
+                    },
+                },
+                "required": ["points"],
+            },
+        ),
+        Tool(
             name="download_area",
             description=(
                 "Fetch a bounding box once — its hiking routes plus computed elevation for "
@@ -281,6 +331,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return await _call_circular_routes(arguments)
     if name == "routes_between":
         return await _call_routes_between(arguments)
+    if name == "route_via":
+        return await _call_route_via(arguments)
     if name == "download_area":
         return await _call_download_area(arguments)
     raise ValueError(f"unknown tool: {name}")
@@ -330,6 +382,35 @@ async def _call_routes_between(arguments: dict) -> list[TextContent]:
         "trail networks, be off-network (more than ~2 km from any trail), or every route "
         "exceeds the length cap.",
     )
+
+
+async def _call_route_via(arguments: dict) -> list[TextContent]:
+    raw = arguments.get("points") or []
+    points = [
+        (p["lat"], p["lon"])
+        for p in raw
+        if isinstance(p, dict) and "lat" in p and "lon" in p
+    ]
+    if len(points) < 2:
+        return [
+            TextContent(
+                type="text",
+                text="provide at least two points ({lat, lon}) to link into a route.",
+            )
+        ]
+    loop = bool(arguments.get("loop"))
+    hikes = await asyncio.to_thread(
+        route_via, points, _criteria(arguments), CFG, loop=loop
+    )
+    empty = (
+        "No circular route could be drawn through your points — a point may be off-network "
+        "(more than ~2 km from any trail) or a leg crosses a gap in the network."
+        if loop
+        else "No route could be drawn through your points — a point may be off-network (more "
+        "than ~2 km from any trail), a leg crosses a gap, or the route falls outside the "
+        "min/max_distance_km band."
+    )
+    return _serialize(hikes, arguments.get("format") or "text", empty)
 
 
 async def _call_find_hikes(arguments: dict) -> list[TextContent]:

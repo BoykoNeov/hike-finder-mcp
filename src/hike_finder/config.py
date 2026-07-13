@@ -71,10 +71,12 @@
   HIKE_ROUTES_K         --from/--to mode: how many routes to return, shortest first (3)
   HIKE_ROUTES_OVERLAP_FRAC  --from/--to: skip a route re-using more than this fraction of
                         an already-kept route's length, for distinct alternatives (0.6)
-  HIKE_ROUTES_PAD_KM / HIKE_ROUTES_PAD_FRAC  --from/--to: fetched-bbox padding around the
-                        two points, max(pad_km, pad_frac x separation) (2.0 km / 0.4)
+  HIKE_ROUTES_PAD_KM / HIKE_ROUTES_PAD_FRAC  --from/--to and --via: fetched-bbox padding
+                        around the points, max(pad_km, pad_frac x separation) (2.0 km / 0.4)
   HIKE_ROUTES_MAX_FACTOR  --from/--to: cap a route at this factor x the straight-line
                         separation when no --max-distance is given (3.0)
+  HIKE_ROUTES_MAX_SNAP_KM  --from/--to and --via: a point farther than this from any trail
+                        is off-network and yields no route (2.0)
 """
 from __future__ import annotations
 

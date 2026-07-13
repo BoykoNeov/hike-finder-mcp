@@ -25,6 +25,7 @@ from .search import (
     compose_loops,
     compose_loops_around,
     download_area,
+    route_via,
     routes_between,
     search_hikes,
     search_snapshot,
@@ -86,6 +87,7 @@ INDEX_HTML = """<!doctype html>
       <option value="area">Search this map area</option>
       <option value="around">Circular routes near a point</option>
       <option value="between">Routes between two points</option>
+      <option value="via">Route linking several points</option>
     </select>
     <div id="around_ctl" style="display:none;">
       <p class="muted">Click the map to drop your point. Loops passing within the radius of it (using the min/max distance below, default 3–15 km) are drawn, each starting there. Live map only.</p>
@@ -96,6 +98,12 @@ INDEX_HTML = """<!doctype html>
       <p class="muted">Click the map to drop your <b>start</b>, then your <b>finish</b>. The shortest routes between them are drawn, shortest first. Live map only.</p>
       <label>How many routes</label>
       <input id="routes_k" type="number" step="1" min="1" value="3">
+    </div>
+    <div id="via_ctl" style="display:none;">
+      <p class="muted">Click the map to drop <b>waypoints</b> (2 or more). They are linked into ONE route in the order you click them, each snapped to the nearest trail. Live map only.</p>
+      <label><input type="checkbox" id="via_loop" style="width:auto; vertical-align:middle;"> Close into a circular route</label>
+      <p class="muted">Return to the first point by a different way where the trail network allows, so the loop avoids retracing itself.</p>
+      <button id="via_undo" style="margin-top:0;" title="Remove the last waypoint you dropped">Undo last point</button>
     </div>
 
     <label>Shape</label>
@@ -155,6 +163,7 @@ const routeLines = L.layerGroup().addTo(map);   // drawn polylines for the match
 const picks = L.layerGroup().addTo(map);        // the point(s) the user clicked to pick
 let lastParams = null;                           // params of the last search, for GPX/GeoJSON download
 let aroundPt = null, fromPt = null, toPt = null; // picked points for the point-based modes
+let viaPts = [];                                 // ordered waypoints for the 'via' mode
 
 function modeName(){ return document.getElementById('mode').value; }
 
@@ -168,6 +177,10 @@ function drawPicks(){
     if (fromPt) dot(fromPt, 'start', '#188038');
     if (toPt) dot(toPt, 'finish', '#c5221f');
   }
+  if (modeName() === 'via'){
+    // Number the waypoints so their visiting order is visible on the map.
+    viaPts.forEach((pt, i) => dot(pt, String(i + 1), '#1967d2'));
+  }
 }
 
 function onMapClick(e){
@@ -177,7 +190,8 @@ function onMapClick(e){
     // First click (or a fresh pair) sets the start; the next sets the finish.
     if (!fromPt || (fromPt && toPt)){ fromPt = e.latlng; toPt = null; }
     else { toPt = e.latlng; }
-  } else { return; }
+  } else if (m === 'via'){ viaPts.push(e.latlng); }
+  else { return; }
   drawPicks();
   updateHint();
 }
@@ -189,6 +203,9 @@ function updateHint(){
   if (m === 'around') s.textContent = aroundPt ? 'Point set — press Search.' : 'Click the map to drop your point.';
   else if (m === 'between') s.textContent = !fromPt ? 'Click the map to drop your start.'
       : (!toPt ? 'Now click your finish.' : 'Start + finish set — press Search.');
+  else if (m === 'via') s.textContent = viaPts.length < 2
+      ? ('Click the map to drop waypoints (' + viaPts.length + ' so far, need 2+).')
+      : (viaPts.length + ' waypoints set — press Search (or keep adding).');
   else s.textContent = '';
 }
 
@@ -196,6 +213,7 @@ function updateMode(){
   const m = modeName();
   document.getElementById('around_ctl').style.display = (m === 'around') ? 'block' : 'none';
   document.getElementById('between_ctl').style.display = (m === 'between') ? 'block' : 'none';
+  document.getElementById('via_ctl').style.display = (m === 'via') ? 'block' : 'none';
   // Composing/naming/area only make sense in the plain area mode.
   const areaOnly = (m === 'area');
   document.getElementById('compose_loops').disabled = !areaOnly;
@@ -203,11 +221,16 @@ function updateMode(){
   const btn = document.getElementById('search');
   btn.textContent = m === 'around' ? 'Search loops near the point'
                   : m === 'between' ? 'Search routes between the points'
+                  : m === 'via' ? 'Draw the route through the points'
                   : 'Search this map area';
-  picks.clearLayers(); aroundPt = fromPt = toPt = null;
+  picks.clearLayers(); aroundPt = fromPt = toPt = null; viaPts = [];
   markers.clearLayers(); routeLines.clearLayers();
   updateHint();
 }
+
+document.getElementById('via_undo').addEventListener('click', () => {
+  viaPts.pop(); drawPicks(); updateHint();
+});
 
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function val(id){ const v = document.getElementById(id).value.trim(); return v === '' ? null : v; }
@@ -245,6 +268,10 @@ async function search(){
     params.set('from_lat', fromPt.lat); params.set('from_lon', fromPt.lng);
     params.set('to_lat', toPt.lat); params.set('to_lon', toPt.lng);
     const k = val('routes_k'); if (k !== null) params.set('routes_k', k);
+  } else if (mode === 'via'){
+    if (viaPts.length < 2){ status.textContent = 'Drop at least two waypoints on the map first.'; return; }
+    for (const p of viaPts) params.append('via', p.lat + ',' + p.lng);  // repeated, order preserved
+    if (document.getElementById('via_loop').checked) params.set('via_loop', 'true');
   } else if (area){
     params.set('area', area);                 // offline: bbox comes from the snapshot
   } else {
@@ -276,13 +303,17 @@ async function search(){
     render(data);
     const near = data.filter(h => h.near_miss).length;
     const composing = mode === 'area' && !area && document.getElementById('compose_loops').checked;
+    const viaLoop = mode === 'via' && document.getElementById('via_loop').checked;
     const noun = (mode === 'between') ? ' route(s)'
+               : (mode === 'via') ? (viaLoop ? ' circular route' : ' route')
                : (mode === 'around' || composing) ? ' loop(s)' : ' match(es)';
     if (data.length === 0){
       status.textContent = mode === 'around'
           ? 'No loops pass within the radius of your point — widen the radius or the min/max distance.'
         : mode === 'between'
           ? 'No routes between your two points — move them onto/closer to marked trails, or raise the max distance.'
+        : mode === 'via'
+          ? 'No route through your waypoints — move them onto/closer to marked trails, or check they are on one connected network.'
         : composing
           ? 'No loops could be composed here — widen the map or the min/max distance.'
           : 'No matches — widen the map or relax the filters.';
@@ -628,6 +659,26 @@ class Handler(BaseHTTPRequestHandler):
                 return routes_between(
                     (f_lat, f_lon), (t_lat, t_lon), criteria,
                     k=int(k) if k else None, user_agent=ua,
+                ), None
+            except Exception as e:  # noqa: BLE001
+                return None, _fetch_error(e)
+
+        # One route linking several picked points ('via'), optionally closed into a
+        # non-retracing circular route. Each waypoint arrives as a repeated `via=lat,lon`.
+        raw_via = qs.get("via", [])
+        if raw_via:
+            points = []
+            for item in raw_via:
+                try:
+                    lat_s, lon_s = item.split(",", 1)
+                    points.append((float(lat_s), float(lon_s)))
+                except (ValueError, AttributeError):
+                    return None, (400, {"error": f"bad via point {item!r} (want 'lat,lon')"})
+            if len(points) < 2:
+                return None, (400, {"error": "give at least two via points to link"})
+            try:
+                return route_via(
+                    points, criteria, loop=_tri(qs, "via_loop") is True, user_agent=ua,
                 ), None
             except Exception as e:  # noqa: BLE001
                 return None, _fetch_error(e)

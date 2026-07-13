@@ -72,7 +72,7 @@ def test_list_tools_advertises_find_hikes(monkeypatch):
 
     result = asyncio.run(_impl())
     tools = {t.name: t for t in result.tools}
-    assert set(tools) == {"find_hikes", "circular_routes", "routes_between", "download_area"}
+    assert set(tools) == {"find_hikes", "circular_routes", "routes_between", "route_via", "download_area"}
 
     schema = tools["find_hikes"].inputSchema
     assert schema["type"] == "object"
@@ -458,5 +458,5 @@ def test_real_stdio_transport_lists_the_tool():
 
     result = asyncio.run(asyncio.wait_for(_impl(), timeout=60))
     assert {t.name for t in result.tools} == {
-        "find_hikes", "circular_routes", "routes_between", "download_area"
+        "find_hikes", "circular_routes", "routes_between", "route_via", "download_area"
     }

@@ -26,6 +26,7 @@ from .search import (
     compose_loops,
     compose_loops_around,
     download_area,
+    route_via,
     routes_between,
     search_hikes,
     search_snapshot,
@@ -137,6 +138,23 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="How many distinct routes to draw between --from and --to, shortest first "
         "(default HIKE_ROUTES_K = 3). --max-distance caps a route's length.",
+    )
+    r.add_argument(
+        "--via",
+        action="append",
+        nargs=2,
+        type=float,
+        metavar=("LAT", "LON"),
+        help="Add a waypoint. Repeat it (>=2 times) to draw ONE route linking the points in "
+        "the order you give them, each snapped to the nearest trail. Add --via-loop to close "
+        "the route into a circular one. Omit --bbox (the area is derived from the points).",
+    )
+    r.add_argument(
+        "--via-loop",
+        action="store_true",
+        help="With --via points, close the linked route into a circular route back to the "
+        "first point, routing the return so it avoids retracing the way out (where the trail "
+        "network allows). Points are visited in the order given — no reordering.",
     )
 
     s = p.add_argument_group("saved areas (fetch once, then search offline)")
@@ -311,40 +329,60 @@ def run(args: argparse.Namespace) -> int:
         )
         return 2
 
-    # Point-based route drawing: --around (circular routes near a point) and --from/--to
-    # (N shortest routes between two points). Both derive their own area, so they don't take
-    # --bbox and can't combine with --compose-loops / --area / --download.
+    # Point-based route drawing: --around (circular routes near a point), --from/--to (N
+    # shortest routes between two points), and --via (one route linking several points, closed
+    # into a circular route with --via-loop). Each derives its own area, so none takes --bbox
+    # or combines with --compose-loops / --area / --download.
     around = getattr(args, "around", None)
     from_pt = getattr(args, "from_pt", None)
     to_pt = getattr(args, "to_pt", None)
-    if around is not None or from_pt is not None or to_pt is not None:
+    via = getattr(args, "via", None)
+    via_loop = getattr(args, "via_loop", False)
+    if around is not None or from_pt is not None or to_pt is not None or via is not None or via_loop:
         if (from_pt is None) != (to_pt is None):
             print("error: --from and --to must be given together.", file=sys.stderr)
             return 2
-        if around is not None and from_pt is not None:
+        active = sum(
+            1
+            for on in (
+                around is not None,
+                from_pt is not None or to_pt is not None,
+                via is not None,
+            )
+            if on
+        )
+        if active > 1:
             print(
-                "error: --around and --from/--to are different modes — use one, not both.",
+                "error: --around, --from/--to and --via are different point-based modes — "
+                "use one, not several.",
                 file=sys.stderr,
             )
             return 2
+        if via is not None and len(via) < 2:
+            print(
+                "error: --via needs at least two points — repeat --via LAT LON.",
+                file=sys.stderr,
+            )
+            return 2
+        if via_loop and via is None:
+            print("error: --via-loop only applies with --via points.", file=sys.stderr)
+            return 2
         if args.area or args.download:
             print(
-                "error: --around and --from/--to are live searches; they can't be combined "
-                "with --area or --download.",
+                "error: point-based modes are live searches; they can't be combined with "
+                "--area or --download.",
                 file=sys.stderr,
             )
             return 2
         if getattr(args, "compose_loops", False):
             print(
-                "error: --around and --from/--to already synthesise routes; drop "
-                "--compose-loops.",
+                "error: point-based modes already synthesise routes; drop --compose-loops.",
                 file=sys.stderr,
             )
             return 2
         if args.bbox:
             print(
-                "error: --around and --from/--to derive their own area from the point(s); "
-                "omit --bbox.",
+                "error: point-based modes derive their own area from the point(s); omit --bbox.",
                 file=sys.stderr,
             )
             return 2
@@ -369,6 +407,23 @@ def run(args: argparse.Namespace) -> int:
                     "No circular routes pass within the radius of your point — widen "
                     "--around-radius, the --min-distance/--max-distance band, or drop "
                     "--car-access/--chairlift-access."
+                )
+            elif via is not None:
+                hikes = route_via(
+                    [(lat, lon) for lat, lon in via],
+                    build_criteria(args),
+                    cfg,
+                    loop=via_loop,
+                    **common,
+                )
+                empty_msg = (
+                    "No circular route could be drawn through your points — a point may be "
+                    "off-network (>~2 km from any trail) or a leg crosses a gap; move them "
+                    "onto/closer to marked trails."
+                    if via_loop
+                    else "No route could be drawn through your points — a point may be "
+                    "off-network (>~2 km from any trail), a leg crosses a gap in the trail "
+                    "network, or the linked route falls outside --min/--max-distance."
                 )
             else:
                 hikes = routes_between(

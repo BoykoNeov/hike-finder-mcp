@@ -620,9 +620,31 @@ routes, not the same line with a tiny detour, and `--max-distance` caps how long
 be. If you point somewhere with no trail within ~2 km, you'll get nothing back rather than a
 route to a trail far away — move the pin closer to a marked path.
 
+**"Link these spots into one walk"** — or **"give me a loop through them."** Drop two or more
+points with `--via` (repeat it) and get a *single* route linking them in the order you gave:
+
+```bash
+# An open route through three spots:
+hike-finder --via 50.72 15.58 --via 50.74 15.61 --via 50.76 15.63 \
+            --user-agent you@example.com
+
+# The same points, closed into a circular route that doesn't retrace the way out:
+hike-finder --via 50.72 15.58 --via 50.75 15.62 --via-loop \
+            --user-agent you@example.com
+```
+
+The points are visited **in your order** (no reshuffling), each snapped to the nearest trail.
+Add `--via-loop` to close the walk back to the first point: the tool routes the return so it
+**avoids retracing** the way out wherever the trail network offers a different path, giving a
+real loop rather than an out-and-back. When there's no separate way back (a dead-end valley),
+it says so and shows the there-and-back anyway. Same "no trail within ~2 km → nothing back"
+rule as `--from`/`--to`, and `--min`/`--max-distance` filter the linked route by its length.
+
 In the **Web UI** these are the **Mode** dropdown ("Circular routes near a point" / "Routes
-between two points") — pick one, then click the map to drop your pin(s) and press Search. Over
-**MCP** they're the `circular_routes` and `routes_between` tools. Both are live-map only.
+between two points" / "Route linking several points") — pick one, then click the map to drop
+your pin(s) and press Search; the `--via` mode adds an *Undo last point* button and a *Close
+into a circular route* checkbox. Over **MCP** they're the `circular_routes`, `routes_between`,
+and `route_via` tools. All are live-map only.
 
 ---
 

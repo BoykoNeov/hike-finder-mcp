@@ -19,11 +19,14 @@ from __future__ import annotations
 
 import logging
 import math
+from collections import Counter
 from dataclasses import replace
 
 from . import cache as _cache
 from . import config as _config
 from .compose import (
+    _assemble,
+    _dijkstra,
     assemble_loop_series,
     build_trail_graph,
     clip_routes_to_bbox,
@@ -569,6 +572,142 @@ def routes_between(
     # measured km so the user's "starting with the shortest" holds on the reported number).
     hikes.sort(key=lambda h: h.distance_km)
     return hikes
+
+
+def route_via(
+    points: list[Coord],
+    criteria: Criteria,
+    cfg: Config | None = None,
+    *,
+    loop: bool = False,
+    user_agent: str | None = None,
+    overpass_url: str | None = None,
+    elevation_mode: str | None = None,
+    dem_dir: str | None = None,
+) -> list[Hike]:
+    """ONE route linking several picked points in the order given, each snapped to the
+    nearest trail.
+
+    Feature: "I pick several points and get a single route linking them." With ``loop=False``
+    this draws the shortest open route ``p1 -> p2 -> ... -> pn`` — visiting the points in the
+    order given, with no reordering, so the result is predictable. With ``loop=True`` it closes
+    the route back to ``p1`` into a *circular* route whose legs avoid retracing one another:
+    each leg is routed with the segments already used by earlier legs removed from the graph,
+    so the circuit is edge-disjoint where the network allows and retraces only a leg that has
+    no disjoint alternative. The retraced fraction is measured and logged; a circuit forced
+    into a mostly-out-and-back (no disjoint return near the points) is flagged loudly.
+
+    Like ``routes_between`` it derives its own bbox from the points, snaps each onto the
+    nearest point ON the network (splitting the nearest segment so the route reaches exactly
+    where you pointed), and measures the assembled route through the *unchanged* ``find_hikes``
+    so offline == online holds. A point more than ``cfg.routes_max_snap_km`` from any trail, or
+    a leg crossing a gap in the network, aborts loudly rather than routing to a distant trail.
+    Length/gain/access filters in ``criteria`` still apply (e.g. ``--max-distance`` drops a
+    linked route that runs longer than you allow).
+    """
+    cfg = cfg or _config.load()
+    if len(points) < 2:
+        _log.warning("route via: need at least two points to link")
+        return []
+    # A linked/looped route is synthesised, not a mapped relation, so a stray `circular` shape
+    # filter would drop it to nothing — neutralise it here (distance/gain/access filters still
+    # apply), exactly as routes_between does, so all three frontends behave identically.
+    if criteria.circular is not None:
+        criteria = replace(criteria, circular=None)
+
+    lats = [p[0] for p in points]
+    lons = [p[1] for p in points]
+    # The widest consecutive separation drives the bbox pad, so any single leg can bow out of
+    # the direct corridor between its two points without being clipped.
+    seps = [haversine_m(points[i], points[i + 1]) for i in range(len(points) - 1)]
+    if loop:
+        seps.append(haversine_m(points[-1], points[0]))
+    pad_m = max(cfg.routes_pad_km * 1000.0, cfg.routes_pad_frac * (max(seps) if seps else 0.0))
+    lat0 = sum(lats) / len(lats)
+    dlat = pad_m / 111_320.0
+    dlon = pad_m / (111_320.0 * max(math.cos(math.radians(lat0)), 1e-6))
+    bbox: Bbox = (min(lats) - dlat, min(lons) - dlon, max(lats) + dlat, max(lons) + dlon)
+
+    cache = _cache.from_config(cfg)
+    area = _fetch_area(
+        bbox, cfg, cache, user_agent=user_agent, overpass_url=overpass_url, read_cache=True
+    )
+    graph = build_trail_graph(clip_routes_to_bbox(area.routes, bbox))
+    graph, snapped = snap_points(graph, points)
+    nodes = [n for (n, _) in snapped]
+    if any(n < 0 for n in nodes):
+        _log.warning("route via: no trails found in the area around your points")
+        return []
+    max_snap_m = cfg.routes_max_snap_km * 1000.0
+    far = [(i + 1, d) for i, (_, d) in enumerate(snapped) if d > max_snap_m]
+    if far:
+        _log.warning(
+            "route via: point(s) %s sit farther than %.1f km from the nearest trail — no route "
+            "drawn; move them closer to a marked trail or raise HIKE_ROUTES_MAX_SNAP_KM",
+            ", ".join(f"#{i} ({d / 1000.0:.1f} km)" for i, d in far), cfg.routes_max_snap_km,
+        )
+        return []
+
+    # Chain the legs. For a loop, remove segments used by earlier legs so the circuit stays
+    # edge-disjoint where the network allows; a leg with no disjoint alternative falls back to
+    # reusing them (a retrace on that leg), which the overlap report below surfaces. Open routes
+    # take the plain shortest path per leg (consecutive legs may share a junction stub — fine).
+    legs = list(zip(nodes, nodes[1:]))
+    if loop:
+        legs.append((nodes[-1], nodes[0]))
+    ordered: list[int] = []
+    used: set[int] = set()
+    for li, (u, v) in enumerate(legs, start=1):
+        if u == v:
+            continue  # two consecutive points snapped to the same trail vertex — empty leg
+        res = _dijkstra(graph, u, v, removed_edges=frozenset(used)) if loop else _dijkstra(graph, u, v)
+        if res is None and loop:
+            res = _dijkstra(graph, u, v)  # no disjoint path for this leg — allow a retrace
+        if res is None:
+            _log.warning(
+                "route via: leg %d crosses a gap in the trail network (no connected path "
+                "between those two points) — no route drawn", li,
+            )
+            return []
+        segs, _leg_nodes, _leg_len = res
+        ordered.extend(segs)
+        used.update(segs)
+    if not ordered:
+        _log.warning("route via: all your points snapped to the same trail vertex — nothing to route")
+        return []
+
+    # Retrace report: how much of the trail covered is walked more than once (0 = a clean
+    # non-repeating loop; 1.0 = a full out-and-back). Reported so "not repeating in its major
+    # part" is a stated, measured property, not a hope.
+    counts = Counter(ordered)
+    seg_len = {i: graph.segments[i].length_m for i in counts}
+    distinct_len = sum(seg_len.values())
+    retraced_len = sum(seg_len[i] * (c - 1) for i, c in counts.items())
+    overlap = retraced_len / distinct_len if distinct_len else 0.0
+    _log.warning(
+        "route via: %d-point %s over %d segment(s), %.1f km of distinct trail, %.0f%% "
+        "retraced (snap distances: %s)",
+        len(points), "circular route" if loop else "route", len(counts), distinct_len / 1000.0,
+        overlap * 100.0, ", ".join(f"{d:.0f} m" for (_, d) in snapped),
+    )
+    if loop and overlap >= 0.5:
+        _log.warning(
+            "route via: this circular route retraces %.0f%% of its trail — no disjoint return "
+            "exists near your points, so it is largely an out-and-back; showing it anyway",
+            overlap * 100.0,
+        )
+
+    start_node = nodes[0]
+    route = _assemble(graph, start_node, ordered)
+    # Start the rendered route at the first point you picked (its snapped vertex), not the
+    # assembled ring's arbitrary head — _measure_composed honours `anchor` for Hike.start.
+    route.anchor = graph.coords[start_node]
+    provider = _provider(cfg, elevation_mode, dem_dir, cache)
+    return _measure_composed(
+        graph, [route], area, criteria, cfg, provider, bbox,
+        near_miss=False, roundtrip="yes" if loop else "no",
+        name="Circular route via points" if loop else "Route via points",
+    )
 
 
 def download_area(

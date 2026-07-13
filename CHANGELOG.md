@@ -8,8 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **Point-based route drawing — pick point(s) on a map instead of a bounding box.** Two
-  new live modes, both deriving their own search area from the point(s) (no `--bbox`):
+- **Point-based route drawing — pick point(s) on a map instead of a bounding box.** Three
+  new live modes, each deriving its own search area from the point(s) (no `--bbox`):
   - **Circular routes near a point** (`--around LAT LON`, MCP `circular_routes`, web "Mode →
     Circular routes near a point"). Reuses the loop-composition engine anchored to the picked
     point: only loops passing within `--around-radius` metres (default 1000,
@@ -26,12 +26,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     route's length is skipped — set 0 for literal k-shortest). A point more than
     `HIKE_ROUTES_MAX_SNAP_KM` (default 2 km) from any trail is treated as off-network and
     yields no routes rather than routing to a distant trail.
+  - **One route linking several points** (`--via LAT LON`, repeatable, plus `--via-loop`; MCP
+    `route_via`; web "Mode → Route linking several points"). Snaps two-or-more picked points to
+    the network (same mid-segment snapping) and chains shortest paths between them **in the
+    order given** (no reordering) into a single route. With `--via-loop` it closes the route
+    back to the first point into a **circular route that avoids retracing**: each leg is routed
+    with the segments used by earlier legs removed from the graph, so the loop is edge-disjoint
+    where the network allows and retraces only a leg with no disjoint alternative. The retraced
+    fraction is measured and logged (0 % = a clean non-repeating loop); a circuit with no
+    disjoint return is flagged as a largely out-and-back rather than presented as a loop. Same
+    off-network and corridor-clip limits as `--from`/`--to`; `--min`/`--max-distance` filter the
+    linked route by total length. Web adds an *Undo last point* button and a *Close into a
+    circular route* checkbox.
 
-  Both measure elevation/distance/access through the *unchanged* two-pass engine (offline ==
+  All measure elevation/distance/access through the *unchanged* two-pass engine (offline ==
   online holds), export to GPX/GeoJSON like any route, and are wired into all three frontends
-  (CLI, MCP, web). The pure engine (mid-segment snapping + Yen on the junction multigraph) is
-  unit-tested on hand-built graphs and, via the Špindl fixture, offline end-to-end, and both
-  modes are verified live against real Overpass + the elevation API (Krkonoše).
+  (CLI, MCP, web). The pure engine (mid-segment snapping + Yen on the junction multigraph, and
+  the chained-Dijkstra `route_via` with its non-retracing loop closure) is unit-tested on
+  hand-built graphs and, via the Špindl fixture, offline end-to-end; the first two modes are
+  verified live against real Overpass + the elevation API (Krkonoše).
 
 ## [0.2.0] - 2026-06-29
 

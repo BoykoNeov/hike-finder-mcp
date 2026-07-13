@@ -211,10 +211,42 @@ tool draws the **shortest route first, then the next-shortest**, and so on. `--r
 > outside that corridor can be clipped, so raise those knobs if a detour you expect is
 > missing.
 
-Both modes are **live-map only** and exposed on every frontend: the web UI has a **Mode**
-selector (pick "Circular routes near a point" or "Routes between two points", then click the
-map to drop your pin(s)); MCP has the `circular_routes` and `routes_between` tools. Results
-carry full computed stats and export to GPX/GeoJSON like any other route.
+**One route linking several points** (`--via LAT LON`, repeatable) — "link *these spots*
+into a single walk", and with `--via-loop` "give me a *loop* passing through them that
+doesn't retrace itself":
+
+```bash
+# An open route through three spots, in the order given:
+hike-finder --via 50.72 15.58 --via 50.74 15.61 --via 50.76 15.63 \
+            --user-agent you@example.com
+
+# Close it into a circular route that returns by a different way:
+hike-finder --via 50.72 15.58 --via 50.75 15.62 --via-loop \
+            --user-agent you@example.com
+```
+
+Give **two or more `--via` points**; each is snapped onto the nearest marked trail (same
+mid-segment snapping as `--from`/`--to`), and the tool draws **one** route linking them in
+the order you list them (no reordering — the order is yours). With `--via-loop` it closes
+the route back to the first point, routing each leg with the segments already used removed
+from the graph, so the loop is **edge-disjoint where the trail network allows** and retraces
+only a leg that has no disjoint alternative. The log reports how much of the route retraces
+itself (0 % = a clean non-repeating loop); a circuit with no disjoint return is flagged as a
+largely out-and-back rather than passed off as a loop.
+
+> **Same off-network / corridor limits as `--from`/`--to`.** A `--via` point more than ~2 km
+> from any trail (`HIKE_ROUTES_MAX_SNAP_KM`), or a leg crossing a gap in the network, draws
+> no route. The fetched area is padded `max(2 km, 0.4×widest-leg)` around the points
+> (`HIKE_ROUTES_PAD_KM`/`HIKE_ROUTES_PAD_FRAC`), so a return that bows far outside that
+> corridor can be clipped — raise those knobs if an expected detour is missing. `--min`/
+> `--max-distance` still filter the linked route by its total length.
+
+All three modes are **live-map only** and exposed on every frontend: the web UI has a
+**Mode** selector (pick "Circular routes near a point", "Routes between two points", or
+"Route linking several points" — then click the map to drop your pin(s), with an *Undo last
+point* button and a *Close into a circular route* checkbox for `--via`); MCP has the
+`circular_routes`, `routes_between`, and `route_via` tools. Results carry full computed stats
+and export to GPX/GeoJSON like any other route.
 
 ### Export — GPX / GeoJSON (load into your phone or GPS)
 

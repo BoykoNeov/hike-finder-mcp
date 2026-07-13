@@ -109,6 +109,16 @@ Entry points on the shared engine, all rendering identically:
   Assembled routes reuse `_assemble` (an open path is just an ordered segment list) and are
   measured through the shared `_measure_composed` (the same per-segment shared-elevation block
   `compose_loops` uses). An overlap filter yields N *distinct* routes; a >2 km snap is rejected.
+- `search.route_via` — **one route linking several points** (`--via`, repeatable, `--via-loop`,
+  MCP `route_via`): snaps ≥2 picked points in a single `snap_points` call, then chains
+  `compose._dijkstra` between consecutive pairs (in the given order — no reorder) and `_assemble`s
+  the concatenated ordered-seg list. `--via-loop` adds a closing leg to point 1 and routes each leg
+  with `removed_edges = union(earlier legs' seg_ids)` → an **edge-disjoint non-retracing loop**
+  where the network allows; a leg with no disjoint alternative falls back to a plain `_dijkstra`
+  (forced retrace). The retraced fraction is logged; ≥50 % on a loop is flagged as a largely
+  out-and-back. Reuses the `routes_pad`/`routes_max_snap` guards and `_measure_composed`; a
+  segment repeated in `ordered_segs` measures correctly because `assemble_loop_series` walks the
+  sequence per-occurrence.
 
 **Near-misses** (`find_hikes(near_miss="auto")`, the frontend default) surface close-but-not-
 matching routes only when there are 0 strict matches, annotated with the literal gap. Shape is
@@ -133,14 +143,17 @@ thing is validated live against real OSM. Highlights:
   shared elevation sampling, sliver filter), **reverse-geocode naming** of unnamed routes, and
   **GPX/GeoJSON export** (per-point elevation on a single clean track) — all live across all three
   frontends. See `CHANGELOG.md` for the per-release breakdown.
-- **Point-based route drawing** (`--around` / `--from`/`--to`) — the pure engine (mid-segment
-  snapping + Yen on the junction multigraph) is unit-tested on hand-built graphs
-  (`test_routing.py`) and offline end-to-end through the full search stack on the Špindl fixture
-  (`test_routing_live.py`, incl. a bbox-derivation spy so a lat/lon swap can't slip past). Both
-  modes are also **verified live** against real Overpass + the elevation API over Krkonoše:
-  `--around` composed real named loops near the point (gain≈loss), `--from/--to` returned the N
-  shortest-first distinct routes (snap distances reported, off-network guard respected), and both
-  round-tripped to GPX/GeoJSON with per-point elevation.
+- **Point-based route drawing** (`--around` / `--from`/`--to` / `--via`) — the pure engine
+  (mid-segment snapping + Yen on the junction multigraph, plus chained-Dijkstra `route_via` with
+  its non-retracing loop closure) is unit-tested on hand-built graphs (`test_routing.py`,
+  `test_route_via.py`) and offline end-to-end through the full search stack on the Špindl fixture
+  (`test_routing_live.py`, incl. a bbox-derivation spy so a lat/lon swap can't slip past).
+  `--around` and `--from/--to` are also **verified live** against real Overpass + the elevation API
+  over Krkonoše: `--around` composed real named loops near the point (gain≈loss), `--from/--to`
+  returned the N shortest-first distinct routes (snap distances reported, off-network guard
+  respected), and both round-tripped to GPX/GeoJSON with per-point elevation. **`--via`/`--via-loop`
+  is wired across all three frontends with green tests but NOT yet live-verified** — the live
+  Overpass/elevation round-trip over real trails is still pending (build sandbox has no network).
 - **All three frontends validated live**, including the MCP server over real stdio.
 - **Repo hygiene**: MIT license, CHANGELOG, green CI (Linux 3.10–3.14 + Windows), complete
   pyproject; v0.1.0 and v0.2.0 tagged + GitHub-released.
@@ -183,8 +196,12 @@ skip without the `mcp` extra).
   `clip_routes_to_bbox` drops the rest. The *shortest* route stays in-corridor, but a longer
   *alternative* that bows well outside the pad gets clipped — so "N shortest" can under-deliver a
   wide detour. `--max-distance` caps a route's length but does **not** widen the fetch; raise the
-  pad knobs for that. `--around` similarly fetches `radius + max-loop/2` (a 15 km band → ~17 km
-  Overpass box, a heavy query). Both are point-derived-bbox trade-offs, not bugs.
+  pad knobs for that. `--via` uses the same pad (off the widest leg) with a sharper failure mode:
+  clipping a return that bows outside the corridor can drop the endpoint junctions to degree-2,
+  collapsing the line to one segment and forcing an out-and-back where a real disjoint return sat
+  just outside — raise `HIKE_ROUTES_PAD_*` if a `--via-loop` retraces unexpectedly. `--around`
+  similarly fetches `radius + max-loop/2` (a 15 km band → ~17 km Overpass box, a heavy query). All
+  are point-derived-bbox trade-offs, not bugs.
 - **Round-trip vs point-to-point gain:** we report cumulative gain over the line as-is; `loss`
   gives the reverse direction's gain.
 - **Daily quota** assumes a UTC-midnight reset and can lose an update under a cross-*process*
