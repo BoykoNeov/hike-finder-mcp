@@ -30,8 +30,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Both measure elevation/distance/access through the *unchanged* two-pass engine (offline ==
   online holds), export to GPX/GeoJSON like any route, and are wired into all three frontends
   (CLI, MCP, web). The pure engine (mid-segment snapping + Yen on the junction multigraph) is
-  unit-tested on hand-built graphs and, via the Špindl fixture, offline end-to-end; the live
-  Overpass/elevation paths are user-verify-pending per project convention.
+  unit-tested on hand-built graphs and, via the Špindl fixture, offline end-to-end, and both
+  modes are verified live against real Overpass + the elevation API (Krkonoše).
 
 ## [0.2.0] - 2026-06-29
 

@@ -136,11 +136,11 @@ thing is validated live against real OSM. Highlights:
 - **Point-based route drawing** (`--around` / `--from`/`--to`) — the pure engine (mid-segment
   snapping + Yen on the junction multigraph) is unit-tested on hand-built graphs
   (`test_routing.py`) and offline end-to-end through the full search stack on the Špindl fixture
-  (`test_routing_live.py`, incl. a bbox-derivation spy so a lat/lon swap can't slip past).
-  **User-verify-pending:** the live Overpass + elevation paths for these two modes haven't been
-  run against the network yet (no UA/DEM configured in this session) — smoke-test one real
-  `--from/--to` and one `--around` before trusting them, per the same convention the MCP/web live
-  paths follow.
+  (`test_routing_live.py`, incl. a bbox-derivation spy so a lat/lon swap can't slip past). Both
+  modes are also **verified live** against real Overpass + the elevation API over Krkonoše:
+  `--around` composed real named loops near the point (gain≈loss), `--from/--to` returned the N
+  shortest-first distinct routes (snap distances reported, off-network guard respected), and both
+  round-tripped to GPX/GeoJSON with per-point elevation.
 - **All three frontends validated live**, including the MCP server over real stdio.
 - **Repo hygiene**: MIT license, CHANGELOG, green CI (Linux 3.10–3.14 + Windows), complete
   pyproject; v0.1.0 and v0.2.0 tagged + GitHub-released.
