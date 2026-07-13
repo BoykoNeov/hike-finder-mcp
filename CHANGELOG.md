@@ -43,8 +43,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   online holds), export to GPX/GeoJSON like any route, and are wired into all three frontends
   (CLI, MCP, web). The pure engine (mid-segment snapping + Yen on the junction multigraph, and
   the chained-Dijkstra `route_via` with its non-retracing loop closure) is unit-tested on
-  hand-built graphs and, via the Špindl fixture, offline end-to-end; the first two modes are
-  verified live against real Overpass + the elevation API (Krkonoše).
+  hand-built graphs and, via the Špindl fixture, offline end-to-end; all three modes are
+  verified live against real Overpass + the elevation API (Krkonoše) — including `--via-loop`
+  drawing a genuine ~13 km non-repeating triangle loop (9 % retraced, gain ≈ loss) and honestly
+  flagging a near-collinear set of points as a 100 %-retrace out-and-back.
 
 ## [0.2.0] - 2026-06-29
 

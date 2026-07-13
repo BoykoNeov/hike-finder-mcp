@@ -152,8 +152,10 @@ thing is validated live against real OSM. Highlights:
   over Krkonoše: `--around` composed real named loops near the point (gain≈loss), `--from/--to`
   returned the N shortest-first distinct routes (snap distances reported, off-network guard
   respected), and both round-tripped to GPX/GeoJSON with per-point elevation. **`--via`/`--via-loop`
-  is wired across all three frontends with green tests but NOT yet live-verified** — the live
-  Overpass/elevation round-trip over real trails is still pending (build sandbox has no network).
+  is now also verified live** over Krkonoše: an open `--via` linked 3 Špindlerův Mlýn points into a
+  5.4 km route over 8 real KČT trails; `--via-loop` on a wide triangle drew a genuine non-repeating
+  loop (12.75 km, 9 % retraced, gain ≈ loss); and `--via-loop` on near-collinear points correctly fell
+  back and loudly flagged a 100 %-retrace out-and-back.
 - **All three frontends validated live**, including the MCP server over real stdio.
 - **Repo hygiene**: MIT license, CHANGELOG, green CI (Linux 3.10–3.14 + Windows), complete
   pyproject; v0.1.0 and v0.2.0 tagged + GitHub-released.
