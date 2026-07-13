@@ -65,6 +65,16 @@
   HIKE_COMPOSE_MIN_COMPACTNESS  compose mode: drop a loop below this compactness
                         (4πA/P²) — a degenerate thin sliver, not a real loop (0.05).
                         0 disables.
+
+  HIKE_AROUND_RADIUS_M  --around mode: a circular route must pass within this many
+                        metres of the picked point, and starts there (default 1000)
+  HIKE_ROUTES_K         --from/--to mode: how many routes to return, shortest first (3)
+  HIKE_ROUTES_OVERLAP_FRAC  --from/--to: skip a route re-using more than this fraction of
+                        an already-kept route's length, for distinct alternatives (0.6)
+  HIKE_ROUTES_PAD_KM / HIKE_ROUTES_PAD_FRAC  --from/--to: fetched-bbox padding around the
+                        two points, max(pad_km, pad_frac x separation) (2.0 km / 0.4)
+  HIKE_ROUTES_MAX_FACTOR  --from/--to: cap a route at this factor x the straight-line
+                        separation when no --max-distance is given (3.0)
 """
 from __future__ import annotations
 
@@ -157,6 +167,33 @@ class Config:
     # above it (observed ≥ 0.18 on a dense real bbox), so this drops nothing on real data
     # while guarding the degenerate case. 0 disables the filter.
     compose_min_compactness: float = _f("HIKE_COMPOSE_MIN_COMPACTNESS", "0.05")
+
+    # Circular-routes-near-a-point mode (`--around`, search.compose_loops_around): the
+    # loop must pass within this radius of the picked point (the point becomes a compose
+    # anchor and the loop starts at the on-loop vertex nearest it). The fetched bbox is
+    # derived from the point as radius + max-loop/2, which provably can't clip a qualifying
+    # loop. Everything else reuses the compose length band and knobs above.
+    around_radius_m: float = _f("HIKE_AROUND_RADIUS_M", "1000")
+
+    # Routes-between-two-points mode (`--from`/`--to`, search.routes_between): Yen's
+    # k-shortest loopless paths on the trail graph, snapped to each picked point.
+    routes_k: int = _i("HIKE_ROUTES_K", "3")  # how many routes to return, shortest first
+    # A candidate route re-using more than this fraction of an already-kept route's length
+    # is skipped (so the N routes are genuinely distinct alternatives, not one line ± a
+    # segment) — the same near-duplicate rule compose uses. 0 keeps literal k-shortest.
+    routes_overlap_frac: float = _f("HIKE_ROUTES_OVERLAP_FRAC", "0.6")
+    # Fetched-bbox padding around the two points: max(pad_km, pad_frac x straight-line
+    # separation), so a route may bow out of the direct corridor without being clipped.
+    routes_pad_km: float = _f("HIKE_ROUTES_PAD_KM", "2.0")
+    routes_pad_frac: float = _f("HIKE_ROUTES_PAD_FRAC", "0.4")
+    # Length cap on a route when no --max-distance is given: this factor x the straight-line
+    # separation, so Yen doesn't wander arbitrarily far on a dense graph.
+    routes_max_factor: float = _f("HIKE_ROUTES_MAX_FACTOR", "3.0")
+    # If a picked point snaps farther than this to the nearest trail, treat it as off-network
+    # (a mis-click, or a genuinely trail-less spot) and return no routes rather than silently
+    # routing to a distant trail — the trail networks here span tens of km, so an unbounded
+    # snap can otherwise "connect" a point in empty space to something far away (km).
+    routes_max_snap_km: float = _f("HIKE_ROUTES_MAX_SNAP_KM", "2.0")
 
 
 def load() -> Config:

@@ -163,6 +163,59 @@ trailhead). The loop geometry — and its gain/loss — is unchanged; only the s
 > every composed loop, point it at a
 > [local DEM](#two-elevation-backends-both-supported) (`HIKE_ELEVATION_MODE=local`).
 
+### Point-based route drawing (pick point(s) on a map, get routes)
+
+Two modes that take **points instead of a bounding box** — you don't draw a box, you drop
+a pin (or two). Both derive their own search area from the point(s), so **omit `--bbox`**.
+
+**Circular routes near a point** (`--around LAT LON`) — "draw me a ~10 km loop starting
+*here*":
+
+```bash
+hike-finder --around 50.73 15.60 --min-distance 8 --max-distance 12 \
+            --user-agent you@example.com
+```
+
+It reuses the loop-composition engine, but anchored to your point: only loops that pass
+within `--around-radius` metres of it survive (default 1000; also `HIKE_AROUND_RADIUS_M`),
+and each loop is **started at the on-loop spot nearest your point**. Combine with
+`--car-access` / `--chairlift-access` to also require a trailhead near the loop.
+
+> **"within a set distance boundary" = total loop *length*, not a geofence.** The
+> `--min-distance`/`--max-distance` band (default 3–15 km) sets how *long* the loop is, not
+> how far it may stray — a 12 km loop anchored at your point can still roam a few km away.
+> The point is where the loop *passes through and starts*, controlled by `--around-radius`.
+
+**N shortest routes between two points** (`--from LAT LON --to LAT LON`) — "how do I walk
+from A to B, and what are my options":
+
+```bash
+hike-finder --from 50.72 15.58 --to 50.76 15.63 --routes 3 \
+            --user-agent you@example.com
+```
+
+Each point is snapped onto the nearest marked trail (splitting it at the projected spot, so
+a route reaches exactly where you pointed — not the next junction kilometres away), then the
+tool draws the **shortest route first, then the next-shortest**, and so on. `--routes N`
+(default 3; also `HIKE_ROUTES_K`) sets how many; `--max-distance` caps a route's length.
+
+> **`--routes N` returns N *distinct* routes, not the literal 2nd/3rd shortest.** A candidate
+> that re-uses more than `HIKE_ROUTES_OVERLAP_FRAC` (default 0.6) of an already-kept route's
+> length is skipped, so you get genuinely different alternatives rather than the same line
+> ± one segment. Set `HIKE_ROUTES_OVERLAP_FRAC=0` for literal k-shortest.
+>
+> **Known limitations.** A point more than ~2 km from any trail (`HIKE_ROUTES_MAX_SNAP_KM`)
+> is treated as off-network and yields no routes, rather than silently routing to a distant
+> trail. And the fetched area is a corridor padded `max(2 km, 0.4×separation)` around the two
+> points (`HIKE_ROUTES_PAD_KM`/`HIKE_ROUTES_PAD_FRAC`): a longer *alternative* that bows well
+> outside that corridor can be clipped, so raise those knobs if a detour you expect is
+> missing.
+
+Both modes are **live-map only** and exposed on every frontend: the web UI has a **Mode**
+selector (pick "Circular routes near a point" or "Routes between two points", then click the
+map to drop your pin(s)); MCP has the `circular_routes` and `routes_between` tools. Results
+carry full computed stats and export to GPX/GeoJSON like any other route.
+
 ### Export — GPX / GeoJSON (load into your phone or GPS)
 
 Once a search (live, offline `--area`, or `--compose-loops`) gives you routes you like,

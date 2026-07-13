@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import NamedTuple
 
 from .access import _bbox_pad
-from .geometry import Coord, haversine_m, resample_by_distance
+from .geometry import Coord, haversine_m, polyline_length_m, resample_by_distance
 
 # Same coincidence tolerance as geometry._vertex_graph: merges vertices that are
 # the same OSM node despite float noise, well below trail vertex spacing so it
@@ -613,3 +613,302 @@ def find_loops(
         capped=state["capped"],
         slivered=slivered,
     )
+
+
+# ------------------------------------------------------------- point-to-point routing
+#
+# ``find_loops`` searches for *cycles*; the two-point feature ("draw me the N shortest
+# routes between A and B") is the *path* problem on the same contracted graph. It reuses
+# ``build_trail_graph`` and ``_assemble`` unchanged: the only new machinery is (1) snapping
+# each picked point onto the network by SPLITTING the nearest segment at the projected
+# point — so a route genuinely starts at where you pointed, not at a junction kilometres
+# away — and (2) Yen's k-shortest-loopless-paths over the junction multigraph, tracked by
+# *segment id* (the graph is a multigraph: two trails can join the same junction pair, and
+# removing one must not remove its parallel twin).
+
+
+# A position on a polyline: ``(edge_index, frac)`` = a fraction ``frac`` along the edge from
+# vertex ``edge_index`` to ``edge_index + 1``. A vertex ``k`` is ``(k, 0.0)`` (or the
+# previous edge's ``(k-1, 1.0)``); the two endpoints are ``(0, 0.0)`` and ``(len-2, 1.0)``.
+_Pos = tuple[int, float]
+
+
+def _interp(line: list[Coord], pos: _Pos) -> Coord:
+    """The (lat, lon) at position ``pos`` on ``line`` (linear in lat/lon — trail scale)."""
+    e, f = pos
+    a, b = line[e], line[e + 1]
+    return (a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1]))
+
+
+def _project_point(line: list[Coord], p: Coord) -> tuple[float, _Pos, Coord]:
+    """Nearest point on polyline ``line`` to ``p``: ``(dist_m, position, coord)``.
+
+    Projects onto each edge in a local equirectangular frame about ``p`` (metres, exact
+    enough at trail scale), clamped to the edge, and keeps the closest — deterministic
+    tie-break by ``(dist, edge, frac)`` so a point equidistant to two edges snaps to the
+    lower-indexed one every run.
+    """
+    lat0 = math.radians(p[0])
+    kx = 111_320.0 * math.cos(lat0)
+    ky = 111_320.0
+    px, py = p[1] * kx, p[0] * ky
+    best: tuple[float, _Pos] | None = None
+    for i in range(len(line) - 1):
+        ax, ay = line[i][1] * kx, line[i][0] * ky
+        bx, by = line[i + 1][1] * kx, line[i + 1][0] * ky
+        dx, dy = bx - ax, by - ay
+        L2 = dx * dx + dy * dy
+        t = 0.0 if L2 == 0.0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
+        cx, cy = ax + t * dx, ay + t * dy
+        d = math.hypot(px - cx, py - cy)
+        cand = (d, (i, t))
+        if best is None or cand < best:
+            best = cand
+    assert best is not None  # callers guarantee len(line) >= 2
+    d, pos = best
+    return d, pos, _interp(line, pos)
+
+
+def _subpolyline(line: list[Coord], p1: _Pos, p2: _Pos) -> list[Coord]:
+    """The ordered coords of ``line`` between positions ``p1`` and ``p2`` (``p1`` before
+    ``p2``), with the interpolated boundary points at each end. Consecutive duplicates
+    (a boundary landing exactly on a vertex) are collapsed."""
+    (e1, _), (e2, _) = p1, p2
+    pts = [_interp(line, p1)]
+    pts.extend(line[e1 + 1 : e2 + 1])  # interior vertices strictly between p1 and p2
+    pts.append(_interp(line, p2))
+    out = [pts[0]]
+    for q in pts[1:]:
+        if q != out[-1]:
+            out.append(q)
+    return out
+
+
+def snap_points(
+    graph: TrailGraph, points: list[Coord], *, snap_weld_m: float = 1.0
+) -> tuple[TrailGraph, list[tuple[int, float]]]:
+    """Snap each point onto the trail network, returning an augmented graph and, per point,
+    ``(node_id, snap_distance_m)``.
+
+    Each point is projected to the nearest point on the nearest segment. When that lands on
+    an existing junction (within ``snap_weld_m``) the junction is used directly; otherwise
+    the segment is **split** at the projection into a fresh temporary node, so a route can
+    start/end exactly there — the alternative, snapping to the nearest junction, silently
+    moves a mid-trail trailhead to the next fork, which can be kilometres off. Multiple
+    points landing on the same segment split it at every position at once (so a pair of
+    points on one long segment yields the direct sub-segment between them). The returned
+    graph is a superset: original segment ids are preserved except for split segments, which
+    are replaced by their pieces — so Yen output assembled through it stays valid.
+    """
+    if not graph.segments:
+        return graph, [(-1, float("inf")) for _ in points]
+
+    # Project every point; group the ones that need a mid-segment split by target segment.
+    snaps: list[dict] = []
+    for p in points:
+        best_sid, best = -1, None
+        for sid, s in enumerate(graph.segments):
+            if len(s.coords) < 2:
+                continue
+            d, pos, coord = _project_point(s.coords, p)
+            cand = (d, sid, pos)
+            if best is None or cand < (best[0], best_sid, best[1]):
+                best, best_sid = (d, pos, coord), sid
+        snaps.append({"sid": best_sid, "dist": best[0], "pos": best[1], "coord": best[2]})
+
+    coords = list(graph.coords)
+
+    def add_node(coord: Coord) -> int:
+        coords.append(coord)
+        return len(coords) - 1
+
+    # Resolve each point to a node id, splitting where needed. First pass: decide, per
+    # point, whether it snaps to an existing endpoint or needs a temp node on a segment.
+    splits: dict[int, list[tuple[_Pos, int]]] = {}  # sid -> [(pos, temp_node_id)]
+    result: list[tuple[int, float]] = []
+    for snap in snaps:
+        sid, pos, coord, dist = snap["sid"], snap["pos"], snap["coord"], snap["dist"]
+        s = graph.segments[sid]
+        # Snap to an endpoint when the projection is essentially on it (avoids a needless
+        # zero-length split and keeps degenerate cases as plain junction routing).
+        if haversine_m(coord, coords[s.a]) <= snap_weld_m:
+            result.append((s.a, dist))
+            continue
+        if haversine_m(coord, coords[s.b]) <= snap_weld_m:
+            result.append((s.b, dist))
+            continue
+        # Reuse an existing split on this segment at (near) the same position.
+        node = None
+        for (ppos, pnode) in splits.get(sid, ()):
+            if haversine_m(coord, coords[pnode]) <= snap_weld_m:
+                node = pnode
+                break
+        if node is None:
+            node = add_node(coord)
+            splits.setdefault(sid, []).append((pos, node))
+        result.append((node, dist))
+
+    if not splits:
+        return graph, result
+
+    # Rebuild the segment list: keep every un-split segment; replace each split segment
+    # with its ordered pieces between consecutive cut positions (endpoints included).
+    segments: list[Segment] = []
+    for sid, s in enumerate(graph.segments):
+        cuts = splits.get(sid)
+        if not cuts:
+            segments.append(s)
+            continue
+        last = len(s.coords) - 1
+        marks: list[tuple[_Pos, int]] = [((0, 0.0), s.a)]
+        marks.extend(sorted(cuts, key=lambda pn: pn[0]))
+        marks.append(((last - 1, 1.0), s.b))
+        for (pa, na), (pb, nb) in zip(marks, marks[1:]):
+            piece = _subpolyline(s.coords, pa, pb)
+            segments.append(
+                Segment(a=na, b=nb, coords=piece, length_m=polyline_length_m(piece), refs=s.refs)
+            )
+
+    adj: dict[int, list[int]] = {}
+    for idx, s in enumerate(segments):
+        adj.setdefault(s.a, []).append(idx)
+        if s.b != s.a:
+            adj.setdefault(s.b, []).append(idx)
+    return TrailGraph(coords=coords, segments=segments, adj=adj), result
+
+
+def _dijkstra(
+    graph: TrailGraph,
+    src: int,
+    dst: int,
+    removed_nodes: frozenset[int] = frozenset(),
+    removed_edges: frozenset[int] = frozenset(),
+) -> tuple[list[int], list[int], float] | None:
+    """Shortest path ``src -> dst`` by segment length, or ``None`` if disconnected.
+
+    Returns ``(segment_ids, node_ids, length_m)`` — the ordered segment ids let the caller
+    assemble geometry through the *multigraph* (a node pair alone can't say which of two
+    parallel trails was taken). ``removed_nodes`` / ``removed_edges`` (edges are segment ids)
+    are Yen's spur exclusions. Deterministic: the heap breaks ties by node id, neighbours are
+    scanned in sorted segment-id order, and relaxation keeps the first (strict ``<``) path, so
+    equal-length alternatives resolve the same way every run.
+    """
+    import heapq
+
+    dist = {src: 0.0}
+    prev: dict[int, tuple[int, int]] = {}
+    heap: list[tuple[float, int]] = [(0.0, src)]
+    done: set[int] = set()
+    while heap:
+        d, u = heapq.heappop(heap)
+        if u in done:
+            continue
+        done.add(u)
+        if u == dst:
+            break
+        for sid in sorted(graph.adj.get(u, ())):
+            if sid in removed_edges:
+                continue
+            s = graph.segments[sid]
+            v = s.b if s.a == u else s.a
+            if v in removed_nodes or v in done:
+                continue
+            nd = d + s.length_m
+            if nd < dist.get(v, math.inf):
+                dist[v] = nd
+                prev[v] = (u, sid)
+                heapq.heappush(heap, (nd, v))
+    if dst not in dist:
+        return None
+    segs: list[int] = []
+    nodes = [dst]
+    cur = dst
+    while cur != src:
+        pu, sid = prev[cur]
+        segs.append(sid)
+        nodes.append(pu)
+        cur = pu
+    segs.reverse()
+    nodes.reverse()
+    return segs, nodes, dist[dst]
+
+
+def k_shortest_paths(
+    graph: TrailGraph,
+    src: int,
+    dst: int,
+    *,
+    k: int,
+    overlap_frac: float = 0.6,
+    max_m: float = math.inf,
+    max_candidates: int = 200,
+) -> list[ComposedLoop]:
+    """The ``k`` shortest *distinct* routes ``src -> dst``, shortest first (Yen's algorithm).
+
+    Yen enumerates loopless paths in non-decreasing length. Literal k-shortest paths tend to
+    be the same line ± one segment, which isn't "several routes between two points" — so a
+    candidate that re-uses more than ``overlap_frac`` of its length from an already-kept route
+    is skipped (the same near-duplicate rule ``find_loops`` uses), and Yen is pulled until
+    ``k`` *distinct* routes are kept (or it runs dry / hits ``max_candidates``). ``max_m`` caps
+    a route's length. Each route is assembled with :func:`_assemble` (which needs only an
+    ordered segment list from a start node, so it serves open paths as well as loops).
+    """
+    if src == dst or k <= 0:
+        return []
+    first = _dijkstra(graph, src, dst)
+    if first is None or first[2] > max_m:
+        return []
+
+    seg_len = {i: s.length_m for i, s in enumerate(graph.segments)}
+
+    def path_len(segs: list[int]) -> float:
+        return sum(seg_len[i] for i in segs)
+
+    A: list[tuple[list[int], list[int]]] = [(first[0], first[1])]  # accepted, shortest-first
+    A_keys = {tuple(first[0])}
+    B: list[tuple[float, list[int], list[int]]] = []  # candidate (length, segs, nodes)
+    B_keys: set[tuple[int, ...]] = set()
+    kept: list[ComposedLoop] = [_assemble(graph, src, first[0])]
+
+    def overlaps(segs: list[int], length: float) -> bool:
+        s = set(segs)
+        for K in kept:
+            shared = sum(seg_len.get(i, 0.0) for i in (s & K.seg_ids))
+            if length > 0 and shared / length > overlap_frac:
+                return True
+        return False
+
+    while len(kept) < k and len(A) < max_candidates:
+        prev_segs, prev_nodes = A[-1]
+        for i in range(len(prev_nodes) - 1):
+            root_nodes = prev_nodes[: i + 1]
+            root_segs = prev_segs[:i]
+            removed_edges = set()
+            for p_segs, p_nodes in A:
+                if len(p_segs) > i and p_nodes[: i + 1] == root_nodes:
+                    removed_edges.add(p_segs[i])  # ban the edge each known path took here
+            removed_nodes = frozenset(root_nodes[:-1])  # root minus the spur node
+            spur = _dijkstra(graph, root_nodes[-1], dst, removed_nodes, frozenset(removed_edges))
+            if spur is None:
+                continue
+            total_segs = root_segs + spur[0]
+            key = tuple(total_segs)
+            if key in A_keys or key in B_keys:
+                continue
+            total_len = path_len(total_segs)
+            if total_len > max_m:
+                continue
+            total_nodes = root_nodes + spur[1][1:]
+            B.append((total_len, total_segs, total_nodes))
+            B_keys.add(key)
+        if not B:
+            break
+        # Move the best candidate to the accepted list; keep it if it's a distinct route.
+        B.sort(key=lambda c: (round(c[0], 3), tuple(c[1])))
+        _, best_segs, best_nodes = B.pop(0)
+        B_keys.discard(tuple(best_segs))
+        A.append((best_segs, best_nodes))
+        A_keys.add(tuple(best_segs))
+        if not overlaps(best_segs, path_len(best_segs)):
+            kept.append(_assemble(graph, src, best_segs))
+    return kept[:k]

@@ -22,7 +22,14 @@ from .elevation import api_quota_snapshot
 from .export import hikes_to_geojson, hikes_to_gpx
 from .filters import Criteria
 from .format import format_hike, hike_to_dict
-from .search import compose_loops, download_area, search_hikes, search_snapshot
+from .search import (
+    compose_loops,
+    compose_loops_around,
+    download_area,
+    routes_between,
+    search_hikes,
+    search_snapshot,
+)
 from .snapshot import load_snapshot, save_snapshot
 
 
@@ -86,6 +93,50 @@ def build_parser() -> argparse.ArgumentParser:
         "'composed of ...'). Loops are kept inside the --bbox area. Combine with "
         "--car-access / --chairlift-access to get only loops reachable from a parking "
         "lot / lift, each started at that trailhead ('a loop from where I park').",
+    )
+
+    r = p.add_argument_group(
+        "point-based route drawing (each derives its own area — omit --bbox)"
+    )
+    r.add_argument(
+        "--around",
+        nargs=2,
+        type=float,
+        metavar=("LAT", "LON"),
+        help="Draw circular day-loops that pass near this point and start there. Loop "
+        "length comes from --min-distance/--max-distance (default 3-15 km); how near a "
+        "loop must pass is --around-radius. Combine with --car-access/--chairlift-access "
+        "to also require a trailhead. Omit --bbox (the area is derived from the point).",
+    )
+    r.add_argument(
+        "--around-radius",
+        type=float,
+        metavar="M",
+        help="How near a loop must pass to the --around point, in metres "
+        "(default HIKE_AROUND_RADIUS_M = 1000).",
+    )
+    r.add_argument(
+        "--from",
+        dest="from_pt",
+        nargs=2,
+        type=float,
+        metavar=("LAT", "LON"),
+        help="Start point: with --to, draw the N shortest routes from here to there.",
+    )
+    r.add_argument(
+        "--to",
+        dest="to_pt",
+        nargs=2,
+        type=float,
+        metavar=("LAT", "LON"),
+        help="Finish point for --from. Each point is snapped onto the nearest trail.",
+    )
+    r.add_argument(
+        "--routes",
+        type=int,
+        metavar="N",
+        help="How many distinct routes to draw between --from and --to, shortest first "
+        "(default HIKE_ROUTES_K = 3). --max-distance caps a route's length.",
     )
 
     s = p.add_argument_group("saved areas (fetch once, then search offline)")
@@ -259,6 +310,87 @@ def run(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+
+    # Point-based route drawing: --around (circular routes near a point) and --from/--to
+    # (N shortest routes between two points). Both derive their own area, so they don't take
+    # --bbox and can't combine with --compose-loops / --area / --download.
+    around = getattr(args, "around", None)
+    from_pt = getattr(args, "from_pt", None)
+    to_pt = getattr(args, "to_pt", None)
+    if around is not None or from_pt is not None or to_pt is not None:
+        if (from_pt is None) != (to_pt is None):
+            print("error: --from and --to must be given together.", file=sys.stderr)
+            return 2
+        if around is not None and from_pt is not None:
+            print(
+                "error: --around and --from/--to are different modes — use one, not both.",
+                file=sys.stderr,
+            )
+            return 2
+        if args.area or args.download:
+            print(
+                "error: --around and --from/--to are live searches; they can't be combined "
+                "with --area or --download.",
+                file=sys.stderr,
+            )
+            return 2
+        if getattr(args, "compose_loops", False):
+            print(
+                "error: --around and --from/--to already synthesise routes; drop "
+                "--compose-loops.",
+                file=sys.stderr,
+            )
+            return 2
+        if args.bbox:
+            print(
+                "error: --around and --from/--to derive their own area from the point(s); "
+                "omit --bbox.",
+                file=sys.stderr,
+            )
+            return 2
+        used_before, _ = api_quota_snapshot(cfg)
+        common = dict(
+            user_agent=args.user_agent,
+            overpass_url=args.overpass_url,
+            elevation_mode=args.elevation_mode,
+            dem_dir=args.dem_dir,
+        )
+        try:
+            if around is not None:
+                hikes = compose_loops_around(
+                    (around[0], around[1]),
+                    build_criteria(args),
+                    cfg,
+                    radius_m=args.around_radius,
+                    near_miss=near_miss,
+                    **common,
+                )
+                empty_msg = (
+                    "No circular routes pass within the radius of your point — widen "
+                    "--around-radius, the --min-distance/--max-distance band, or drop "
+                    "--car-access/--chairlift-access."
+                )
+            else:
+                hikes = routes_between(
+                    (from_pt[0], from_pt[1]),
+                    (to_pt[0], to_pt[1]),
+                    build_criteria(args),
+                    cfg,
+                    k=args.routes,
+                    **common,
+                )
+                empty_msg = (
+                    "No routes could be drawn between your two points — they may sit on "
+                    "disconnected trail networks, or every route exceeds the length cap "
+                    "(--max-distance)."
+                )
+        except Exception as e:  # network/HTTP/elevation errors surface here
+            _fetch_hint(e)
+            return 1
+        _quota_line(cfg, used_before)
+        _emit(hikes, args.json, empty_msg)
+        _write_exports(hikes, args)
+        return 0
 
     # Offline: search a saved snapshot. No network, no API calls, no quota line.
     if args.area:

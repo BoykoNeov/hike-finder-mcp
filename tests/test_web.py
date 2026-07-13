@@ -153,3 +153,63 @@ def test_hikes_compose_loops_routes_to_compose_engine(server, monkeypatch):
     h = hikes[0]
     assert h["composed"] is True and h["composed_of"] == ["0402", "1801"]
     assert h["osm_id"] is None
+
+
+def test_hikes_around_point_routes_to_compose_around(server, monkeypatch):
+    # around_lat/around_lon route to compose_loops_around with the point + radius, and NOT
+    # to search_hikes / compose_loops (which are for the bbox modes).
+    from hike_finder.filters import Hike
+
+    captured = {}
+
+    def _fail(*a, **k):
+        raise AssertionError("bbox search must not run in the around mode")
+
+    def _stub(point, criteria, *, radius_m=None, user_agent=None, near_miss=False, **k):
+        captured["point"] = point
+        captured["radius_m"] = radius_m
+        return [
+            Hike(osm_id=-1, name="Composed loop", distance_km=8.0, circular=True,
+                 car_access=False, chairlift_access=False, start=(50.73, 15.60),
+                 gain_m=250, loss_m=250, composed=True, composed_of=("0402",)),
+        ]
+
+    monkeypatch.setattr(web, "search_hikes", _fail)
+    monkeypatch.setattr(web, "compose_loops", _fail)
+    monkeypatch.setattr(web, "compose_loops_around", _stub)
+    status, hikes = _get(
+        server + "/api/hikes?around_lat=50.73&around_lon=15.60&around_radius_m=750"
+    )
+    assert status == 200 and len(hikes) == 1
+    assert captured["point"] == (50.73, 15.60) and captured["radius_m"] == 750
+    assert hikes[0]["composed"] is True and hikes[0]["circular"] is True
+
+
+def test_hikes_between_two_points_routes_to_routes_between(server, monkeypatch):
+    # from_/to_ route to routes_between with the two points + k, ordered shortest-first.
+    from hike_finder.filters import Hike
+
+    captured = {}
+
+    def _fail(*a, **k):
+        raise AssertionError("bbox search must not run in the between mode")
+
+    def _stub(start, finish, criteria, *, k=None, user_agent=None, **kw):
+        captured["start"] = start
+        captured["finish"] = finish
+        captured["k"] = k
+        return [
+            Hike(osm_id=-1, name="Route", distance_km=3.5, circular=False,
+                 car_access=False, chairlift_access=False, start=start,
+                 gain_m=100, loss_m=80, composed=True, composed_of=("0402",)),
+        ]
+
+    monkeypatch.setattr(web, "search_hikes", _fail)
+    monkeypatch.setattr(web, "routes_between", _stub)
+    status, hikes = _get(
+        server + "/api/hikes?from_lat=50.72&from_lon=15.58&to_lat=50.74&to_lon=15.62&routes_k=4"
+    )
+    assert status == 200 and len(hikes) == 1
+    assert captured["start"] == (50.72, 15.58) and captured["finish"] == (50.74, 15.62)
+    assert captured["k"] == 4
+    assert hikes[0]["composed"] is True and hikes[0]["circular"] is False

@@ -588,6 +588,44 @@ way, for fast, unlimited elevation on *every* composed loop, set up a
 
 ---
 
+## Point-based routes — pick a spot instead of drawing a box
+
+Two modes take **points, not a bounding box** — you don't frame an area, you drop a pin (or
+two). Leave `--bbox` off; the tool works out its own area from the point(s).
+
+**"Give me a ~10 km loop starting near here."** Point at a spot and get circular day-hikes
+through it:
+
+```bash
+hike-finder --around 50.73 15.60 --min-distance 8 --max-distance 12 \
+            --user-agent you@example.com
+```
+
+Every loop returned passes within `--around-radius` metres of your point (default 1000) and
+**starts there**. The `--min-distance`/`--max-distance` numbers set how *long* the loop is —
+not how far it may wander, so an 11 km loop can still swing a couple of km out and back. Add
+`--car-access` to only get loops with parking near them.
+
+**"How do I walk from A to B — and what are my options?"** Give a start and a finish; the
+tool draws the shortest way first, then the next-shortest, and so on:
+
+```bash
+hike-finder --from 50.72 15.58 --to 50.76 15.63 --routes 3 \
+            --user-agent you@example.com
+```
+
+Each point is placed onto the nearest marked trail (so the route reaches exactly where you
+pointed). `--routes` sets how many alternatives (default 3); they're **genuinely different**
+routes, not the same line with a tiny detour, and `--max-distance` caps how long a route may
+be. If you point somewhere with no trail within ~2 km, you'll get nothing back rather than a
+route to a trail far away — move the pin closer to a marked path.
+
+In the **Web UI** these are the **Mode** dropdown ("Circular routes near a point" / "Routes
+between two points") — pick one, then click the map to drop your pin(s) and press Search. Over
+**MCP** they're the `circular_routes` and `routes_between` tools. Both are live-map only.
+
+---
+
 ## Taking a route with you — GPX / GeoJSON export
 
 A summary on screen is the start; the last mile is a file your **phone or GPS** can follow

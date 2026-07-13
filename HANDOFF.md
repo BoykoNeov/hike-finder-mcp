@@ -86,7 +86,7 @@ a 200 km "hike" and test access at endpoints in another region.
 
 ## Search modes
 
-Four entry points on the shared engine, all rendering identically:
+Entry points on the shared engine, all rendering identically:
 
 - `search.search_hikes` — the live search (Overpass + elevation).
 - `search.download_area` / `search.search_snapshot` — **offline snapshots**: `download_area`
@@ -97,6 +97,18 @@ Four entry points on the shared engine, all rendering identically:
 - `search.compose_loops` — **loop composition**: builds one trail-network graph from every
   relation's member ways, finds cycles of a target length, and wraps each as a synthetic
   `roundtrip=yes` route through the *unchanged* `find_hikes`. Not folded into `circular=true`.
+- `search.compose_loops_around` — **circular routes near a point** (`--around`, MCP
+  `circular_routes`): the same loop engine, but with the picked point as a compose *anchor*
+  (only loops within `around_radius_m` survive, started there) and a **point-derived bbox**
+  (`radius + max-loop/2`, provably non-clipping). Shares `_compose_from_graph` with
+  `compose_loops`; the length band is a *length* constraint, not a spatial one.
+- `search.routes_between` — **N shortest routes between two points** (`--from`/`--to`, MCP
+  `routes_between`): Yen's k-shortest-loopless-paths (`compose.k_shortest_paths`) on the
+  junction **multigraph** (edges removed by *segment id*, so parallel trails survive), with each
+  point snapped by **splitting the nearest segment** at the projected spot (`compose.snap_points`).
+  Assembled routes reuse `_assemble` (an open path is just an ordered segment list) and are
+  measured through the shared `_measure_composed` (the same per-segment shared-elevation block
+  `compose_loops` uses). An overlap filter yields N *distinct* routes; a >2 km snap is rejected.
 
 **Near-misses** (`find_hikes(near_miss="auto")`, the frontend default) surface close-but-not-
 matching routes only when there are 0 strict matches, annotated with the literal gap. Shape is
@@ -121,6 +133,14 @@ thing is validated live against real OSM. Highlights:
   shared elevation sampling, sliver filter), **reverse-geocode naming** of unnamed routes, and
   **GPX/GeoJSON export** (per-point elevation on a single clean track) — all live across all three
   frontends. See `CHANGELOG.md` for the per-release breakdown.
+- **Point-based route drawing** (`--around` / `--from`/`--to`) — the pure engine (mid-segment
+  snapping + Yen on the junction multigraph) is unit-tested on hand-built graphs
+  (`test_routing.py`) and offline end-to-end through the full search stack on the Špindl fixture
+  (`test_routing_live.py`, incl. a bbox-derivation spy so a lat/lon swap can't slip past).
+  **User-verify-pending:** the live Overpass + elevation paths for these two modes haven't been
+  run against the network yet (no UA/DEM configured in this session) — smoke-test one real
+  `--from/--to` and one `--around` before trusting them, per the same convention the MCP/web live
+  paths follow.
 - **All three frontends validated live**, including the MCP server over real stdio.
 - **Repo hygiene**: MIT license, CHANGELOG, green CI (Linux 3.10–3.14 + Windows), complete
   pyproject; v0.1.0 and v0.2.0 tagged + GitHub-released.
@@ -158,6 +178,13 @@ skip without the `mcp` extra).
   can't lie on a cycle).
 - **Loops are genuinely sparse in raw data** (~1 of 12 around Špindl): most KČT relations are
   linear A→B segments. That's what loop composition addresses.
+- **`routes_between` fetches a corridor, not the whole plane.** The area is the two points'
+  bounding box padded `max(HIKE_ROUTES_PAD_KM, HIKE_ROUTES_PAD_FRAC×separation)` (2 km / 0.4), then
+  `clip_routes_to_bbox` drops the rest. The *shortest* route stays in-corridor, but a longer
+  *alternative* that bows well outside the pad gets clipped — so "N shortest" can under-deliver a
+  wide detour. `--max-distance` caps a route's length but does **not** widen the fetch; raise the
+  pad knobs for that. `--around` similarly fetches `radius + max-loop/2` (a 15 km band → ~17 km
+  Overpass box, a heavy query). Both are point-derived-bbox trade-offs, not bugs.
 - **Round-trip vs point-to-point gain:** we report cumulative gain over the line as-is; `loss`
   gives the reverse direction's gain.
 - **Daily quota** assumes a UTC-midnight reset and can lose an update under a cross-*process*

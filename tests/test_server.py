@@ -72,7 +72,7 @@ def test_list_tools_advertises_find_hikes(monkeypatch):
 
     result = asyncio.run(_impl())
     tools = {t.name: t for t in result.tools}
-    assert set(tools) == {"find_hikes", "download_area"}
+    assert set(tools) == {"find_hikes", "circular_routes", "routes_between", "download_area"}
 
     schema = tools["find_hikes"].inputSchema
     assert schema["type"] == "object"
@@ -223,6 +223,78 @@ def test_call_tool_compose_loops_routes_to_compose_engine(monkeypatch):
     text = result.content[0].text
     assert "composed of 0402 + 1801" in text
     assert "OSM relation" not in text
+
+
+def test_circular_routes_tool_maps_point_and_renders(monkeypatch):
+    # The circular_routes tool forwards the point + radius to compose_loops_around and
+    # renders its composed loops through the shared formatter.
+    captured = {}
+
+    def _stub(point, criteria, cfg=None, *, radius_m=None, near_miss=False, **kwargs):
+        captured["point"] = point
+        captured["radius_m"] = radius_m
+        captured["criteria"] = criteria
+        return [
+            Hike(osm_id=-1, name="Composed loop", distance_km=9.0, circular=True,
+                 car_access=True, chairlift_access=False, start=(50.73, 15.60),
+                 gain_m=300, loss_m=300, composed=True, composed_of=("0402", "1801")),
+        ]
+
+    monkeypatch.setattr(server, "compose_loops_around", _stub)
+
+    async def _impl():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.call_tool(
+                "circular_routes",
+                {"lat": 50.73, "lon": 15.60, "radius_m": 500,
+                 "min_distance_km": 5, "max_distance_km": 12, "car_access": True},
+            )
+
+    result = asyncio.run(_impl())
+    assert not result.isError
+    assert captured["point"] == (50.73, 15.60)
+    assert captured["radius_m"] == 500
+    assert captured["criteria"].car_access is True
+    assert captured["criteria"].max_distance_km == 12
+    assert "composed of 0402 + 1801" in result.content[0].text
+
+
+def test_routes_between_tool_maps_two_points_and_k(monkeypatch):
+    # The routes_between tool forwards start/finish + k to search.routes_between and renders
+    # the shortest-first routes.
+    captured = {}
+
+    def _stub(start, finish, criteria, cfg=None, *, k=None, **kwargs):
+        captured["start"] = start
+        captured["finish"] = finish
+        captured["k"] = k
+        return [
+            Hike(osm_id=-1, name="Route", distance_km=4.0, circular=False,
+                 car_access=False, chairlift_access=False, start=start,
+                 gain_m=120, loss_m=90, composed=True, composed_of=("0402",)),
+            Hike(osm_id=-2, name="Route", distance_km=6.5, circular=False,
+                 car_access=False, chairlift_access=False, start=start,
+                 gain_m=200, loss_m=150, composed=True, composed_of=("1801",)),
+        ]
+
+    monkeypatch.setattr(server, "routes_between", _stub)
+
+    async def _impl():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.call_tool(
+                "routes_between",
+                {"start_lat": 50.72, "start_lon": 15.58,
+                 "finish_lat": 50.74, "finish_lon": 15.62, "routes": 2},
+            )
+
+    result = asyncio.run(_impl())
+    assert not result.isError
+    assert captured["start"] == (50.72, 15.58)
+    assert captured["finish"] == (50.74, 15.62)
+    assert captured["k"] == 2
+    text = result.content[0].text
+    assert "4.0 km" in text and "6.5 km" in text        # both routes rendered
+    assert "loop" not in text                           # point-to-point, not loops
 
 
 def test_call_tool_format_gpx_returns_a_gpx_document(monkeypatch):
@@ -385,4 +457,6 @@ def test_real_stdio_transport_lists_the_tool():
                 return await session.list_tools()
 
     result = asyncio.run(asyncio.wait_for(_impl(), timeout=60))
-    assert {t.name for t in result.tools} == {"find_hikes", "download_area"}
+    assert {t.name for t in result.tools} == {
+        "find_hikes", "circular_routes", "routes_between", "download_area"
+    }

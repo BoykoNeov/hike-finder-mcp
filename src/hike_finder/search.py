@@ -18,6 +18,8 @@ Three entry points, all returning the same filtered ``Hike`` list:
 from __future__ import annotations
 
 import logging
+import math
+from dataclasses import replace
 
 from . import cache as _cache
 from . import config as _config
@@ -26,12 +28,15 @@ from .compose import (
     build_trail_graph,
     clip_routes_to_bbox,
     find_loops,
+    k_shortest_paths,
     resample_segments,
+    snap_points,
 )
 from .config import Config
 from .elevation import ElevationError, get_provider
 from .filters import Criteria, Hike, find_hikes
 from .geocode import DEFAULT_NOMINATIM_URL, NominatimGeocoder
+from .geometry import Coord, haversine_m
 from .naming import enrich_names
 from .overpass import AreaData, DEFAULT_OVERPASS_URL, build_query, fetch_area
 from .snapshot import (
@@ -169,6 +174,118 @@ def search_hikes(
     return hikes
 
 
+def _measure_composed(
+    graph,
+    routes: list,
+    area: AreaData,
+    criteria: Criteria,
+    cfg: Config,
+    provider,
+    bbox: Bbox,
+    *,
+    near_miss: bool | str,
+    roundtrip: str,
+    name: str,
+) -> list[Hike]:
+    """Measure a list of synthesised routes (composed loops OR point-to-point paths).
+
+    Shared by ``compose_loops`` / ``compose_loops_around`` (closed loops, ``roundtrip="yes"``)
+    and ``routes_between`` (open paths, ``roundtrip="no"``). Each ``routes`` item is a
+    :class:`compose.ComposedLoop`-shaped object (``coords``/``seg_ids``/``ordered_segs``/
+    ``start_node``/``refs``/``anchor``) — ``_assemble`` produces this for both loops and paths.
+
+    Elevation is looked up ONCE per distinct trail segment and sliced back per route, so a
+    segment shared by several routes (loops overlap; Yen paths share a trunk) is sampled a
+    single time — the same per-segment economy the loop path always used (see the long note
+    below, preserved from ``compose_loops``). Each route is then wrapped as a synthetic route
+    and run through the *unchanged* ``find_hikes``, so its elevation/distance/access are
+    computed exactly as for a real relation, and offline == online holds by construction.
+    """
+    # Segment-level shared elevation sampling. Composed routes overlap — several share the
+    # same marked-trail segments — so resampling and looking up each WHOLE route (the obvious
+    # `find_hikes` reuse) pays for a shared climb once per route that uses it. Instead,
+    # resample each DISTINCT used segment once on its own canonical grid and look the WHOLE
+    # distinct-point set up in ONE provider call, then slice the results back per segment.
+    # Routes then assemble their elevation series from those shared per-segment results
+    # (`assemble_loop_series`). This dedups within the run AND makes the points cache-hot
+    # across runs, because a segment's canonical samples are identical regardless of which
+    # route enters it where. One combined lookup (not one per segment) is deliberate: the API
+    # batches 100 points/request, so packing all distinct points into a single call costs
+    # ~ceil(total/100) requests. It is all-or-nothing on failure — a mid-run quota exhaustion
+    # fails the whole batch and every route degrades to gain n/a (graceful, never a ban).
+    used_segs = sorted(set().union(*(r.seg_ids for r in routes))) if routes else []
+    seg_points = resample_segments(graph, used_segs, cfg.sample_interval_m)
+    flat: list = []
+    spans: dict[int, tuple[int, int]] = {}
+    for sid in used_segs:
+        pts = seg_points[sid]
+        spans[sid] = (len(flat), len(flat) + len(pts))
+        flat.extend(pts)
+    seg_elev: dict[int, list[float] | None]
+    try:
+        all_elev = provider.lookup(flat) if flat else []
+        seg_elev = {sid: all_elev[lo:hi] for sid, (lo, hi) in spans.items()}
+    except ElevationError:
+        seg_elev = {sid: None for sid in used_segs}
+
+    # Wrap each route as a synthetic route and run the SAME engine. The negative id keys the
+    # route back to its provenance after find_hikes (which preserves osm_id per Hike). Each
+    # route's elevation series is pre-assembled from the shared per-segment lookups above and
+    # handed to find_hikes, so its elevation pass skips the redundant whole-route resample.
+    route_by_id: dict[int, object] = {}
+    syn_routes: list[dict] = []
+    pre_elev_by_id: dict[int, list[float]] = {}
+    pre_points_by_id: dict[int, list] = {}
+    for i, route in enumerate(routes):
+        sid = -(i + 1)
+        route_by_id[sid] = route
+        syn_routes.append(
+            {
+                "id": sid,
+                "name": name,
+                "ref": None,
+                "osmc_color": None,
+                "tags": {"roundtrip": roundtrip},
+                "ways": [route.coords],
+            }
+        )
+        series = assemble_loop_series(graph, route, seg_elev)
+        if series is not None:
+            pre_elev_by_id[sid] = series
+            pre_points_by_id[sid] = assemble_loop_series(graph, route, seg_points)
+    syn_area = AreaData(routes=syn_routes, parking=area.parking, lifts=area.lifts)
+    hikes = find_hikes(
+        syn_area,
+        provider,
+        criteria,
+        bbox=bbox,
+        # Composed routes are already clipped and bounded, so the through-route over-length
+        # guard (meant for relations that merely cross the area) doesn't apply.
+        max_route_factor=float("inf"),
+        sample_interval_m=cfg.sample_interval_m,
+        gain_threshold_m=cfg.gain_threshold_m,
+        smooth_window=cfg.smooth_window,
+        loop_tolerance_m=cfg.loop_tolerance_m,
+        car_radius_m=cfg.car_radius_m,
+        lift_radius_m=cfg.lift_radius_m,
+        near_miss=near_miss,
+        pre_elevations_by_id=pre_elev_by_id,
+        pre_points_by_id=pre_points_by_id,
+        **_near_miss_kwargs(cfg),
+    )
+    for h in hikes:
+        route = route_by_id.get(h.osm_id)
+        if route is not None:
+            h.composed = True
+            h.composed_of = route.refs
+            if getattr(route, "anchor", None) is not None:
+                # Access-anchored loop: start at the trailhead you drive/ride to (the on-route
+                # point nearest your parking/lift), not the geometric head. Label only — the
+                # coords stay unrotated, so gain/loss is byte-identical to an unanchored run.
+                h.start = route.anchor
+    return hikes
+
+
 def compose_loops(
     bbox: Bbox,
     criteria: Criteria,
@@ -203,6 +320,30 @@ def compose_loops(
     )
 
     graph = build_trail_graph(clip_routes_to_bbox(area.routes, bbox))
+    provider = _provider(cfg, elevation_mode, dem_dir, cache)
+    return _compose_from_graph(
+        graph, area, criteria, cfg, provider, bbox, near_miss=near_miss, point_anchor=None
+    )
+
+
+def _compose_from_graph(
+    graph,
+    area: AreaData,
+    criteria: Criteria,
+    cfg: Config,
+    provider,
+    bbox: Bbox,
+    *,
+    near_miss: bool | str,
+    point_anchor: tuple[Coord, float] | None = None,
+) -> list[Hike]:
+    """Find + measure composed loops on an already-built graph.
+
+    Shared by ``compose_loops`` (bbox-driven) and ``compose_loops_around`` (point-driven).
+    ``point_anchor`` (``(point, radius_m)``, listed first so the loop starts at the point)
+    requires each loop to pass within ``radius_m`` of the picked point; car/lift ``criteria``
+    add further anchors, AND-ed, exactly as before.
+    """
     min_km = criteria.min_distance_km if criteria.min_distance_km is not None else cfg.compose_min_km
     max_km = (
         criteria.max_distance_km
@@ -210,21 +351,20 @@ def compose_loops(
         else max(cfg.compose_max_km, min_km)
     )
 
-    # Access anchoring: when the search requires car/lift access, restrict the composed
-    # loops to those reachable from a matched parking lot / lift station BEFORE the cap,
-    # and start each at that trailhead — "a 12 km loop from where I park". The
-    # requirement set mirrors find_hikes (the SAME radii and access-point sets, AND-ed
-    # across the requested types), so the loops kept here are exactly the ones find_hikes
-    # accepts. Parking is listed first, so a loop with both car and lift access starts
-    # where you park, not at the lift.
+    # Access anchoring: each requirement (point / car / lift) restricts the composed loops to
+    # those reachable from it BEFORE the cap, and starts each at that anchor — "a loop from
+    # where I point/park". The requirement set mirrors find_hikes (SAME radii + access-point
+    # sets, AND-ed), so the loops kept here are exactly the ones find_hikes accepts. The
+    # point (when given) is listed FIRST, so the loop starts where you pointed.
     anchors: list[tuple[list, float]] = []
+    if point_anchor is not None:
+        anchors.append(([point_anchor[0]], point_anchor[1]))
     if criteria.car_access is True:
         anchors.append(([p["coord"] for p in area.parking], cfg.car_radius_m))
     if criteria.chairlift_access is True:
         anchors.append(
             ([s for lift in area.lifts for s in lift.get("stations", [])], cfg.lift_radius_m)
         )
-    anchored = bool(anchors)
 
     result = find_loops(
         graph,
@@ -237,10 +377,8 @@ def compose_loops(
         anchors=anchors or None,
     )
     # Logged, never silent: how many distinct loops exist vs how many we elevation+show,
-    # and whether the bounded search hit its budget — so a truncated/capped result is
-    # never mistaken for "that's all there is". When anchoring, also surface the
-    # accessible-vs-found funnel, so a filtered-down result isn't read as "that's all
-    # the loops there are".
+    # whether the bounded search hit its budget, and (when anchored) the accessible-vs-found
+    # funnel — so a truncated/capped/filtered result is never mistaken for "that's all there is".
     truncated = (
         f" (showing the {len(result.loops)} most loop-like; raise HIKE_COMPOSE_MAX_LOOPS for more)"
         if result.distinct > len(result.loops) else ""
@@ -249,15 +387,19 @@ def compose_loops(
         " [cycle search capped — results may be incomplete; narrow the distance band]"
         if result.capped else ""
     )
-    # Never silent: report how many in-band cycles the compactness floor dropped as
-    # degenerate slivers (out-and-backs along near-parallel trails), so a filtered-down
-    # result isn't mistaken for "that's all there is".
     sliver_note = (
         f" ({result.slivered} thin sliver(s) dropped below compactness "
         f"{cfg.compose_min_compactness:g})"
         if result.slivered else ""
     )
-    if anchored:
+    if point_anchor is not None:
+        _log.warning(
+            "compose: %d loop(s) within %.0f m of your point in %.0f-%.0f km, of %d cycle(s) "
+            "found in band from %d trail segments%s%s%s",
+            result.distinct, point_anchor[1], min_km, max_km, result.found,
+            len(graph.segments), sliver_note, truncated, capped_note,
+        )
+    elif anchors:
         _log.warning(
             "compose: %d loop(s) in %.0f-%.0f km reachable from the requested "
             "car/lift access, of %d cycle(s) found in band from %d trail segments%s%s%s",
@@ -270,110 +412,162 @@ def compose_loops(
             result.distinct, min_km, max_km, len(graph.segments),
             sliver_note, truncated, capped_note,
         )
+    return _measure_composed(
+        graph, result.loops, area, criteria, cfg, provider, bbox,
+        near_miss=near_miss, roundtrip="yes", name="Composed loop",
+    )
+
+
+def _bbox_around(point: Coord, pad_m: float) -> Bbox:
+    """A (south, west, north, east) box centred on ``point``, padded ``pad_m`` metres."""
+    lat, lon = point
+    dlat = pad_m / 111_320.0
+    dlon = pad_m / (111_320.0 * max(math.cos(math.radians(lat)), 1e-6))
+    return (lat - dlat, lon - dlon, lat + dlat, lon + dlon)
+
+
+def compose_loops_around(
+    point: Coord,
+    criteria: Criteria,
+    cfg: Config | None = None,
+    *,
+    radius_m: float | None = None,
+    user_agent: str | None = None,
+    overpass_url: str | None = None,
+    elevation_mode: str | None = None,
+    dem_dir: str | None = None,
+    near_miss: bool | str = False,
+) -> list[Hike]:
+    """Circular routes that pass within ``radius_m`` of a picked ``point`` and start there.
+
+    Feature: "I pick a point and get circular day-loops near it, of a set length." It reuses
+    the loop-composition engine (``compose_loops``) with the point as a compose *anchor*:
+    only loops coming within ``radius_m`` (default ``cfg.around_radius_m``) of the point
+    survive, each started at the on-loop vertex nearest the point. The target length band is
+    ``criteria.min/max_distance_km`` (falling back to ``cfg.compose_min/max_km``).
+
+    Unlike ``compose_loops``, no ``bbox`` is given: it is derived from the point as
+    ``radius + max-loop/2`` — the tight bound below which a qualifying loop (length ≤ max,
+    passing within radius of the point) can never be clipped, so completeness holds.
+    """
+    cfg = cfg or _config.load()
+    radius_m = radius_m if radius_m is not None else cfg.around_radius_m
+    max_km = (
+        criteria.max_distance_km
+        if criteria.max_distance_km is not None
+        else max(cfg.compose_max_km, criteria.min_distance_km or 0.0)
+    )
+    # A loop of length <= max_km passing within radius of the point has every vertex within
+    # radius + max_km/2 of it (go out along the loop and back), so this pad can't clip one.
+    pad_m = radius_m + max_km * 1000.0 / 2.0
+    bbox = _bbox_around(point, pad_m)
+    cache = _cache.from_config(cfg)
+    area = _fetch_area(
+        bbox, cfg, cache, user_agent=user_agent, overpass_url=overpass_url, read_cache=True
+    )
+    graph = build_trail_graph(clip_routes_to_bbox(area.routes, bbox))
+    provider = _provider(cfg, elevation_mode, dem_dir, cache)
+    return _compose_from_graph(
+        graph, area, criteria, cfg, provider, bbox,
+        near_miss=near_miss, point_anchor=(point, radius_m),
+    )
+
+
+def routes_between(
+    start: Coord,
+    finish: Coord,
+    criteria: Criteria,
+    cfg: Config | None = None,
+    *,
+    k: int | None = None,
+    user_agent: str | None = None,
+    overpass_url: str | None = None,
+    elevation_mode: str | None = None,
+    dem_dir: str | None = None,
+) -> list[Hike]:
+    """The ``k`` shortest distinct trail routes from ``start`` to ``finish``, shortest first.
+
+    Feature: "I pick two points and get several routes between them, starting with the
+    shortest." Builds the trail graph for a bbox derived from the two points, snaps each to
+    the nearest point ON the network (splitting the nearest segment, so a route reaches
+    exactly where you pointed), then runs Yen's k-shortest-loopless-paths (see
+    ``compose.k_shortest_paths``) — with an overlap filter so the routes are genuinely
+    distinct alternatives, not one line ± a segment.
+
+    ``k`` defaults to ``cfg.routes_k``. A route's length is capped by ``criteria.max_distance_km``
+    if given, else ``cfg.routes_max_factor x`` the straight-line separation. Each route is
+    measured through the *unchanged* ``find_hikes`` (elevation/gain, access), so offline ==
+    online holds; the results are ordered shortest-first by measured distance.
+    """
+    cfg = cfg or _config.load()
+    k = k if k is not None else cfg.routes_k
+    # A point-to-point route is never a loop, so a stray `circular` filter (e.g. a --circular
+    # flag left on from another search) would drop every route to nothing — neutralise it here
+    # so the shape filter can't silently empty the result. Distance/gain/access filters still
+    # apply. Done in the engine so all three frontends (CLI, MCP, web) behave identically.
+    if criteria.circular is not None:
+        criteria = replace(criteria, circular=None)
+    sep_m = haversine_m(start, finish)
+    pad_m = max(cfg.routes_pad_km * 1000.0, cfg.routes_pad_frac * sep_m)
+    # Bounding box of BOTH points, padded (a route may bow out of the direct corridor).
+    lats = (start[0], finish[0])
+    lons = (start[1], finish[1])
+    dlat = pad_m / 111_320.0
+    lat0 = sum(lats) / 2.0
+    dlon = pad_m / (111_320.0 * max(math.cos(math.radians(lat0)), 1e-6))
+    bbox: Bbox = (min(lats) - dlat, min(lons) - dlon, max(lats) + dlat, max(lons) + dlon)
+
+    cache = _cache.from_config(cfg)
+    area = _fetch_area(
+        bbox, cfg, cache, user_agent=user_agent, overpass_url=overpass_url, read_cache=True
+    )
+    graph = build_trail_graph(clip_routes_to_bbox(area.routes, bbox))
+    graph, snapped = snap_points(graph, [start, finish])
+    (src, src_d), (dst, dst_d) = snapped
+    if src < 0 or dst < 0:
+        _log.warning("routes: no trails found in the area around your two points")
+        return []
+    max_snap_m = cfg.routes_max_snap_km * 1000.0
+    if src_d > max_snap_m or dst_d > max_snap_m:
+        # A point sits far from any trail — routing it to a distant trail would be
+        # misleading ("your finish" ends up km from where you pointed). Bail out loudly.
+        _log.warning(
+            "routes: a picked point is %.1f km from the nearest trail (limit %.1f km) — "
+            "no routes drawn; move it closer to a marked trail or raise HIKE_ROUTES_MAX_SNAP_KM",
+            max(src_d, dst_d) / 1000.0, cfg.routes_max_snap_km,
+        )
+        return []
+
+    max_m = (
+        criteria.max_distance_km * 1000.0
+        if criteria.max_distance_km is not None
+        else cfg.routes_max_factor * sep_m
+    )
+    paths = k_shortest_paths(
+        graph, src, dst, k=k, overlap_frac=cfg.routes_overlap_frac, max_m=max_m
+    )
+    _log.warning(
+        "routes: %d route(s) from your start (snapped %.0f m to the network) to your finish "
+        "(snapped %.0f m); straight-line separation %.1f km, length cap %.1f km",
+        len(paths), src_d, dst_d, sep_m / 1000.0, max_m / 1000.0,
+    )
+    if src == dst:
+        _log.warning("routes: your two points snapped to the SAME trail vertex — nothing to route")
+
+    # Start each route at the snapped start vertex (a path's `anchor`, so _measure_composed
+    # sets Hike.start there) rather than find_hikes' arbitrary geometric head.
+    start_coord = graph.coords[src]
+    for p in paths:
+        p.anchor = start_coord
 
     provider = _provider(cfg, elevation_mode, dem_dir, cache)
-
-    # Segment-level shared elevation sampling. Composed loops overlap — several share
-    # the same marked-trail segments — so resampling and looking up each WHOLE loop
-    # (the obvious `find_hikes` reuse) pays for a shared climb once per loop that uses
-    # it. Instead, resample each DISTINCT used segment once on its own canonical grid
-    # and look the WHOLE distinct-point set up in ONE provider call, then slice the
-    # results back per segment. Loops then assemble their elevation series from those
-    # shared per-segment results (`assemble_loop_series`). This dedups within the run
-    # (measured ~2-3x fewer points -> the same factor fewer batched API requests on a
-    # real bbox, since the request count is what the throttle and daily quota meter) AND
-    # makes the points cache-hot across runs, because a segment's canonical samples are
-    # identical regardless of which loop enters it where — whereas a whole-loop resample
-    # seam shifts per loop, so today's cross-run cache barely helps compose.
-    #
-    # One combined lookup (not one per segment) is deliberate: the API batches 100
-    # points/request, so packing all distinct points into a single call costs
-    # ~ceil(total/100) requests instead of >= one per segment. It is all-or-nothing on
-    # failure — a mid-run quota exhaustion fails the whole batch and every loop degrades
-    # to gain n/a (graceful, never a ban) — but that is rare (a default run is tens of
-    # requests, far under the daily cap) and a quota-dead compose is mostly n/a anyway.
-    used_segs = (
-        sorted(set().union(*(L.seg_ids for L in result.loops))) if result.loops else []
+    hikes = _measure_composed(
+        graph, paths, area, criteria, cfg, provider, bbox,
+        near_miss=False, roundtrip="no", name="Route",
     )
-    seg_points = resample_segments(graph, used_segs, cfg.sample_interval_m)
-    flat: list = []
-    spans: dict[int, tuple[int, int]] = {}
-    for sid in used_segs:
-        pts = seg_points[sid]
-        spans[sid] = (len(flat), len(flat) + len(pts))
-        flat.extend(pts)
-    seg_elev: dict[int, list[float] | None]
-    try:
-        all_elev = provider.lookup(flat) if flat else []
-        seg_elev = {sid: all_elev[lo:hi] for sid, (lo, hi) in spans.items()}
-    except ElevationError:
-        seg_elev = {sid: None for sid in used_segs}
-
-    # Wrap each loop as a synthetic route and run the SAME engine. The negative id keys
-    # the loop back to its provenance after find_hikes (which preserves osm_id per Hike).
-    # Each loop's elevation series is pre-assembled from the shared per-segment lookups
-    # above and handed to find_hikes, so its elevation pass skips the redundant whole-
-    # loop resample/lookup and just runs the (unchanged) gain math on the series.
-    loop_by_id: dict[int, object] = {}
-    syn_routes: list[dict] = []
-    pre_elev_by_id: dict[int, list[float]] = {}
-    pre_points_by_id: dict[int, list] = {}
-    for i, loop in enumerate(result.loops):
-        sid = -(i + 1)
-        loop_by_id[sid] = loop
-        syn_routes.append(
-            {
-                "id": sid,
-                "name": "Composed loop",
-                "ref": None,
-                "osmc_color": None,
-                "tags": {"roundtrip": "yes"},
-                "ways": [loop.coords],
-            }
-        )
-        series = assemble_loop_series(graph, loop, seg_elev)
-        if series is not None:
-            pre_elev_by_id[sid] = series
-            # The resampled points behind that series, assembled identically (same
-            # traversal, same junction-dedup), so they align 1:1 with the elevations
-            # and let find_hikes record a per-point `track` for the GPS export. Built
-            # only when the series exists (elevation succeeded) — a degraded loop has
-            # no usable track anyway.
-            pre_points_by_id[sid] = assemble_loop_series(graph, loop, seg_points)
-    syn_area = AreaData(routes=syn_routes, parking=area.parking, lifts=area.lifts)
-    hikes = find_hikes(
-        syn_area,
-        provider,
-        criteria,
-        bbox=bbox,
-        # Composed loops are already clipped to the bbox and bounded by the length band,
-        # so the through-route over-length guard (meant for relations that merely cross
-        # the area) doesn't apply — disabling it avoids wrongly dropping a big in-area loop.
-        max_route_factor=float("inf"),
-        sample_interval_m=cfg.sample_interval_m,
-        gain_threshold_m=cfg.gain_threshold_m,
-        smooth_window=cfg.smooth_window,
-        loop_tolerance_m=cfg.loop_tolerance_m,
-        car_radius_m=cfg.car_radius_m,
-        lift_radius_m=cfg.lift_radius_m,
-        near_miss=near_miss,
-        pre_elevations_by_id=pre_elev_by_id,
-        pre_points_by_id=pre_points_by_id,
-        **_near_miss_kwargs(cfg),
-    )
-    for h in hikes:
-        loop = loop_by_id.get(h.osm_id)
-        if loop is not None:
-            h.composed = True
-            h.composed_of = loop.refs
-            if loop.anchor is not None:
-                # Access-anchored: put the start at the trailhead you drive/ride to (the
-                # on-loop point nearest your parking/lift), not the loop's arbitrary
-                # geometric head. We override the label only — the loop's `coords` stay
-                # unrotated, so the elevation resample seam, and thus gain/loss, is
-                # byte-identical to an unanchored run (a loop's start is just a marker;
-                # no filter reads it).
-                h.start = loop.anchor
+    # Shortest-first by measured distance (Yen orders by graph length; re-sort on the final
+    # measured km so the user's "starting with the shortest" holds on the reported number).
+    hikes.sort(key=lambda h: h.distance_km)
     return hikes
 
 

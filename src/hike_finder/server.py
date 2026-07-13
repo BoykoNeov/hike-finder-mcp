@@ -28,7 +28,14 @@ from . import config as _config
 from .export import hikes_to_geojson, hikes_to_gpx
 from .filters import Criteria
 from .format import format_hike
-from .search import compose_loops, download_area, search_hikes, search_snapshot
+from .search import (
+    compose_loops,
+    compose_loops_around,
+    download_area,
+    routes_between,
+    search_hikes,
+    search_snapshot,
+)
 from .snapshot import load_snapshot, save_snapshot
 
 app = Server("hike-finder")
@@ -125,6 +132,88 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="circular_routes",
+            description=(
+                "Draw circular day-loops (round trips) that pass NEAR a single picked point "
+                "and start there. Give a point (lat/lon); the tool synthesises loops from the "
+                "connected marked trails around it whose total length is in the min/max "
+                "distance band (default 3-15 km) and that come within `radius_m` of the point "
+                "(default 1000 m), each started at the on-loop spot nearest your point.\n\n"
+                "Use this for 'find me a ~10 km loop starting near HERE'. The area is derived "
+                "from the point — no bounding box needed. Combine with car_access / "
+                "chairlift_access to require a parking lot / lift near the loop. Results are "
+                "stitched from several trails and have no single OSM relation id."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "lat": {"type": "number", "description": "Latitude of the point."},
+                    "lon": {"type": "number", "description": "Longitude of the point."},
+                    "radius_m": {
+                        "type": "number",
+                        "description": "How near a loop must pass to the point, metres (default 1000).",
+                    },
+                    "min_distance_km": {"type": "number"},
+                    "max_distance_km": {"type": "number"},
+                    "car_access": {
+                        "type": "boolean",
+                        "description": "true = require parking mapped near the loop.",
+                    },
+                    "chairlift_access": {
+                        "type": "boolean",
+                        "description": "true = require a ride-up aerialway near the loop.",
+                    },
+                    "near_misses": {
+                        "type": "boolean",
+                        "description": "Also return loops that just miss the filters, annotated.",
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["text", "gpx", "geojson"],
+                        "description": "Output format (default 'text'); 'gpx'/'geojson' return the "
+                        "downloadable route document as text.",
+                    },
+                },
+                "required": ["lat", "lon"],
+            },
+        ),
+        Tool(
+            name="routes_between",
+            description=(
+                "Draw the N shortest DISTINCT walking routes between two picked points, "
+                "shortest first. Give a start and a finish (lat/lon each); the tool snaps each "
+                "onto the nearest marked trail and returns up to `routes` alternatives ordered "
+                "by length (the shortest, then a genuinely different second-shortest, etc.).\n\n"
+                "Use this for 'how do I walk from A to B, and what are my options'. The area is "
+                "derived from the two points — no bounding box needed. `max_distance_km` caps a "
+                "route's length; a point more than ~2 km from any trail is treated as off-network "
+                "and yields no routes. Results are stitched from several trails (no single OSM id)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "start_lat": {"type": "number"},
+                    "start_lon": {"type": "number"},
+                    "finish_lat": {"type": "number"},
+                    "finish_lon": {"type": "number"},
+                    "routes": {
+                        "type": "integer",
+                        "description": "How many routes to return, shortest first (default 3).",
+                    },
+                    "max_distance_km": {
+                        "type": "number",
+                        "description": "Cap a route's length, km (default: 3x the straight-line gap).",
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["text", "gpx", "geojson"],
+                        "description": "Output format (default 'text').",
+                    },
+                },
+                "required": ["start_lat", "start_lon", "finish_lat", "finish_lon"],
+            },
+        ),
+        Tool(
             name="download_area",
             description=(
                 "Fetch a bounding box once — its hiking routes plus computed elevation for "
@@ -173,13 +262,74 @@ def _criteria(arguments: dict) -> Criteria:
     )
 
 
+def _serialize(hikes: list, fmt: str, empty_msg: str) -> list[TextContent]:
+    """Render a hike list as text / GPX / GeoJSON, or the helpful message when empty."""
+    if not hikes:
+        return [TextContent(type="text", text=empty_msg)]
+    if fmt == "gpx":
+        return [TextContent(type="text", text=hikes_to_gpx(hikes))]
+    if fmt == "geojson":
+        return [TextContent(type="text", text=hikes_to_geojson(hikes))]
+    return [TextContent(type="text", text="\n".join(format_hike(h) for h in hikes))]
+
+
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     if name == "find_hikes":
         return await _call_find_hikes(arguments)
+    if name == "circular_routes":
+        return await _call_circular_routes(arguments)
+    if name == "routes_between":
+        return await _call_routes_between(arguments)
     if name == "download_area":
         return await _call_download_area(arguments)
     raise ValueError(f"unknown tool: {name}")
+
+
+async def _call_circular_routes(arguments: dict) -> list[TextContent]:
+    missing = [k for k in ("lat", "lon") if k not in arguments]
+    if missing:
+        return [TextContent(type="text", text="provide lat and lon for the point to search around.")]
+    point = (arguments["lat"], arguments["lon"])
+    hikes = await asyncio.to_thread(
+        compose_loops_around,
+        point,
+        _criteria(arguments),
+        CFG,
+        radius_m=arguments.get("radius_m"),
+        near_miss=_near_miss(arguments),
+    )
+    return _serialize(
+        hikes,
+        arguments.get("format") or "text",
+        "No circular routes pass within the radius of your point — widen radius_m, the "
+        "min/max_distance_km band, or drop car_access/chairlift_access.",
+    )
+
+
+async def _call_routes_between(arguments: dict) -> list[TextContent]:
+    missing = [
+        k for k in ("start_lat", "start_lon", "finish_lat", "finish_lon") if k not in arguments
+    ]
+    if missing:
+        return [
+            TextContent(
+                type="text",
+                text="provide start_lat/start_lon and finish_lat/finish_lon for the two points.",
+            )
+        ]
+    start = (arguments["start_lat"], arguments["start_lon"])
+    finish = (arguments["finish_lat"], arguments["finish_lon"])
+    hikes = await asyncio.to_thread(
+        routes_between, start, finish, _criteria(arguments), CFG, k=arguments.get("routes")
+    )
+    return _serialize(
+        hikes,
+        arguments.get("format") or "text",
+        "No routes could be drawn between your two points — they may sit on disconnected "
+        "trail networks, be off-network (more than ~2 km from any trail), or every route "
+        "exceeds the length cap.",
+    )
 
 
 async def _call_find_hikes(arguments: dict) -> list[TextContent]:

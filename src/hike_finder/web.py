@@ -21,7 +21,14 @@ from urllib.parse import parse_qs, urlparse
 from .export import GEOJSON_MIME, GPX_MIME, hikes_to_geojson, hikes_to_gpx
 from .filters import Criteria
 from .format import hike_to_dict
-from .search import compose_loops, download_area, search_hikes, search_snapshot
+from .search import (
+    compose_loops,
+    compose_loops_around,
+    download_area,
+    routes_between,
+    search_hikes,
+    search_snapshot,
+)
 from .snapshot import default_snapshot_dir, load_snapshot, save_snapshot
 
 INDEX_HTML = """<!doctype html>
@@ -73,6 +80,23 @@ INDEX_HTML = """<!doctype html>
       <div style="flex:1;"><button id="download" style="margin-top:0;" title="Fetch this map view once and save it for offline, API-free searching">Download view</button></div>
     </div>
     <p class="muted">Download a view once, then pick it above to search offline with no API calls.</p>
+
+    <label>Mode</label>
+    <select id="mode">
+      <option value="area">Search this map area</option>
+      <option value="around">Circular routes near a point</option>
+      <option value="between">Routes between two points</option>
+    </select>
+    <div id="around_ctl" style="display:none;">
+      <p class="muted">Click the map to drop your point. Loops passing within the radius of it (using the min/max distance below, default 3–15 km) are drawn, each starting there. Live map only.</p>
+      <label>Near-point radius (m)</label>
+      <input id="around_radius_m" type="number" step="50" value="1000">
+    </div>
+    <div id="between_ctl" style="display:none;">
+      <p class="muted">Click the map to drop your <b>start</b>, then your <b>finish</b>. The shortest routes between them are drawn, shortest first. Live map only.</p>
+      <label>How many routes</label>
+      <input id="routes_k" type="number" step="1" min="1" value="3">
+    </div>
 
     <label>Shape</label>
     <select id="circular">
@@ -128,7 +152,62 @@ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
   { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
 const markers = L.layerGroup().addTo(map);
 const routeLines = L.layerGroup().addTo(map);   // drawn polylines for the matched routes
+const picks = L.layerGroup().addTo(map);        // the point(s) the user clicked to pick
 let lastParams = null;                           // params of the last search, for GPX/GeoJSON download
+let aroundPt = null, fromPt = null, toPt = null; // picked points for the point-based modes
+
+function modeName(){ return document.getElementById('mode').value; }
+
+function drawPicks(){
+  // Redraw the picked-point markers for the current mode (a labelled circle each).
+  picks.clearLayers();
+  const dot = (pt, label, color) => L.circleMarker(pt, { radius:8, color, weight:3,
+      fillColor:'#fff', fillOpacity:1 }).addTo(picks).bindTooltip(label, { permanent:true, direction:'right' });
+  if (modeName() === 'around' && aroundPt) dot(aroundPt, 'point', '#7048e8');
+  if (modeName() === 'between'){
+    if (fromPt) dot(fromPt, 'start', '#188038');
+    if (toPt) dot(toPt, 'finish', '#c5221f');
+  }
+}
+
+function onMapClick(e){
+  const m = modeName();
+  if (m === 'around'){ aroundPt = e.latlng; }
+  else if (m === 'between'){
+    // First click (or a fresh pair) sets the start; the next sets the finish.
+    if (!fromPt || (fromPt && toPt)){ fromPt = e.latlng; toPt = null; }
+    else { toPt = e.latlng; }
+  } else { return; }
+  drawPicks();
+  updateHint();
+}
+map.on('click', onMapClick);
+
+function updateHint(){
+  const s = document.getElementById('status');
+  const m = modeName();
+  if (m === 'around') s.textContent = aroundPt ? 'Point set — press Search.' : 'Click the map to drop your point.';
+  else if (m === 'between') s.textContent = !fromPt ? 'Click the map to drop your start.'
+      : (!toPt ? 'Now click your finish.' : 'Start + finish set — press Search.');
+  else s.textContent = '';
+}
+
+function updateMode(){
+  const m = modeName();
+  document.getElementById('around_ctl').style.display = (m === 'around') ? 'block' : 'none';
+  document.getElementById('between_ctl').style.display = (m === 'between') ? 'block' : 'none';
+  // Composing/naming/area only make sense in the plain area mode.
+  const areaOnly = (m === 'area');
+  document.getElementById('compose_loops').disabled = !areaOnly;
+  document.getElementById('area').disabled = !areaOnly;
+  const btn = document.getElementById('search');
+  btn.textContent = m === 'around' ? 'Search loops near the point'
+                  : m === 'between' ? 'Search routes between the points'
+                  : 'Search this map area';
+  picks.clearLayers(); aroundPt = fromPt = toPt = null;
+  markers.clearLayers(); routeLines.clearLayers();
+  updateHint();
+}
 
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function val(id){ const v = document.getElementById(id).value.trim(); return v === '' ? null : v; }
@@ -153,9 +232,20 @@ async function loadAreas(selectName){
 }
 
 async function search(){
+  const mode = modeName();
   const area = document.getElementById('area').value;
+  const status = document.getElementById('status');
   const params = new URLSearchParams();
-  if (area){
+  if (mode === 'around'){
+    if (!aroundPt){ status.textContent = 'Click the map to drop your point first.'; return; }
+    params.set('around_lat', aroundPt.lat); params.set('around_lon', aroundPt.lng);
+    const r = val('around_radius_m'); if (r !== null) params.set('around_radius_m', r);
+  } else if (mode === 'between'){
+    if (!fromPt || !toPt){ status.textContent = 'Drop both a start and a finish on the map first.'; return; }
+    params.set('from_lat', fromPt.lat); params.set('from_lon', fromPt.lng);
+    params.set('to_lat', toPt.lat); params.set('to_lon', toPt.lng);
+    const k = val('routes_k'); if (k !== null) params.set('routes_k', k);
+  } else if (area){
     params.set('area', area);                 // offline: bbox comes from the snapshot
   } else {
     const b = map.getBounds();
@@ -164,14 +254,18 @@ async function search(){
     // Loop composition is a live-map-only mode (it builds a graph from fetched OSM).
     if (document.getElementById('compose_loops').checked) params.set('compose_loops', 'true');
   }
-  // Reverse-geocode naming of unnamed routes — applies live (offline it's a no-op).
-  if (document.getElementById('name_places').checked) params.set('name_places', 'true');
-  for (const f of FIELDS){ const id = (f === 'user_agent') ? 'ua' : f; const v = val(id); if (v !== null) params.set(f, v); }
+  // Reverse-geocode naming applies only to the plain live-area search (unnamed relations).
+  if (mode === 'area' && !area && document.getElementById('name_places').checked) params.set('name_places', 'true');
+  for (const f of FIELDS){
+    // `circular` is a shape filter only meaningful for the area search — a loop is always
+    // circular and a between-route never is, so sending it there would filter everything out.
+    if (f === 'circular' && mode !== 'area') continue;
+    const id = (f === 'user_agent') ? 'ua' : f; const v = val(id); if (v !== null) params.set(f, v);
+  }
   // Remember exactly what we searched, so the GPX/GeoJSON download reproduces THIS
-  // result set (the same area/bbox/filters) rather than the current map view.
+  // result set (the same points/bbox/filters) rather than the current map view.
   lastParams = params.toString();
 
-  const status = document.getElementById('status');
   const results = document.getElementById('results');
   status.textContent = area ? ('Searching “' + area + '” offline…') : 'Searching…';
   results.innerHTML = ''; markers.clearLayers(); routeLines.clearLayers();
@@ -181,15 +275,19 @@ async function search(){
     if (!resp.ok || data.error){ status.textContent = 'Error: ' + (data.error || resp.status); return; }
     render(data);
     const near = data.filter(h => h.near_miss).length;
-    const composing = !area && document.getElementById('compose_loops').checked;
-    const anchored = composing && (document.getElementById('car_access').value === 'true'
-                                || document.getElementById('chairlift_access').value === 'true');
-    if (composing && data.length === 0){
-      status.textContent = anchored
-        ? 'No loops here reachable from a parking lot / lift — clear the car/lift requirement, or widen the map or distance band.'
-        : 'No loops could be composed here — widen the map or the min/max distance.';
+    const composing = mode === 'area' && !area && document.getElementById('compose_loops').checked;
+    const noun = (mode === 'between') ? ' route(s)'
+               : (mode === 'around' || composing) ? ' loop(s)' : ' match(es)';
+    if (data.length === 0){
+      status.textContent = mode === 'around'
+          ? 'No loops pass within the radius of your point — widen the radius or the min/max distance.'
+        : mode === 'between'
+          ? 'No routes between your two points — move them onto/closer to marked trails, or raise the max distance.'
+        : composing
+          ? 'No loops could be composed here — widen the map or the min/max distance.'
+          : 'No matches — widen the map or relax the filters.';
     } else {
-      status.textContent = (data.length - near) + (composing ? ' loop(s)' : ' match(es)')
+      status.textContent = (data.length - near) + noun
         + (near ? (' + ' + near + ' near miss(es)') : '') + (area ? ' [offline]' : '');
     }
     if (!area) showQuota();
@@ -299,6 +397,8 @@ function download(fmt){
   window.location = '/api/' + fmt + '?' + lastParams;
 }
 document.getElementById('search').onclick = search;
+document.getElementById('mode').onchange = updateMode;
+updateMode();
 document.getElementById('download').onclick = downloadArea;
 document.getElementById('dl_gpx').onclick = () => download('gpx');
 document.getElementById('dl_geojson').onclick = () => download('geojson');
@@ -307,6 +407,17 @@ loadAreas();
 </body>
 </html>
 """
+
+
+def _fetch_error(e: Exception) -> tuple[int, dict]:
+    """A 502 error body for a failed live fetch, with the Overpass 406 hint appended."""
+    msg = str(e)
+    if "406" in msg:
+        msg += (
+            " — fill in the Contact field (the public Overpass server rejects "
+            "the default User-Agent)."
+        )
+    return (502, {"error": f"failed to fetch OSM data: {msg}"})
 
 
 def _tri(qs: dict, key: str) -> bool | None:
@@ -494,6 +605,33 @@ class Handler(BaseHTTPRequestHandler):
             except (OSError, ValueError) as e:
                 return None, (500, {"error": f"could not search snapshot: {e}"})
 
+        ua = _str(qs, "user_agent")
+
+        # Circular routes near a picked point (derives its own area from the point).
+        around_lat, around_lon = _num(qs, "around_lat"), _num(qs, "around_lon")
+        if around_lat is not None and around_lon is not None:
+            try:
+                return compose_loops_around(
+                    (around_lat, around_lon), criteria,
+                    radius_m=_num(qs, "around_radius_m"),
+                    user_agent=ua, near_miss=near_miss,
+                ), None
+            except Exception as e:  # noqa: BLE001 — surface any fetch/HTTP failure to the UI
+                return None, _fetch_error(e)
+
+        # N shortest routes between two picked points (derives its own area).
+        f_lat, f_lon = _num(qs, "from_lat"), _num(qs, "from_lon")
+        t_lat, t_lon = _num(qs, "to_lat"), _num(qs, "to_lon")
+        if None not in (f_lat, f_lon, t_lat, t_lon):
+            k = _num(qs, "routes_k")
+            try:
+                return routes_between(
+                    (f_lat, f_lon), (t_lat, t_lon), criteria,
+                    k=int(k) if k else None, user_agent=ua,
+                ), None
+            except Exception as e:  # noqa: BLE001
+                return None, _fetch_error(e)
+
         try:
             bbox = (
                 float(qs["south"][0]),
@@ -507,7 +645,7 @@ class Handler(BaseHTTPRequestHandler):
         # Loop composition: synthesise loops from connected trails inside the box.
         composing = _tri(qs, "compose_loops")
         search = compose_loops if composing else search_hikes
-        kwargs = dict(user_agent=_str(qs, "user_agent"), near_miss=near_miss)
+        kwargs = dict(user_agent=ua, near_miss=near_miss)
         # Naming applies only to ordinary routes — composed loops already carry their
         # constituent-trail label, never a route/<id> fallback.
         if not composing:
@@ -515,13 +653,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             hikes = search(bbox, criteria, **kwargs)
         except Exception as e:
-            msg = str(e)
-            if "406" in msg:
-                msg += (
-                    " — fill in the Contact field (the public Overpass server rejects "
-                    "the default User-Agent)."
-                )
-            return None, (502, {"error": f"failed to fetch OSM data: {msg}"})
+            return None, _fetch_error(e)
         return hikes, None
 
     def _api(self, qs: dict) -> None:

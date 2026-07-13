@@ -6,6 +6,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Point-based route drawing — pick point(s) on a map instead of a bounding box.** Two
+  new live modes, both deriving their own search area from the point(s) (no `--bbox`):
+  - **Circular routes near a point** (`--around LAT LON`, MCP `circular_routes`, web "Mode →
+    Circular routes near a point"). Reuses the loop-composition engine anchored to the picked
+    point: only loops passing within `--around-radius` metres (default 1000,
+    `HIKE_AROUND_RADIUS_M`) survive, each started at the on-loop spot nearest the point. Loop
+    *length* comes from `--min-distance`/`--max-distance` (a length band, not a geofence).
+    Composes with `--car-access`/`--chairlift-access`.
+  - **N shortest routes between two points** (`--from LAT LON --to LAT LON`, MCP
+    `routes_between`, web "Mode → Routes between two points"). Yen's k-shortest-loopless-paths
+    on the trail graph, with each point snapped onto the nearest trail by **splitting the
+    segment at the projected spot** (so a route reaches exactly where you pointed, not the next
+    junction). Returns the shortest route first, then the next, up to `--routes N` (default 3,
+    `HIKE_ROUTES_K`); `--max-distance` caps a route's length. Results are N *distinct* routes
+    (a candidate re-using more than `HIKE_ROUTES_OVERLAP_FRAC`, default 0.6, of an already-kept
+    route's length is skipped — set 0 for literal k-shortest). A point more than
+    `HIKE_ROUTES_MAX_SNAP_KM` (default 2 km) from any trail is treated as off-network and
+    yields no routes rather than routing to a distant trail.
+
+  Both measure elevation/distance/access through the *unchanged* two-pass engine (offline ==
+  online holds), export to GPX/GeoJSON like any route, and are wired into all three frontends
+  (CLI, MCP, web). The pure engine (mid-segment snapping + Yen on the junction multigraph) is
+  unit-tested on hand-built graphs and, via the Špindl fixture, offline end-to-end; the live
+  Overpass/elevation paths are user-verify-pending per project convention.
+
 ## [0.2.0] - 2026-06-29
 
 ### Added
