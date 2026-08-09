@@ -214,8 +214,30 @@ thing is validated live against real OSM. Highlights:
   walk, so when the longest route returned exceeds the search radius (or the nearest candidate
   the cheap pass dropped), the mode says the answer is "not provably the nearest" instead of
   leaving the claim standing — pinned by a test where it demonstrably returns the wrong one and
-  admits it. **Not yet verified live** over real Overpass (the only piece of this release that
-  isn't).
+  admits it. **Verified live** over Český ráj — the same area the `--poi` filter and `--show-pois`
+  were verified on, so the three POI modes can be cross-checked against each other. From
+  Sedmihorky (50.5578, 15.1836, start snapped 32 m), `--to-poi ruins` drew a real route to ruin
+  **Radeč** — 3.46 km, +117 m / −34 m, over four named KČT trails, ending 101 m from the object.
+  Three properties came out of it that the offline tests could only assert in miniature:
+  - **The guard fires, and it also goes quiet.** At the default 3 km radius the 3.46 km route
+    exceeded the bound and the mode logged "the nearest *found*, not provably the nearest";
+    re-run at `--to-poi-radius 6000` with the same single route now inside the bound, the hedge
+    **disappeared**. A warning that never turns off is just noise — this one is load-bearing in
+    both directions. (With `--routes 3` at 6 km it fires again, correctly: the *third* route is
+    12.6 km, so third-nearest is unprovable even though nearest isn't.)
+  - **Widening did not displace the answer.** Radeč stayed #1 from 3 km → 6 km, with Kozlov
+    (Chlum) 6.66 km and Rotštejn 12.63 km behind it — so the 3 km hedge was conservative, not a
+    miss. Both bounds held: every crow-flies distance came in under its trail distance.
+  - **The modes agree on the landscape.** `--show-pois --poi ruins,castle` over the box lists
+    exactly two ruins, Radeč and Rotštejn — precisely the in-box objects `--to-poi ruins` routed
+    to. Valdštejn, which the `--poi` verification recorded, is classified **castle**, so its
+    absence from a `ruins` search is the registry working, not a dropped object. Rotštejn's
+    "20 m" here matches the figure the `--poi` run recorded for it.
+
+  Export round-tripped: 1 track / 143 trkpt / **143 `<ele>`** (the faithfulness gate passed) plus
+  a single start `<wpt>`, diacritics intact; the GeoJSON carries a `destination` property and its
+  `[lon, lat]` land on the right axes (lon ≈ 15.18, lat ≈ 50.55). The track's last point sits
+  101 m from Radeč's own coordinate — the reported gap, independently recomputed from the file.
 - **Point-based route drawing** (`--around` / `--from`/`--to` / `--via`) — the pure engine
   (mid-segment snapping + Yen on the junction multigraph, plus chained-Dijkstra `route_via` with
   its non-retracing loop closure) is unit-tested on hand-built graphs (`test_routing.py`,

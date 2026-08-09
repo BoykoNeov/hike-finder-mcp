@@ -64,6 +64,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     anything outside the search radius is provably farther on foot. When the longest route
     returned exceeds that radius (or the nearest candidate the cheap pass dropped), the mode
     says the answer is *not provably the nearest* instead of leaving the superlative standing.
+    Confirmed live in **both** directions over Český ráj: a 3.46 km route to ruin Radeč at the
+    default 3 km radius came with the hedge; the same single route at `--to-poi-radius 6000`
+    came without it. Widening never displaced Radeč, so the hedge was conservative rather than
+    a miss.
   - **The fetched area is padded by the route length cap**, which makes clipping a qualifying
     route impossible — so `--max-distance` sizes the *fetch* as well as the results, and a
     high one makes a heavy query. Per destination the cap defaults to 3× the straight-line
