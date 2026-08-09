@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-09
+
 ### Added
 
 - **Just list what's there** (`--show-pois`, MCP `list_pois`, web "Show points of interest
@@ -110,15 +112,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   longer download one rectangle and search another. With nothing drawn it falls back to the
   map view, exactly as before.
 
-### Changed
-
-- The Overpass query now also fetches the registered points of interest, on every request.
-  This is what lets one snapshot answer any destination question later, and keeps a single
-  Overpass cache key. **It changes the query text, so every cached Overpass area is
-  invalidated and re-fetched once.** Elevation caches are unaffected.
-- Snapshots gained an optional `pois` key (no version bump — older files load unchanged and
-  simply report no points of interest).
-
 - **Point-based route drawing — pick point(s) on a map instead of a bounding box.** Three
   new live modes, each deriving its own search area from the point(s) (no `--bbox`):
   - **Circular routes near a point** (`--around LAT LON`, MCP `circular_routes`, web "Mode →
@@ -158,6 +151,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   verified live against real Overpass + the elevation API (Krkonoše) — including `--via-loop`
   drawing a genuine ~13 km non-repeating triangle loop (9 % retraced, gain ≈ loss) and honestly
   flagging a near-collinear set of points as a 100 %-retrace out-and-back.
+
+### Changed
+
+- The Overpass query now also fetches the registered points of interest, on every request.
+  This is what lets one snapshot answer any destination question later, and keeps a single
+  Overpass cache key. **It changes the query text, so every cached Overpass area is
+  invalidated and re-fetched once.** Elevation caches are unaffected.
+- Snapshots gained an optional `pois` key (no version bump — older files load unchanged and
+  simply report no points of interest).
 
 ## [0.2.0] - 2026-06-29
 
@@ -261,6 +263,7 @@ filter them by locally-computed elevation gain, distance, loop shape, and access
 - MIT license, CI (GitHub Actions running the test suite on Linux 3.10–3.13 plus a
   Windows smoke job), and this changelog.
 
-[Unreleased]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/BoykoNeov/hike-finder-mcp/releases/tag/v0.1.0
