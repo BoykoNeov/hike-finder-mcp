@@ -168,15 +168,21 @@ hike-finder-web
 Then open **http://127.0.0.1:8765** in a browser. In the page:
 
 1. Fill the **Contact** field (top of the right panel) with your email.
-2. **Pan and zoom the map** so it frames the area you want to search.
+2. **Pan and zoom the map** so it frames the area you want to search — or press
+   **"Draw a box"** and drag an exact rectangle over the ground you mean.
 3. Set any filters you care about — **Shape**, **Car access**, **Chairlift
-   access** (each: *any / required / excluded*), and **gain/distance** min/max.
+   access** (each: *any / required / excluded*), **Must pass** (churches, ruins,
+   peaks…), and **gain/distance** min/max.
 4. Click **"Search this map area"**.
 
 **Why** — the visible map *is* your bounding box: "search this map area" sends the
-current map edges as the search box, so you never type coordinates. The filters
-narrow results before any elevation work happens, so tighter filters = faster,
-more relevant results.
+current map edges as the search box, so you never type coordinates. **Draw a box**
+is for when the map view is the wrong shape — a drawn box is pinned to the ground,
+survives panning and zooming, and shows its size in km before you spend a query on
+it. The *same* box is used for downloading and for searching, so the two can never
+disagree; press **"Use whole view"** to go back to the map-edges behaviour. The
+filters narrow results before any elevation work happens, so tighter filters =
+faster, more relevant results.
 
 **Expect** — the console where you launched it prints:
 
@@ -195,6 +201,13 @@ chips · OSM relation id) **and** as a **pin** on the map at the route's start.
   Click the matching pin to see name + distance + gain.
 - The **flag chips** (`loop`/`one-way`, `car`, `lift:chair_lift`) tell you shape
   and access at a glance — see [Reading your results](#reading-your-results--how-to-treat-what-comes-back).
+- With **Must pass** set, each card also shows a green *passes …* line naming what
+  the route reaches and how far off the trail it sits, and the objects appear as
+  green rings on the map. Ctrl/⌘-click several kinds to mean "any of these".
+- The **"Already downloaded"** list shows every area you have saved for offline
+  searching, and each one is outlined on the map. Click one to search it offline —
+  no network, no API calls. An entry warning *"no points of interest"* was saved
+  before that feature existed: re-download it to use **Must pass** there.
 - **No results?** The map area is genuinely empty for your filters — zoom out, or
   relax a filter (loops especially are sparse; see the troubleshooting section).
 - The **`elevation API: x/1000`** tail is your daily-quota gauge (only shown when
@@ -226,8 +239,10 @@ you for free); get them from **openstreetmap.org → "Export" tab** (drag a box,
 the four edges) or read them off mapy.cz. The boolean filters are **tri-state**:
 omit = don't care, `--circular` = require loops, `--no-circular` = exclude loops
 (same pattern for `--car-access` and `--chairlift-access`). Numeric filters:
-`--min-gain`/`--max-gain` (m), `--min-distance`/`--max-distance` (km). Run
-`hike-finder --help` for the complete list.
+`--min-gain`/`--max-gain` (m), `--min-distance`/`--max-distance` (km). To require
+that a route actually goes somewhere — a church, a ruin, a summit — add
+`--poi KIND` (see [Hiking *to* something](#hiking-to-something--churches-ruins-peaks)).
+Run `hike-finder --help` for the complete list.
 
 **Expect** — one line per matching route (this is a **real** capture of the bbox
 above, no filters):
@@ -436,36 +451,55 @@ threshold, smoothing, access radii and loop tolerance on each offline search.
 **Do** — in the page (see [Step 3A](#step-3a--web-ui-easiest-no-coordinates-to-type)
 for the basics):
 
-1. Pan/zoom the map to frame the area and fill in **Contact**.
-2. Type a name in the **"name this view"** box (e.g. `krkonose`) and click **"Download
-   view"**.
-3. Pick the saved view from the **"Search area"** dropdown (instead of the default
-   *"— live map (fetches OSM) —"*), set your filters, and click **Search**.
+1. Pan/zoom the map to frame the area (or press **"Draw a box"** and drag the exact
+   rectangle you want) and fill in **Contact**.
+2. Type a name in the **"name this area"** box (e.g. `krkonose`) and click **"Download"**.
+3. Pick the saved area from the **"Search area"** dropdown (instead of the default
+   *"— live map (fetches OSM) —"*) or click it in the **"Already downloaded"** list, set
+   your filters, and click **Search**.
 
 **Expect** — while downloading, the status line reads
 `Downloading "krkonose" (one-time fetch + elevation)…`, then settles to
-`Saved "krkonose": 11 routes, ~1,500 elevation samples. Now searchable offline.` The
-new view appears in the **"Search area"** dropdown immediately. A search against a saved
-view shows the same cards and pins as a live one — but **with no `elevation API:` tail**
-on the status line, the same offline tell as the CLI.
+`Saved "krkonose": 11 routes, ~1,500 elevation samples, 280 places of interest. Now
+searchable offline.` The new area appears in the dropdown and the list immediately, and
+its outline is drawn on the map. A search against a saved area shows the same cards and
+pins as a live one — but **with no `elevation API:` tail** on the status line, the same
+offline tell as the CLI.
 
-**Read it** — Web-UI snapshots are saved **by name** into a per-user cache folder, so a
-view you downloaded last week is still offered in the dropdown today:
+**Seeing what you already have** — the **"Already downloaded"** panel answers "have I got
+this area?" without guesswork: each entry shows its route/sample/POI counts, file size and
+download date, and every one is **outlined on the map** so you can see the ground it
+covers. Click an entry to select it (and frame it); click again to go back to the live map.
+An entry warning *"no points of interest"* predates that feature — re-download it before
+using **Must pass** there, or the filter can only come back empty.
+
+The same inventory is available outside the browser:
+
+```bash
+hike-finder --list-areas             # human-readable
+hike-finder --list-areas --json      # machine-readable
+hike-finder --area krkonose          # search one by NAME, not just by path
+```
+
+**Read it** — named snapshots live in a per-user cache folder, so an area you downloaded
+last week is still offered today:
 
 - Windows: `%LOCALAPPDATA%\hike-finder\snapshots`
 - Linux/macOS: `~/.cache/hike-finder/snapshots`
 - Override either with the `HIKE_SNAPSHOT_DIR` environment variable.
 
-(The **CLI** is different on purpose: it writes to the exact path you pass to
-`--download`, wherever you want the file — the dropdown convenience is a Web-UI thing.)
+(A CLI `--download some/path.json` writes to exactly the path you give it, anywhere you
+like — those files are *not* tracked by `--list-areas`. Search them with
+`--area some/path.json`.)
 
 ### The same thing from MCP
 
-An LLM driving the server gets two offline hooks: a **`download_area`** tool (give it
-the bbox and a file path to fetch-and-save once) and an **`area`** argument on
-`find_hikes` (point it at a saved snapshot to search it offline). So you can ask *"download
-the Špindlerův Mlýn area for offline use,"* then later *"search that saved area for loops
-over 600 m"* and the client routes the second request through the snapshot — no API calls.
+An LLM driving the server gets three offline hooks: a **`download_area`** tool (give it
+the bbox and a file path to fetch-and-save once), an **`area`** argument on `find_hikes`
+(point it at a saved snapshot to search it offline), and a **`list_areas`** tool (what have
+I already downloaded?). So you can ask *"download the Špindlerův Mlýn area for offline
+use,"* then later *"what areas do I have saved?"* and *"search that saved area for loops
+over 600 m"* — the last request goes through the snapshot with no API calls.
 
 ### Even without downloading: the automatic cache
 
@@ -502,6 +536,70 @@ Add `--near-misses` to always list them, `--no-near-misses` to never. The defaul
 `HIKE_NEAR_MISS_DIST_KM` (2 km), `HIKE_NEAR_MISS_RADIUS_FRAC` (0.5 = parking/lift up to
 1.5× the radius still counts). In the Web UI it's the **"Near misses"** dropdown
 (auto / always / never); over MCP, a `near_misses` boolean on `find_hikes`.
+
+---
+
+## Hiking *to* something — churches, ruins, peaks
+
+Distance and gain tell you how hard a walk is. They don't tell you whether it's worth
+doing. `--poi` adds the missing half of the question: **"a 12 km hike with 400 m of
+climbing that goes to a ruin."**
+
+**Do**
+
+```bash
+hike-finder --list-pois                       # what you can ask for
+
+hike-finder --bbox 50.52 15.15 50.60 15.28 \
+            --poi ruins,castle --max-distance 25
+```
+
+**Expect** — the ordinary result lines, each with a trailing note naming what the route
+reaches and how far off the trail it sits:
+
+```text
+[M] Hrubá Skála (žst.) - Kost (bus) — 14.08 km, +335 m / -313 m [one-way, car]
+    (start 50.5504,15.2134, OSM relation 1147930)
+    [passes castle "zámek Hrubá Skála" (90 m); ruin "Radeč" (101 m)]
+[Ž] Turnov - Kozákov — 12.42 km, +110 m / -252 m [one-way, car]
+    (start 50.5947,15.2640, OSM relation 369232)  [passes ruin "Rotštejn" (20 m)]
+```
+
+**Why** — the eighteen kinds are the things people actually plan a walk around:
+
+| | |
+|---|---|
+| heritage | `church`, `shrine` (wayside shrines & crosses), `ruins`, `castle`, `memorial`, `archaeology`, `museum` |
+| landscape | `peak`, `rock`, `cave`, `spring`, `waterfall`, `viewpoint`, `tower` |
+| comfort | `hut`, `shelter`, `picnic`, `refreshment` |
+
+Repeat `--poi` or comma-separate: several kinds are **OR**-ed, so `--poi church --poi ruins`
+means "a church *or* a ruin", which is what picking two things off a list normally means.
+(AND-ing them would almost always return nothing.)
+
+**Read it**
+
+- The **number in brackets is the measured distance from the trail**, so you can tell
+  "the path runs right past it" (20 m) from "it's a short detour" (200 m). That's also how
+  you tell a route that *ends* at something from one that merely passes it.
+- **`--poi-radius M`** (default 250) is the lever. Too many marginal hits? Drop it to 100.
+  Nothing found? Try 500. Distance is measured to the trail *line*, not to its mapped
+  nodes, so a long straight stretch drawn with only two nodes still reports honestly.
+- It **combines with everything**: `--compose-loops --poi ruins` finds stitched day-loops
+  past a ruin; `--around`/`--from`/`--via` accept it too; and an offline `--area` search
+  applies it with no network at all.
+- **A miss is about the map, not the world** — exactly like car/lift access. No result means
+  nothing of that kind is *mapped in OSM* near a route there. A misspelled kind, by contrast,
+  is a loud error naming the valid ones, so a typo never masquerades as "none exist".
+
+**In the Web UI** it's the **"Must pass"** multi-select (Ctrl/⌘-click for several) plus a
+**"How close counts (m)"** box; matches get a green *passes …* line on the card and a green
+ring on the map. **Over MCP** every search tool takes a `poi` array and a `poi_radius_m`.
+
+> **Offline caveat.** An area you downloaded before this feature existed carries no points
+> of interest, so a `--poi` search against it can only come back empty. The tool says so
+> loudly rather than letting you read it as "no ruins here" — re-download the area
+> (`--list-areas` flags which ones need it).
 
 ---
 
@@ -751,6 +849,9 @@ gain they report*:
 - `HIKE_CAR_RADIUS` / `HIKE_LIFT_RADIUS` (default `300` / `400` m) — how near an
   endpoint parking/a lift must be to flag access. Widen if you're getting false
   negatives in sprawly trailhead areas.
+- `HIKE_POI_RADIUS_M` (default `250` m) — how close a route must pass a church /
+  ruin / peak to count as reaching it (same as `--poi-radius`). Lower it for "right
+  on the trail", raise it for "somewhere on this walk".
 
 **Why** — these are exactly the knobs that make different trail sites report
 different gain for the same trail. Making them explicit is the point of the tool:
@@ -768,6 +869,9 @@ your numbers stay consistent and tunable instead of inherited from a third party
 | Slow, or occasional `504` | Public Overpass is overloaded; the client retries with backoff | Wait it out, or point `HIKE_OVERPASS_URL` at a regional/self-hosted instance for heavy use |
 | A route you know is a loop shows `one-way` | Its ends are farther apart than the loop tolerance | Raise `HIKE_LOOP_TOLERANCE` |
 | `car`/`lift` absent on a trail you can drive to | OSM has no parking/lift mapped near its ends — not a claim it's unreachable | Trust your local knowledge; the flag only reports what OSM maps |
+| `No routes pass a point of interest of that kind here` | Nothing of that kind is *mapped* within the radius of any route there | Widen `--poi-radius`, try a related kind (`castle` vs `ruins`), or search a wider area |
+| `unknown point-of-interest kind 'x'` | A typo — deliberately an error, so it can never read as "none exist" | Pick from `hike-finder --list-pois` |
+| `this snapshot carries no points of interest` | The saved area predates the feature | Re-download it; `--list-areas` marks which ones need it |
 
 For anything deeper (what's implemented vs. validated live, and what's next), see
 [`HANDOFF.md`](HANDOFF.md) and the [Status section](README.md#status) of the README.

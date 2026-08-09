@@ -8,6 +8,47 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Hike to something — filter routes by the objects they pass** (`--poi KIND`, MCP `poi`,
+  web "Must pass"). Distance and gain were already queryable; this adds the *destination*
+  dimension: "a 12 km hike, 400 m of climbing, that goes to a ruin." Eighteen kinds
+  (`--list-pois`): churches & chapels, wayside shrines & crosses, ruins, castles & forts,
+  memorials, archaeological sites, summits, rock formations, caves, springs, waterfalls,
+  viewpoints, lookout towers, museums, mountain huts, shelters, picnic sites, and
+  pubs & restaurants. Several kinds are OR-ed. Each result reports what it reaches and how
+  far off the trail it sits (`passes castle "Valdštejn" (85 m)`); the web UI pins them on
+  the map. `--poi-radius` / `HIKE_POI_RADIUS_M` (default 250 m) sets how close counts.
+  - Works in **every** mode — a bbox search, `--compose-loops`, the point-based modes, and
+    an offline `--area` search — because "does it pass a ruin?" is a property of the route,
+    not of how the route was found.
+  - Proximity is measured to the trail **line**, not to its mapped nodes: a straight member
+    way with two nodes kilometres apart still reports its true closest approach.
+  - The filter runs in the **cheap** pass, so a POI-filtered search spends *less* elevation
+    budget than the same search without it.
+  - Honest about misses, as with car/lift access: no match means nothing of that kind is
+    *mapped* in OSM near a route, not that nothing is there. An unknown kind is a loud
+    error, never a silent empty result.
+- **See which areas you have already downloaded** (`--list-areas`, MCP `list_areas`, web
+  "Already downloaded"). Name, bounding box, when it was fetched, and what it holds
+  (routes, elevation samples, points of interest, file size). The web UI **outlines every
+  downloaded area on the map** and lets you click one to search it offline. `--area` now
+  also accepts a bare area *name*, not only a path. Areas downloaded before this release
+  carry no points of interest and are flagged for re-download rather than silently failing
+  a `--poi` search.
+- **Draw a box to pick the area** (web UI). Drag a rectangle on the map instead of relying
+  on however the map happens to be panned; the size is shown in km before you spend a
+  query on it. The **same** box drives both the download and the search, so you can no
+  longer download one rectangle and search another. With nothing drawn it falls back to the
+  map view, exactly as before.
+
+### Changed
+
+- The Overpass query now also fetches the registered points of interest, on every request.
+  This is what lets one snapshot answer any destination question later, and keeps a single
+  Overpass cache key. **It changes the query text, so every cached Overpass area is
+  invalidated and re-fetched once.** Elevation caches are unaffected.
+- Snapshots gained an optional `pois` key (no version bump — older files load unchanged and
+  simply report no points of interest).
+
 - **Point-based route drawing — pick point(s) on a map instead of a bounding box.** Three
   new live modes, each deriving its own search area from the point(s) (no `--bbox`):
   - **Circular routes near a point** (`--around LAT LON`, MCP `circular_routes`, web "Mode →

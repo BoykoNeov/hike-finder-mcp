@@ -18,9 +18,11 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from . import config as _config
 from .export import GEOJSON_MIME, GPX_MIME, hikes_to_geojson, hikes_to_gpx
 from .filters import Criteria
 from .format import hike_to_dict
+from .poi import kind_labels, normalise_kinds
 from .search import (
     compose_loops,
     compose_loops_around,
@@ -30,7 +32,7 @@ from .search import (
     search_hikes,
     search_snapshot,
 )
-from .snapshot import default_snapshot_dir, load_snapshot, save_snapshot
+from .snapshot import list_snapshots, load_snapshot, save_snapshot, snapshot_path
 
 INDEX_HTML = """<!doctype html>
 <html lang="en">
@@ -60,6 +62,14 @@ INDEX_HTML = """<!doctype html>
   .hike.near { background:#fffaf0; }
   .hike.near .name::before { content:"~ "; color:#b8860b; }
   .note { color:#a06000; font-size:12px; margin-top:2px; }
+  .passes { color:#0b6b4f; font-size:12px; margin-top:2px; }
+  select[multiple] { height:auto; padding:3px; }
+  .area { border:1px solid #e3e6ea; border-radius:4px; padding:6px 8px; margin-top:6px; cursor:pointer; }
+  .area:hover { background:#f6f8fa; border-color:#c9d2dc; }
+  .area.on { background:#eef6ff; border-color:#7aa7d9; }
+  .area .an { font-weight:600; }
+  .area .ad { color:#666; font-size:12px; }
+  .area .warn { color:#a06000; font-size:12px; }
 </style>
 </head>
 <body>
@@ -76,11 +86,21 @@ INDEX_HTML = """<!doctype html>
     <select id="area">
       <option value="">— live map (fetches OSM) —</option>
     </select>
-    <div class="row" style="margin-top:6px;">
-      <div style="flex:2;"><input id="area_name" placeholder="name this view, e.g. krkonose"></div>
-      <div style="flex:1;"><button id="download" style="margin-top:0;" title="Fetch this map view once and save it for offline, API-free searching">Download view</button></div>
+
+    <label>Area to fetch / search</label>
+    <div class="row">
+      <div><button id="draw" style="margin-top:0;" title="Drag a box on the map to pick an exact area">Draw a box</button></div>
+      <div><button id="draw_clear" style="margin-top:0;" title="Go back to using whatever the map is showing">Use whole view</button></div>
     </div>
-    <p class="muted">Download a view once, then pick it above to search offline with no API calls.</p>
+    <p class="muted" id="sel_note"></p>
+    <div class="row" style="margin-top:6px;">
+      <div style="flex:2;"><input id="area_name" placeholder="name this area, e.g. krkonose"></div>
+      <div style="flex:1;"><button id="download" style="margin-top:0;" title="Fetch this area once and save it for offline, API-free searching">Download</button></div>
+    </div>
+
+    <label>Already downloaded <span class="muted" id="areas_count"></span></label>
+    <p class="muted">Outlined on the map. Click one to search it offline — no network, no API calls.</p>
+    <div id="areas_list"></div>
 
     <label>Mode</label>
     <select id="mode">
@@ -120,6 +140,12 @@ INDEX_HTML = """<!doctype html>
     <select id="chairlift_access">
       <option value="">any</option><option value="true">required</option><option value="false">excluded</option>
     </select>
+
+    <label>Must pass (churches, ruins, peaks…)</label>
+    <select id="poi" multiple size="7"></select>
+    <p class="muted">Ctrl/&#8984;-click for several — a route passing <b>any</b> of them is kept, and what it reaches is listed with the distance. Leave empty for no destination filter.</p>
+    <label>How close counts (m)</label>
+    <input id="poi_radius_m" type="number" step="50" placeholder="250">
 
     <label>Near misses (close-but-not-matching routes)</label>
     <select id="near_misses">
@@ -161,11 +187,104 @@ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
 const markers = L.layerGroup().addTo(map);
 const routeLines = L.layerGroup().addTo(map);   // drawn polylines for the matched routes
 const picks = L.layerGroup().addTo(map);        // the point(s) the user clicked to pick
+const poiMarkers = L.layerGroup().addTo(map);   // the objects the listed routes reach
+const areaBoxes = L.layerGroup().addTo(map);    // outlines of the already-downloaded areas
 let lastParams = null;                           // params of the last search, for GPX/GeoJSON download
 let aroundPt = null, fromPt = null, toPt = null; // picked points for the point-based modes
 let viaPts = [];                                 // ordered waypoints for the 'via' mode
 
 function modeName(){ return document.getElementById('mode').value; }
+
+// ---- the drawn selection ---------------------------------------------------------
+// ONE box, read by both the download and the search: "the selected area" has to mean
+// the same thing to each, or you would download one rectangle and search another. With
+// nothing drawn it falls back to the map view, which is how this UI always worked.
+let drawnBounds = null;      // the box you dragged, or null for "the whole view"
+let drawRect = null;         // its Leaflet rectangle
+let arming = false;          // the Draw button is armed, waiting for a drag
+let dragFrom = null;         // where the drag started
+let swallowClick = false;    // don't let the drag's mouseup double as a point-pick
+
+function selectionBounds(){ return drawnBounds || map.getBounds(); }
+
+function boundsParams(params){
+  const b = selectionBounds();
+  params.set('south', b.getSouth()); params.set('west', b.getWest());
+  params.set('north', b.getNorth()); params.set('east', b.getEast());
+}
+
+function updateSel(){
+  const note = document.getElementById('sel_note');
+  const btn = document.getElementById('draw');
+  if (arming){
+    btn.textContent = 'Drawing…';
+    note.textContent = 'Drag on the map to draw your area.';
+  } else if (drawnBounds){
+    const b = drawnBounds;
+    // Rough size, so an accidental 300 m box or a reckless 200 km one is visible
+    // BEFORE you spend an Overpass query and an elevation budget on it.
+    const km = (a, c) => (map.distance(a, c) / 1000);
+    const w = km([b.getSouth(), b.getWest()], [b.getSouth(), b.getEast()]);
+    const h = km([b.getSouth(), b.getWest()], [b.getNorth(), b.getWest()]);
+    btn.textContent = 'Redraw box';
+    note.innerHTML = 'Using your drawn box, about <b>' + w.toFixed(1) + ' &times; '
+      + h.toFixed(1) + ' km</b>. It is used for both downloading and searching.';
+  } else {
+    btn.textContent = 'Draw a box';
+    note.textContent = 'Using the whole map view. Draw a box to pin an exact area — '
+      + 'the same box is used for downloading and for searching.';
+  }
+}
+
+function clearDraw(){
+  drawnBounds = null;
+  if (drawRect){ drawRect.remove(); drawRect = null; }
+  arming = false;
+  map.dragging.enable();
+  map.getContainer().style.cursor = '';
+  updateSel();
+}
+
+document.getElementById('draw').addEventListener('click', () => {
+  arming = true;
+  map.dragging.disable();          // otherwise the drag pans the map instead of drawing
+  map.getContainer().style.cursor = 'crosshair';
+  updateSel();
+});
+document.getElementById('draw_clear').addEventListener('click', clearDraw);
+
+map.on('mousedown', e => {
+  if (!arming) return;
+  dragFrom = e.latlng;
+  if (drawRect){ drawRect.remove(); drawRect = null; }
+});
+map.on('mousemove', e => {
+  if (!arming || !dragFrom) return;
+  const b = L.latLngBounds(dragFrom, e.latlng);
+  if (drawRect) drawRect.setBounds(b);
+  else drawRect = L.rectangle(b, { color:'#111', weight:2, dashArray:'5 4',
+                                   fillColor:'#111', fillOpacity:0.05 }).addTo(map);
+});
+map.on('mouseup', e => {
+  if (!arming || !dragFrom) return;
+  const b = L.latLngBounds(dragFrom, e.latlng);
+  dragFrom = null;
+  arming = false;
+  map.dragging.enable();
+  map.getContainer().style.cursor = '';
+  // The same gesture also fires a 'click', which must not double as a point-pick.
+  // Guarded twice on purpose: `onMapClick` consumes the flag (so the suppression is
+  // exact and does not depend on event-loop ordering), and this timer clears it if no
+  // click follows at all — otherwise a stale flag would swallow the user's NEXT click.
+  swallowClick = true;
+  setTimeout(() => { swallowClick = false; }, 0);
+  // A click with no real drag is a mis-hit, not a zero-size area — cancel it rather
+  // than silently arming a search over a few metres of ground.
+  if (map.distance(b.getSouthWest(), b.getNorthEast()) < 50){ clearDraw(); return; }
+  drawnBounds = b;
+  if (drawRect) drawRect.setBounds(b);
+  updateSel();
+});
 
 function drawPicks(){
   // Redraw the picked-point markers for the current mode (a labelled circle each).
@@ -184,6 +303,8 @@ function drawPicks(){
 }
 
 function onMapClick(e){
+  if (arming) return;                       // mid-draw: not a point-pick
+  if (swallowClick){ swallowClick = false; return; }  // the drag's trailing click
   const m = modeName();
   if (m === 'around'){ aroundPt = e.latlng; }
   else if (m === 'between'){
@@ -224,7 +345,7 @@ function updateMode(){
                   : m === 'via' ? 'Draw the route through the points'
                   : 'Search this map area';
   picks.clearLayers(); aroundPt = fromPt = toPt = null; viaPts = [];
-  markers.clearLayers(); routeLines.clearLayers();
+  markers.clearLayers(); routeLines.clearLayers(); poiMarkers.clearLayers();
   updateHint();
 }
 
@@ -238,20 +359,99 @@ function val(id){ const v = document.getElementById(id).value.trim(); return v =
 const FIELDS = ['circular','car_access','chairlift_access','near_misses',
                 'min_gain_m','max_gain_m','min_distance_km','max_distance_km','user_agent'];
 
+function fmtWhen(iso){
+  // "2026-08-09T12:34:56+00:00" -> "2026-08-09 12:34 UTC". Sliced, not regexed: this
+  // JS lives inside a Python string, where a regex escape would need double-escaping.
+  if (!iso) return 'unknown date';
+  const s = String(iso).replace('T', ' ').replace('+00:00', '').trim();
+  return (s.length >= 16 ? s.slice(0, 16) : s) + ' UTC';
+}
+
+function selectArea(name){
+  // Pick a downloaded area and frame it, so "search offline" and "look at what I
+  // downloaded" are the same gesture.
+  const sel = document.getElementById('area');
+  sel.value = (sel.value === name) ? '' : name;
+  const box = areaBoxes.getLayers().find(l => l._hfName === name);
+  if (box && sel.value) map.fitBounds(box.getBounds().pad(0.05));
+  renderAreaList(window._hfAreas || []);
+  updateHint();
+}
+
+function renderAreaList(areas){
+  const list = document.getElementById('areas_list');
+  const chosen = document.getElementById('area').value;
+  document.getElementById('areas_count').textContent =
+    areas.length ? '(' + areas.length + ')' : '(none yet)';
+  if (!areas.length){
+    list.innerHTML = '<p class="muted">Nothing downloaded yet. Draw a box (or use the '
+      + 'current view), name it, and press Download.</p>';
+    return;
+  }
+  list.innerHTML = '';
+  for (const a of areas){
+    const el = document.createElement('div');
+    el.className = 'area' + (a.name === chosen ? ' on' : '');
+    // An area downloaded before points of interest existed can't answer a "must pass"
+    // search, and that must not read as "there are no churches here".
+    const stale = !a.pois
+      ? '<div class="warn">no points of interest — re-download to use “Must pass”</div>' : '';
+    el.innerHTML = '<div class="an">' + esc(a.name) + '</div>'
+      + '<div class="ad">' + a.routes + ' routes &middot; ' + a.samples + ' elevation samples'
+      + (a.pois ? (' &middot; ' + a.pois + ' places of interest') : '')
+      + '</div>'
+      + '<div class="ad">' + (a.bytes / 1e6).toFixed(1) + ' MB &middot; ' + fmtWhen(a.created_at) + '</div>'
+      + stale;
+    el.onclick = () => selectArea(a.name);
+    list.appendChild(el);
+  }
+}
+
 async function loadAreas(selectName){
-  // Populate the saved-area selector from disk, preserving the live-map option.
+  // Populate the saved-area selector AND outline every downloaded area on the map, so
+  // "what have I already got?" is answerable at a glance instead of by name alone.
   try {
     const areas = await (await fetch('/api/areas')).json();
+    window._hfAreas = areas;
     const sel = document.getElementById('area');
     sel.length = 1;  // keep the first "live map" option
+    areaBoxes.clearLayers();
     for (const a of areas){
       const o = document.createElement('option');
       o.value = a.name;
       o.textContent = a.name + ' (' + a.routes + ' routes)';
       sel.appendChild(o);
+      const b = a.bbox;
+      if (b && b.length === 4){
+        const rect = L.rectangle([[b[0], b[1]], [b[2], b[3]]], {
+          color:'#0b7d63', weight:1, dashArray:'3 4', fillColor:'#0b7d63', fillOpacity:0.04,
+        }).addTo(areaBoxes);
+        rect._hfName = a.name;
+        rect.bindTooltip('downloaded: ' + a.name, { sticky:true });
+        rect.on('click', ev => { L.DomEvent.stop(ev); selectArea(a.name); });
+      }
     }
     if (selectName) sel.value = selectName;
+    renderAreaList(areas);
   } catch (e){ /* best-effort */ }
+}
+
+async function loadPois(){
+  // The destination kinds come from the server's ONE registry, so the list can never
+  // offer something the engine would reject.
+  try {
+    const kinds = await (await fetch('/api/pois')).json();
+    const sel = document.getElementById('poi');
+    for (const k of kinds){
+      const o = document.createElement('option');
+      o.value = k.kind; o.textContent = k.label;
+      sel.appendChild(o);
+    }
+  } catch (e){ /* best-effort */ }
+}
+
+function selectedPois(){
+  return Array.from(document.getElementById('poi').selectedOptions).map(o => o.value);
 }
 
 async function search(){
@@ -275,11 +475,17 @@ async function search(){
   } else if (area){
     params.set('area', area);                 // offline: bbox comes from the snapshot
   } else {
-    const b = map.getBounds();
-    params.set('south', b.getSouth()); params.set('west', b.getWest());
-    params.set('north', b.getNorth()); params.set('east', b.getEast());
+    boundsParams(params);                     // your drawn box, else the whole view
     // Loop composition is a live-map-only mode (it builds a graph from fetched OSM).
     if (document.getElementById('compose_loops').checked) params.set('compose_loops', 'true');
+  }
+  // The destination filter applies to EVERY mode — an area search, a composed loop, a
+  // route between two points — because "does this go past a ruin?" is a property of the
+  // route, not of how the route was found.
+  const pois = selectedPois();
+  for (const k of pois) params.append('poi', k);
+  if (pois.length){
+    const pr = val('poi_radius_m'); if (pr !== null) params.set('poi_radius_m', pr);
   }
   // Reverse-geocode naming applies only to the plain live-area search (unnamed relations).
   if (mode === 'area' && !area && document.getElementById('name_places').checked) params.set('name_places', 'true');
@@ -295,7 +501,8 @@ async function search(){
 
   const results = document.getElementById('results');
   status.textContent = area ? ('Searching “' + area + '” offline…') : 'Searching…';
-  results.innerHTML = ''; markers.clearLayers(); routeLines.clearLayers();
+  results.innerHTML = '';
+  markers.clearLayers(); routeLines.clearLayers(); poiMarkers.clearLayers();
   try {
     const resp = await fetch('/api/hikes?' + params.toString());
     const data = await resp.json();
@@ -307,7 +514,13 @@ async function search(){
     const noun = (mode === 'between') ? ' route(s)'
                : (mode === 'via') ? (viaLoop ? ' circular route' : ' route')
                : (mode === 'around' || composing) ? ' loop(s)' : ' match(es)';
-    if (data.length === 0){
+    if (data.length === 0 && pois.length){
+      // With a destination filter on, the usual culprit is the radius or the kind —
+      // not the distance/gain band — so point at the right lever.
+      status.textContent = 'Nothing here passes a ' + pois.join(' or a ')
+        + ' — widen “how close counts”, pick another kind, or search a wider area. '
+        + '(A miss means nothing of that kind is mapped in OSM near a route.)';
+    } else if (data.length === 0){
       status.textContent = mode === 'around'
           ? 'No loops pass within the radius of your point — widen the radius or the min/max distance.'
         : mode === 'between'
@@ -328,10 +541,9 @@ async function search(){
 async function downloadArea(){
   const name = (document.getElementById('area_name').value || '').trim();
   if (!name){ document.getElementById('status').textContent = 'Enter a name for this view first.'; return; }
-  const b = map.getBounds();
-  const params = new URLSearchParams({
-    name, south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast()
-  });
+  // The SAME selection the search uses — your drawn box if there is one.
+  const params = new URLSearchParams({ name });
+  boundsParams(params);
   const ua = val('ua'); if (ua !== null) params.set('user_agent', ua);
   // Reuse the naming checkbox: when checked, bake place names into the snapshot so an
   // offline search of it can label unnamed routes (otherwise that's a no-op offline).
@@ -345,7 +557,7 @@ async function downloadArea(){
     const data = await resp.json();
     if (!resp.ok || data.error){ status.textContent = 'Error: ' + (data.error || resp.status); return; }
     status.textContent = 'Saved “' + data.name + '”: ' + data.routes + ' routes, '
-      + data.samples + ' elevation samples'
+      + data.samples + ' elevation samples, ' + (data.pois || 0) + ' places of interest'
       + (naming ? (', ' + (data.places || 0) + ' baked place names') : '')
       + '. Now searchable offline.';
     await loadAreas(data.name);
@@ -393,6 +605,20 @@ function render(hikes){
     const gain = (h.gain_m != null) ? ('+' + h.gain_m + ' m / -' + h.loss_m + ' m') : 'gain n/a';
     const note = (h.near_miss && h.notes && h.notes.length)
       ? '<div class="note">near miss: ' + esc(h.notes.join('; ')) + '</div>' : '';
+    // What the route actually reaches: listed with the measured distance, and pinned on
+    // the map so "goes past a ruin" is something you can see rather than take on trust.
+    let passes = '';
+    if (h.pois && h.pois.length){
+      const parts = h.pois.map(p => esc(p.label + (p.name ? ' “' + p.name + '”' : ''))
+                                    + ' (' + Math.round(p.distance_m) + ' m)');
+      passes = '<div class="passes">passes ' + parts.join('; ') + '</div>';
+      for (const p of h.pois){
+        L.circleMarker([p.lat, p.lon], { radius:6, color:'#0b7d63', weight:2,
+            fillColor:'#8ce0c8', fillOpacity:0.95 }).addTo(poiMarkers)
+          .bindPopup('<b>' + esc(p.name || p.label) + '</b><br>' + esc(p.label)
+                     + '<br>' + Math.round(p.distance_m) + ' m from ' + esc(dispName));
+      }
+    }
     // A composed loop has no single relation id — name its constituent trails. An
     // unnamed route given a place label is marked "unnamed OSM relation" so the
     // geocoded label is never mistaken for the route's signed trail name.
@@ -404,6 +630,7 @@ function render(hikes){
     el.innerHTML = '<div class="name">' + esc(dispName) + '</div>'
       + '<div class="meta">' + h.distance_km + ' km &middot; ' + gain + '</div>'
       + '<div class="flags">' + flags.map(f => '<span>' + f + '</span>').join('') + '</div>'
+      + passes
       + note
       + '<div class="muted">' + ident + '</div>';
     el.onclick = () => {
@@ -433,7 +660,10 @@ updateMode();
 document.getElementById('download').onclick = downloadArea;
 document.getElementById('dl_gpx').onclick = () => download('gpx');
 document.getElementById('dl_geojson').onclick = () => download('geojson');
+document.getElementById('area').onchange = () => renderAreaList(window._hfAreas || []);
+updateSel();
 loadAreas();
+loadPois();
 </script>
 </body>
 </html>
@@ -470,39 +700,25 @@ def _str(qs: dict, key: str) -> str | None:
     return v or None
 
 
-def _slug(name: str) -> str:
-    """A safe snapshot filename stem: keep word chars and dashes, never a path."""
-    return "".join(c if (c.isalnum() or c in "-_") else "_" for c in name).strip("_")
+def _poi_kinds(qs: dict) -> tuple[str, ...]:
+    """The requested POI kinds, from repeated ``poi=`` and/or comma-separated values.
+
+    Raises ``ValueError`` (surfaced as a 400) on an unknown kind, so a stale bookmark or
+    a hand-typed query fails visibly instead of quietly matching nothing.
+    """
+    raw: list[str] = []
+    for item in qs.get("poi", []):
+        raw.extend(part for part in str(item).split(",") if part.strip())
+    return normalise_kinds(raw)
 
 
-def _snapshot_path(name: str):
-    stem = _slug(name)
-    if not stem:
-        return None
-    return default_snapshot_dir() / f"{stem}.json"
-
-
-def _list_areas() -> list[dict]:
-    """Light metadata for every saved snapshot (no full elevation load)."""
-    out = []
-    d = default_snapshot_dir()
-    if not d.is_dir():
-        return out
-    for path in sorted(d.glob("*.json")):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        out.append(
-            {
-                "name": path.stem,
-                "bbox": data.get("bbox"),
-                "created_at": data.get("created_at"),
-                "routes": len(data.get("area", {}).get("routes", [])),
-                "samples": len(data.get("elevations", {})),
-            }
-        )
-    return out
+def _cfg_for(qs: dict):
+    """Env config with the per-search knobs the form can override applied on top."""
+    cfg = _config.load()
+    radius = _num(qs, "poi_radius_m")
+    if radius is not None:
+        cfg.poi_radius_m = radius
+    return cfg
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -534,6 +750,11 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/areas":
             self._areas()
             return
+        if parsed.path == "/api/pois":
+            # The selectable destination kinds, served from the ONE registry so the UI
+            # list can never offer something the engine doesn't know (see poi.py).
+            self._json(200, [{"kind": k, "label": lbl} for k, lbl in kind_labels()])
+            return
         if parsed.path == "/api/download":
             self._download(parse_qs(parsed.query))
             return
@@ -546,11 +767,13 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(obj, ensure_ascii=False), "application/json; charset=utf-8")
 
     def _areas(self) -> None:
-        self._json(200, _list_areas())
+        """"What have I already downloaded?" — one entry per named snapshot, with its
+        bbox so the map can outline the covered ground, not merely name it."""
+        self._json(200, list_snapshots())
 
     def _download(self, qs: dict) -> None:
         name = _str(qs, "name")
-        path = _snapshot_path(name) if name else None
+        path = snapshot_path(name) if name else None
         if path is None:
             self._json(400, {"error": "a non-empty area name is required"})
             return
@@ -581,6 +804,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, {
             "name": path.stem, "routes": snap.route_count,
             "samples": snap.sample_count, "places": snap.place_count,
+            "pois": snap.poi_count,
         })
 
     def _quota(self) -> None:
@@ -607,6 +831,11 @@ class Handler(BaseHTTPRequestHandler):
         download) so all three agree on filters, area resolution, and error handling.
         Returns ``(hikes, None)`` on success or ``(None, (status, {"error": ...}))``.
         """
+        try:
+            poi_kinds = _poi_kinds(qs)
+        except ValueError as e:
+            return None, (400, {"error": str(e)})
+        cfg = _cfg_for(qs)
         criteria = Criteria(
             min_gain_m=_num(qs, "min_gain_m"),
             max_gain_m=_num(qs, "max_gain_m"),
@@ -615,6 +844,7 @@ class Handler(BaseHTTPRequestHandler):
             circular=_tri(qs, "circular"),
             car_access=_tri(qs, "car_access"),
             chairlift_access=_tri(qs, "chairlift_access"),
+            poi_kinds=poi_kinds,
         )
         # near_misses tri-state: absent -> "auto", true -> always, false -> never.
         nm = _tri(qs, "near_misses")
@@ -625,13 +855,13 @@ class Handler(BaseHTTPRequestHandler):
         area_name = _str(qs, "area")
         if area_name:
             # Offline: search a saved snapshot — no network, no API calls.
-            path = _snapshot_path(area_name)
+            path = snapshot_path(area_name)
             if path is None or not path.is_file():
                 return None, (404, {"error": f"no saved area named {area_name!r}"})
             try:
                 snap = load_snapshot(path)
                 return search_snapshot(
-                    snap, criteria, near_miss=near_miss, name_places=name_places
+                    snap, criteria, cfg=cfg, near_miss=near_miss, name_places=name_places
                 ), None
             except (OSError, ValueError) as e:
                 return None, (500, {"error": f"could not search snapshot: {e}"})
@@ -643,7 +873,7 @@ class Handler(BaseHTTPRequestHandler):
         if around_lat is not None and around_lon is not None:
             try:
                 return compose_loops_around(
-                    (around_lat, around_lon), criteria,
+                    (around_lat, around_lon), criteria, cfg=cfg,
                     radius_m=_num(qs, "around_radius_m"),
                     user_agent=ua, near_miss=near_miss,
                 ), None
@@ -657,7 +887,7 @@ class Handler(BaseHTTPRequestHandler):
             k = _num(qs, "routes_k")
             try:
                 return routes_between(
-                    (f_lat, f_lon), (t_lat, t_lon), criteria,
+                    (f_lat, f_lon), (t_lat, t_lon), criteria, cfg=cfg,
                     k=int(k) if k else None, user_agent=ua,
                 ), None
             except Exception as e:  # noqa: BLE001
@@ -678,7 +908,8 @@ class Handler(BaseHTTPRequestHandler):
                 return None, (400, {"error": "give at least two via points to link"})
             try:
                 return route_via(
-                    points, criteria, loop=_tri(qs, "via_loop") is True, user_agent=ua,
+                    points, criteria, cfg=cfg,
+                    loop=_tri(qs, "via_loop") is True, user_agent=ua,
                 ), None
             except Exception as e:  # noqa: BLE001
                 return None, _fetch_error(e)
@@ -696,7 +927,7 @@ class Handler(BaseHTTPRequestHandler):
         # Loop composition: synthesise loops from connected trails inside the box.
         composing = _tri(qs, "compose_loops")
         search = compose_loops if composing else search_hikes
-        kwargs = dict(user_agent=ua, near_miss=near_miss)
+        kwargs = dict(cfg=cfg, user_agent=ua, near_miss=near_miss)
         # Naming applies only to ordinary routes — composed loops already carry their
         # constituent-trail label, never a route/<id> fallback.
         if not composing:

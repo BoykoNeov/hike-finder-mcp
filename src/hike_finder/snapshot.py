@@ -201,6 +201,10 @@ class AreaSnapshot:
     def place_count(self) -> int:
         return len(self.places)
 
+    @property
+    def poi_count(self) -> int:
+        return len(self.area.pois)
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -236,6 +240,18 @@ def _area_to_json(area: AreaData) -> dict:
             }
             for lift in area.lifts
         ],
+        # Points of interest (poi.py). Saved verbatim, NOT filtered to whatever the
+        # download was interested in: the destination question is asked at *search*
+        # time, so a snapshot must be able to answer any of them. Absent in files
+        # written before this feature — see ``_area_from_json``.
+        "pois": [
+            {
+                "coord": [p["coord"][0], p["coord"][1]],
+                "kind": p.get("kind"),
+                "name": p.get("name"),
+            }
+            for p in area.pois
+        ],
     }
 
 
@@ -265,6 +281,14 @@ def _area_from_json(d: dict) -> AreaData:
                 "kind": lift.get("kind"),
                 "name": lift.get("name"),
             }
+        )
+    # ``.get`` with an empty default, exactly like ``places`` below: a snapshot written
+    # before POIs existed simply loads with none, and ``search_snapshot`` warns loudly
+    # rather than letting a POI filter return a silent empty result.
+    for p in d.get("pois", []):
+        c = p["coord"]
+        area.pois.append(
+            {"coord": (c[0], c[1]), "kind": p.get("kind"), "name": p.get("name")}
         )
     return area
 
@@ -337,3 +361,60 @@ def load_snapshot(path: str | os.PathLike) -> AreaSnapshot:
     """Read a snapshot JSON file back into an :class:`AreaSnapshot`."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     return snapshot_from_json(data)
+
+
+def slug(name: str) -> str:
+    """A safe snapshot filename stem: keep word chars and dashes, never a path."""
+    return "".join(c if (c.isalnum() or c in "-_") else "_" for c in name).strip("_")
+
+
+def snapshot_path(name: str) -> Path | None:
+    """Where the *named* snapshot ``name`` lives, or ``None`` if the name is unusable."""
+    stem = slug(name)
+    if not stem:
+        return None
+    return default_snapshot_dir() / f"{stem}.json"
+
+
+def list_snapshots() -> list[dict]:
+    """Metadata for every NAMED snapshot on disk — "what have I already downloaded?".
+
+    Reads the JSON header fields only (never the elevation map, which dominates the file
+    size), so listing a dozen large areas stays instant. Each entry carries the bbox, so
+    a frontend can draw the covered areas on a map instead of just naming them.
+
+    Scope, stated because it is easy to misread: this enumerates the *named* snapshot
+    directory (``HIKE_SNAPSHOT_DIR`` / the per-user cache subdir) — the namespace the
+    web UI's "Download" writes to. A CLI ``--download some/path.json`` writes wherever
+    you point it and is deliberately NOT tracked here; there is no registry of arbitrary
+    paths, and inventing one would be a second source of truth. Unreadable or non-JSON
+    files are skipped rather than failing the whole listing.
+    """
+    out: list[dict] = []
+    d = default_snapshot_dir()
+    if not d.is_dir():
+        return out
+    for path in sorted(d.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            size = path.stat().st_size
+        except (OSError, ValueError):
+            continue
+        area = data.get("area", {}) or {}
+        out.append(
+            {
+                "name": path.stem,
+                "path": str(path),
+                "bbox": data.get("bbox"),
+                "created_at": data.get("created_at"),
+                "version": data.get("version"),
+                "routes": len(area.get("routes", [])),
+                "samples": len(data.get("elevations", {})),
+                "places": len(data.get("places", {})),
+                # Absent in pre-POI snapshots — 0 here is what the UI turns into
+                # "re-download to search this area for churches/ruins".
+                "pois": len(area.get("pois", [])),
+                "bytes": size,
+            }
+        )
+    return out

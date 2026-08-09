@@ -170,6 +170,7 @@ def search_hikes(
         car_radius_m=cfg.car_radius_m,
         lift_radius_m=cfg.lift_radius_m,
         near_miss=near_miss,
+        poi_radius_m=cfg.poi_radius_m,
         **_near_miss_kwargs(cfg),
     )
     if _wants_geocode(name_places, cfg):
@@ -256,7 +257,12 @@ def _measure_composed(
         if series is not None:
             pre_elev_by_id[sid] = series
             pre_points_by_id[sid] = assemble_loop_series(graph, route, seg_points)
-    syn_area = AreaData(routes=syn_routes, parking=area.parking, lifts=area.lifts)
+    # Carry the area's POIs onto the synthetic area: without them a composed loop could
+    # never match a POI filter, and "a 12 km loop past a ruin" is exactly the query this
+    # mode exists for.
+    syn_area = AreaData(
+        routes=syn_routes, parking=area.parking, lifts=area.lifts, pois=area.pois
+    )
     hikes = find_hikes(
         syn_area,
         provider,
@@ -272,6 +278,7 @@ def _measure_composed(
         car_radius_m=cfg.car_radius_m,
         lift_radius_m=cfg.lift_radius_m,
         near_miss=near_miss,
+        poi_radius_m=cfg.poi_radius_m,
         pre_elevations_by_id=pre_elev_by_id,
         pre_points_by_id=pre_points_by_id,
         **_near_miss_kwargs(cfg),
@@ -753,6 +760,10 @@ def download_area(
     hikes = find_hikes(
         area,
         recorder,
+        # Empty criteria: no POI filter either, so the download samples every plausible
+        # route regardless of what it passes. The snapshot carries the area's POIs
+        # verbatim, and the *offline* search applies whichever POI filter is asked for
+        # then — a snapshot is not specialised to one destination question.
         Criteria(),
         bbox=bbox,
         max_route_factor=cfg.max_route_factor,
@@ -811,6 +822,16 @@ def search_snapshot(
     """
     cfg = cfg or _config.load()
     provider = SnapshotElevationProvider(snapshot.elevations)
+    # A snapshot downloaded before POIs existed carries none, so a POI filter would
+    # match nothing — and "no churches here" must never be confused with "this file
+    # doesn't know about churches". Say which it is, loudly, before returning empty.
+    if criteria.poi_kinds and not snapshot.area.pois:
+        _log.warning(
+            "poi: this snapshot carries no points of interest (it predates the feature) "
+            "— re-download the area to search it for %s offline; for now the filter can "
+            "only return nothing",
+            ", ".join(criteria.poi_kinds),
+        )
     hikes = find_hikes(
         snapshot.area,
         provider,
@@ -824,6 +845,7 @@ def search_snapshot(
         car_radius_m=cfg.car_radius_m,
         lift_radius_m=cfg.lift_radius_m,
         near_miss=near_miss,
+        poi_radius_m=cfg.poi_radius_m,
         **_near_miss_kwargs(cfg),
     )
     if _wants_geocode(name_places, cfg):

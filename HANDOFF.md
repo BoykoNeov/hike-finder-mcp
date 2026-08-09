@@ -49,15 +49,17 @@ frontends (pick one; cli/web need no LLM):
   cli.py  ─┐
   web.py  ─┼─→ search.search_hikes(bbox, criteria, cfg)   # shared orchestration
   server.py┘     (MCP tool find_hikes; needs the optional `mcp` extra)
-       ├─ overpass.fetch_area(bbox)          # routes + parking + lifts  [NETWORK, CACHED (TTL)]
+       ├─ overpass.fetch_area(bbox)          # routes + parking + lifts + POIs [NETWORK, CACHED (TTL)]
        │    └─ overpass.parse_area(elements) # split mixed response      [PURE, TESTED]
        ├─ elevation.get_provider(mode)       # api | local | auto        [NETWORK/DISK]
        └─ filters.find_hikes(area, elevation, criteria, bbox)
-            ├─ CHEAP pass  → filters.measure_geometry(route, parking, lifts)
+            ├─ poi.PoiIndex(area.pois)        # ONE grid per search, if a POI filter is set
+            ├─ CHEAP pass  → filters.measure_geometry(route, parking, lifts, poi_index)
             │    ├─ geometry._vertex_graph → route_cycle_count / route_termini  [PURE, TESTED]
             │    ├─ geometry.total_way_length_m    # distance = sum of member ways [PURE, TESTED]
-            │    └─ access.is_circular / car_accessible / chairlift_access [PURE, TESTED]
-            │  → apply over-length guard + distance/shape/access filters
+            │    ├─ access.is_circular / car_accessible / chairlift_access [PURE, TESTED]
+            │    └─ poi.route_pois            # which churches/ruins/peaks it passes [PURE, TESTED]
+            │  → apply over-length guard + distance/shape/access/POI filters
             └─ EXPENSIVE pass (survivors only) → filters.add_elevation(hike, line)
                  ├─ geometry.resample_by_distance  # even spacing      [PURE, TESTED]
                  ├─ elevation.lookup(points)       # api/local/auto    [NETWORK/DISK; API CACHED, no TTL]
@@ -79,6 +81,43 @@ True = require, False = exclude):
 - **`chairlift_access`** — `access.chairlift_access`. A ride-up aerialway
   (`chair_lift`/`gondola`/`cable_car`/`mixed_lift`; drag/T-bar excluded) within `HIKE_LIFT_RADIUS`.
   Best-effort; the lift type is reported.
+
+**The destination filter** (`criteria.poi_kinds`, `poi.py`) is the fourth, and the only one
+that is a *list* rather than tri-state: empty = don't care, otherwise keep routes passing
+within `HIKE_POI_RADIUS_M` (250 m) of an object of ANY listed kind. Design points worth
+keeping:
+
+- **One registry, two derivations.** `poi.POI_KINDS` is the single source of truth for both
+  the Overpass selectors (`overpass._poi_clauses` reads `poi.selectors_by_key`) and the
+  classifier (`poi.classify`). Written independently they would drift, and a kind that is
+  *fetchable but unclassifiable* fails as a silently-empty result set, not an error — the
+  same hazard `access.matched_access_points` and the shared `_vertex_graph` exist to remove.
+  `test_poi.py` pins the round-trip and pins that `build_query` still contains the clauses.
+- **POIs are fetched on EVERY query**, not only when asked for. That keeps one Overpass
+  cache key and makes every snapshot able to answer any destination question later; the
+  alternative gives two cache keys and snapshots that only sometimes carry POIs, breaking
+  offline == online for POI search.
+- **The grid is built once per search, over the POIs** (`poi.PoiIndex`) — they belong to the
+  fetched area and don't change while routes are iterated. Indexing each route's points
+  instead would rebuild the structure per route for nothing. Longitude cells use the
+  worst-case (highest-|lat|) cosine, like `access._bbox_pad`, plus a 5 % margin, and `near()`
+  re-derives its column span from the query point's own latitude — so a query poleward of
+  everything indexed widens instead of silently missing. `test_poi.py` pins it against brute
+  force. (`_M_PER_DEG_LAT` is derived from `geometry.EARTH_RADIUS_M`, *not* the 111 320 used
+  for bbox padding: the grid must agree with the metric its results are checked against, or
+  cells come out ~0.1 % small and a POI can hide in the sliver.)
+- **Proximity is to the LINE, not the vertices.** `poi.route_pois` walks each member way in
+  probe steps of one radius, over-collects candidates from the grid at 1.5×, then measures
+  each exactly with `geometry.project_on_polyline` (shared with `compose._project_point`, so
+  "nearest point on the trail" means one thing project-wide). Vertex-only proximity was tried
+  first and is wrong: OSM maps a straight stretch with two nodes, so a church at the midpoint
+  of a 5 km member reads as 2.8 km away.
+- **Passing, not terminating.** A marked KČT relation almost never *ends* at a church — it
+  passes it — so an end-anchored filter would return near-nothing and read as broken. The
+  measured distance rides on every hit, so "ends at" stays readable from the output.
+- **It lands in the CHEAP pass**, so a POI-filtered search spends *less* elevation budget than
+  the same search without it: routes reaching nothing are dropped before anyone pays for their
+  gain profile. Pinned by `test_poi.py`.
 
 The **over-length guard** (`HIKE_MAX_ROUTE_FACTOR` × bbox diagonal) drops routes longer than N×
 the bbox — a through-route (national trail) that merely crosses the area would otherwise report
@@ -156,6 +195,19 @@ thing is validated live against real OSM. Highlights:
   5.4 km route over 8 real KČT trails; `--via-loop` on a wide triangle drew a genuine non-repeating
   loop (12.75 km, 9 % retraced, gain ≈ loss); and `--via-loop` on near-collinear points correctly fell
   back and loudly flagged a 100 %-retrace out-and-back.
+- **Destination filter** (`--poi`, MCP `poi`, web "Must pass") — the registry round-trip, the
+  grid-vs-brute-force equivalence, line-not-vertex proximity, the snapshot round-trip, and the
+  cheap-pass economy are all unit-tested (`test_poi.py`); the HTTP surface and the loud
+  400-on-typo are covered in `test_web.py`/`test_server.py`. **Verified live** over Český ráj:
+  `--poi ruins,castle` returned real KČT relations annotated with Valdštejn (85 m), zámek
+  Hrubá Skála (90 m), Rotštejn (20 m) and Hrubý Rohozec (28 m); a download baked 280 POIs into
+  the snapshot and the same filter re-ran **offline** against it by bare area name, with
+  `--poi-radius 30` correctly emptying the result.
+- **Downloaded-area inventory + drawn-box selection** (`--list-areas`, MCP `list_areas`, web
+  "Already downloaded" / "Draw a box") — live-verified for the CLI/HTTP paths. The web UI's
+  *browser* logic is covered by `tests/test_web_js.py`, which runs the page's real script under
+  node against a stubbed Leaflet/DOM (skipped without node). That harness is not decoration: it
+  caught a drag's trailing `click` being taken for a point-pick.
 - **All three frontends validated live**, including the MCP server over real stdio.
 - **Repo hygiene**: MIT license, CHANGELOG, green CI (Linux 3.10–3.14 + Windows), complete
   pyproject; v0.1.0 and v0.2.0 tagged + GitHub-released.
@@ -208,6 +260,23 @@ skip without the `mcp` extra).
   gives the reverse direction's gain.
 - **Daily quota** assumes a UTC-midnight reset and can lose an update under a cross-*process*
   race (acceptable for a soft advisory limit; no file locking).
+- **POI proximity is best-effort, like access.** No hit means nothing of that kind is *mapped*
+  in OSM near the route. The registry is also a curated subset — 18 kinds a walk is planned
+  around — so a "monastery" or a "windmill" is simply not askable until someone adds it to
+  `POI_KINDS` (one line; the query and classifier follow automatically).
+- **Adding a POI kind widens every Overpass query** and invalidates the Overpass cache (the
+  query text is the cache key), which is the price of the single-query-shape design. Weigh a
+  new kind's density before adding it: `amenity=restaurant` in a city bbox is hundreds of
+  elements, though still trivial next to relation geometry.
+- **`--poi` is not a routing destination.** It filters routes that already exist; it does not
+  draw a route *to* the nearest ruin. A `routes_to_poi` mode (pick a point, get routes to the
+  N nearest objects of a kind) is the obvious follow-on — it would need its own bbox
+  derivation, nearest-N selection, and empty-result messaging, so it was deliberately left out
+  rather than half-built.
+- **`--list-areas` can only enumerate the NAMED snapshot directory.** A CLI
+  `--download some/path.json` writes wherever you point it and is tracked nowhere; there is no
+  registry of arbitrary paths and inventing one would be a second source of truth. Said in the
+  `--list-areas` help text so it isn't discovered the hard way.
 - **PyPI publish** is deliberately parked — GitHub-only for now. Metadata is publish-ready; the
   clean path when revisited is Trusted Publishing (OIDC) via a tag-triggered workflow.
 
@@ -228,6 +297,9 @@ skip without the `mcp` extra).
 pip install -e .             # CLI + web UI (no LLM); extras: ".[mcp]" ".[local-dem]" ".[dev]"
 pytest -q                    # full offline suite (3 .sh launcher cases need bash; MCP skips without the extra)
 hike-finder --bbox 50.72 15.58 50.74 15.62 --user-agent you@example.com
+hike-finder --list-pois      # the --poi destination kinds
+hike-finder --list-areas     # what is already downloaded (the NAMED snapshot dir)
+hike-finder --bbox 50.52 15.15 50.60 15.28 --poi ruins,castle --max-distance 25
 hike-finder --clear-cache    # empty the on-disk cache; --no-cache bypasses it for a run
 hike-finder-web              # local web UI on http://127.0.0.1:8765
 hike-finder-mcp              # MCP server over stdio (needs the `mcp` extra)

@@ -8,6 +8,7 @@ snapshot search never leaves the box. The live ``/api/download`` and bbox
 """
 import json
 import threading
+import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 
@@ -17,18 +18,28 @@ from hike_finder import web
 from hike_finder.elevation.base import ElevationProvider
 from hike_finder.filters import Criteria, find_hikes
 from hike_finder.overpass import AreaData
-from hike_finder.snapshot import AreaSnapshot, RecordingElevationProvider, save_snapshot
+from hike_finder.snapshot import (
+    AreaSnapshot,
+    RecordingElevationProvider,
+    save_snapshot,
+    slug,
+    snapshot_path,
+)
 
 
 def test_slug_is_path_safe():
     # Unicode letters are kept (Czech names are everywhere here); the safety property
     # is that path separators and dots can never survive, so a slug is always a bare
-    # filename stem and never escapes the snapshots dir.
-    assert web._slug("Krkonoše 2026") == "Krkonoše_2026"
-    assert web._slug("../etc/passwd") == "etc_passwd"
-    assert "/" not in web._slug("a/b") and "\\" not in web._slug("a\\b")
-    assert "." not in web._slug("a.b..c")
-    assert web._slug("   ") == ""
+    # filename stem and never escapes the snapshots dir. The helper now lives in
+    # snapshot.py, shared by the web UI and the CLI's --area / --list-areas.
+    assert slug("Krkonoše 2026") == "Krkonoše_2026"
+    assert slug("../etc/passwd") == "etc_passwd"
+    assert "/" not in slug("a/b") and "\\" not in slug("a\\b")
+    assert "." not in slug("a.b..c")
+    assert slug("   ") == ""
+    # An unusable name yields no path at all, rather than a directory or a bare ".json".
+    assert snapshot_path("   ") is None
+    assert snapshot_path("krkonose").name == "krkonose.json"
 
 
 class _Ramp(ElevationProvider):
@@ -36,8 +47,11 @@ class _Ramp(ElevationProvider):
         return [(lat - 50.0) * 20000.0 for lat, _ in points]
 
 
-def _make_snapshot(path):
-    area = AreaData(routes=[{"id": 7, "name": "WebNorth", "ways": [[(50.0, 14.0), (50.05, 14.0)]], "tags": {}}])
+def _make_snapshot(path, pois=None):
+    area = AreaData(
+        routes=[{"id": 7, "name": "WebNorth", "ways": [[(50.0, 14.0), (50.05, 14.0)]], "tags": {}}],
+        pois=list(pois or []),
+    )
     rec = RecordingElevationProvider(_Ramp())
     bbox = (49.9, 13.9, 50.2, 14.2)
     find_hikes(area, rec, Criteria(), bbox=bbox)
@@ -48,6 +62,15 @@ def _make_snapshot(path):
 def server(tmp_path, monkeypatch):
     monkeypatch.setenv("HIKE_SNAPSHOT_DIR", str(tmp_path))
     _make_snapshot(tmp_path / "webtest.json")
+    # A second area carrying points of interest, so the destination filter can be driven
+    # end-to-end over real HTTP without touching the network.
+    _make_snapshot(
+        tmp_path / "webpoi.json",
+        pois=[
+            {"coord": (50.0250, 14.0015), "kind": "ruins", "name": "Zřícenina"},
+            {"coord": (50.0300, 14.0500), "kind": "church", "name": "Faraway"},
+        ],
+    )
     srv = ThreadingHTTPServer(("127.0.0.1", 0), web.Handler)
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
@@ -76,6 +99,61 @@ def test_areas_lists_saved_snapshot(server):
     assert "webtest" in names
     entry = next(a for a in areas if a["name"] == "webtest")
     assert entry["routes"] == 1
+
+
+def test_areas_carries_enough_to_show_what_is_downloaded(server):
+    """"What have I already got?" needs the bbox to outline it and the counts to judge it."""
+    _, areas = _get(server + "/api/areas")
+    entry = next(a for a in areas if a["name"] == "webpoi")
+    assert entry["bbox"] == [49.9, 13.9, 50.2, 14.2]   # so the map can draw the rectangle
+    assert entry["created_at"] and entry["bytes"] > 0
+    assert entry["samples"] > 0
+    assert entry["pois"] == 2
+    # And the pre-POI area reports 0, which is what drives the UI's "re-download" hint.
+    assert next(a for a in areas if a["name"] == "webtest")["pois"] == 0
+
+
+def test_poi_kinds_endpoint_mirrors_the_registry(server):
+    from hike_finder.poi import POI_KINDS
+
+    status, kinds = _get(server + "/api/pois")
+    assert status == 200
+    assert {k["kind"] for k in kinds} == set(POI_KINDS)
+    assert all(k["label"] for k in kinds)
+
+
+def test_hikes_offline_filters_by_poi(server):
+    """The destination filter runs over HTTP against a snapshot, with zero network."""
+    status, hikes = _get(server + "/api/hikes?area=webpoi&poi=ruins")
+    assert status == 200 and len(hikes) == 1
+    assert [(p["kind"], p["name"]) for p in hikes[0]["pois"]] == [("ruins", "Zřícenina")]
+    # The POI carries its own coordinate, so the map can pin it without a second lookup.
+    assert hikes[0]["pois"][0]["lat"] == 50.0250
+
+    # The church is ~3 km off the route: no match at the default radius...
+    _, none = _get(server + "/api/hikes?area=webpoi&poi=church&near_misses=false")
+    assert none == []
+    # ...and the radius is the lever that finds it.
+    _, wide = _get(
+        server + "/api/hikes?area=webpoi&poi=church&poi_radius_m=5000&near_misses=false"
+    )
+    assert len(wide) == 1 and wide[0]["pois"][0]["name"] == "Faraway"
+
+
+def test_hikes_accepts_comma_separated_and_repeated_poi(server):
+    for query in ("poi=ruins,church", "poi=ruins&poi=church"):
+        _, hikes = _get(server + "/api/hikes?area=webpoi&poi_radius_m=5000&" + query)
+        assert len(hikes) == 1
+        assert {p["kind"] for p in hikes[0]["pois"]} == {"ruins", "church"}
+
+
+def test_unknown_poi_kind_is_a_loud_400_not_an_empty_list(server):
+    """A typo must fail visibly — an empty result would read as "none out there"."""
+    with pytest.raises(urllib.error.HTTPError) as e:
+        _get(server + "/api/hikes?area=webpoi&poi=cathedral")
+    assert e.value.code == 400
+    body = json.loads(e.value.read().decode("utf-8"))
+    assert "cathedral" in body["error"] and "church" in body["error"]
 
 
 def test_hikes_offline_by_area(server):

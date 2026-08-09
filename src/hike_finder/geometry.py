@@ -233,6 +233,43 @@ def route_termini(ways: list[list[Coord]], weld_m: float = 1.0) -> list[Coord]:
     return [coords[i] for i in range(len(coords)) if degree[i] == 1]
 
 
+def project_on_polyline(line: list[Coord], p: Coord) -> tuple[float, int, float]:
+    """Nearest point on polyline ``line`` to ``p``, as ``(dist_m, edge_index, frac)``.
+
+    ``frac`` is how far along edge ``edge_index`` (from vertex ``edge_index`` to
+    ``edge_index + 1``) the nearest point lies, clamped to the edge — so this is the
+    distance to the LINE, not merely to the nearest vertex. On a way whose vertices sit
+    kilometres apart (a straight stretch mapped with two nodes) those two answers differ
+    enormously, which is why anything measuring "how close does this route come to X"
+    has to use this one.
+
+    Projection is done in a local equirectangular frame about ``p`` — metres, exact
+    enough at trail scale. Ties break by ``(dist, edge, frac)``, so a point equidistant
+    from two edges resolves to the lower-indexed one every run.
+
+    Shared, not duplicated: ``compose._project_point`` (point snapping for the routing
+    modes) and ``poi.route_pois`` (does this hike pass a church?) are the two callers,
+    and they must agree about what "nearest point on the trail" means.
+    """
+    lat0 = math.radians(p[0])
+    kx = 111_320.0 * math.cos(lat0)
+    ky = 111_320.0
+    px, py = p[1] * kx, p[0] * ky
+    best: tuple[float, int, float] | None = None
+    for i in range(len(line) - 1):
+        ax, ay = line[i][1] * kx, line[i][0] * ky
+        bx, by = line[i + 1][1] * kx, line[i + 1][0] * ky
+        dx, dy = bx - ax, by - ay
+        L2 = dx * dx + dy * dy
+        t = 0.0 if L2 == 0.0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
+        cx, cy = ax + t * dx, ay + t * dy
+        d = math.hypot(px - cx, py - cy)
+        if best is None or (d, i, t) < best:
+            best = (d, i, t)
+    assert best is not None  # callers guarantee len(line) >= 2
+    return best
+
+
 def resample_by_distance(points: list[Coord], interval_m: float = 25.0) -> list[Coord]:
     """Resample a polyline to roughly even spacing.
 

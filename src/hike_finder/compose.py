@@ -31,7 +31,13 @@ from dataclasses import dataclass, field
 from typing import NamedTuple
 
 from .access import _bbox_pad
-from .geometry import Coord, haversine_m, polyline_length_m, resample_by_distance
+from .geometry import (
+    Coord,
+    haversine_m,
+    polyline_length_m,
+    project_on_polyline,
+    resample_by_distance,
+)
 
 # Same coincidence tolerance as geometry._vertex_graph: merges vertices that are
 # the same OSM node despite float noise, well below trail vertex spacing so it
@@ -643,29 +649,12 @@ def _interp(line: list[Coord], pos: _Pos) -> Coord:
 def _project_point(line: list[Coord], p: Coord) -> tuple[float, _Pos, Coord]:
     """Nearest point on polyline ``line`` to ``p``: ``(dist_m, position, coord)``.
 
-    Projects onto each edge in a local equirectangular frame about ``p`` (metres, exact
-    enough at trail scale), clamped to the edge, and keeps the closest — deterministic
-    tie-break by ``(dist, edge, frac)`` so a point equidistant to two edges snaps to the
-    lower-indexed one every run.
+    A thin adapter over ``geometry.project_on_polyline`` — the projection math lives
+    there so this and the POI proximity test can never drift about what "nearest point
+    on the trail" means. This adds only the ``_Pos``/coord shape the snapping code wants.
     """
-    lat0 = math.radians(p[0])
-    kx = 111_320.0 * math.cos(lat0)
-    ky = 111_320.0
-    px, py = p[1] * kx, p[0] * ky
-    best: tuple[float, _Pos] | None = None
-    for i in range(len(line) - 1):
-        ax, ay = line[i][1] * kx, line[i][0] * ky
-        bx, by = line[i + 1][1] * kx, line[i + 1][0] * ky
-        dx, dy = bx - ax, by - ay
-        L2 = dx * dx + dy * dy
-        t = 0.0 if L2 == 0.0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
-        cx, cy = ax + t * dx, ay + t * dy
-        d = math.hypot(px - cx, py - cy)
-        cand = (d, (i, t))
-        if best is None or cand < best:
-            best = cand
-    assert best is not None  # callers guarantee len(line) >= 2
-    d, pos = best
+    d, edge, frac = project_on_polyline(line, p)
+    pos: _Pos = (edge, frac)
     return d, pos, _interp(line, pos)
 
 

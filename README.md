@@ -41,6 +41,7 @@ climbs with a hysteresis threshold so DEM noise isn't mistaken for ascent.
 | `circular` | `true` = loops only, `false` = point-to-point only | high |
 | `car_access` | `true`/`false`: is `amenity=parking` mapped near a trail end? | best-effort |
 | `chairlift_access` | `true`/`false`: is a ride-up aerialway (chairlift/gondola/cable car) mapped near a trail end? | best-effort |
+| `poi` | only routes that pass a church / ruin / peak / … (see below) | best-effort |
 
 The three boolean filters are **tri-state**: omit = don't care, `true` = require,
 `false` = exclude. **Honesty note:** `car_access`/`chairlift_access` reflect OSM
@@ -50,6 +51,45 @@ route's ends, not that it's impossible to get there. Loop detection is reliable.
 Internally the search is two-pass: cheap geometry/shape/access filters run first
 and a long through-route that merely crosses the area is dropped, so the
 elevation backend is only queried for routes that already match.
+
+### Hiking *to* something — churches, ruins, peaks…
+
+Distance and gain say how hard a walk is; they don't say whether it's worth doing.
+`--poi` adds the destination: **"a 12 km hike with 400 m of climbing that goes to a
+ruin."**
+
+```bash
+hike-finder --list-pois                                     # the kinds you can ask for
+hike-finder --bbox 50.52 15.15 50.60 15.28 --poi ruins,castle --max-distance 25
+```
+
+```
+[M] Hrubá Skála (žst.) - Kost (bus) — 14.08 km, +335 m / -313 m [one-way, car]
+    (start 50.5504,15.2134, OSM relation 1147930)
+    [passes castle "zámek Hrubá Skála" (90 m); ruin "Radeč" (101 m)]
+[Ž] Turnov - Kozákov — 12.42 km, +110 m / -252 m [one-way, car]
+    (start 50.5947,15.2640, OSM relation 369232)  [passes ruin "Rotštejn" (20 m)]
+```
+
+Eighteen kinds are available: `church`, `shrine` (wayside shrines & crosses), `ruins`,
+`castle`, `memorial`, `archaeology`, `peak`, `rock`, `cave`, `spring`, `waterfall`,
+`viewpoint`, `tower`, `museum`, `hut`, `shelter`, `picnic`, `refreshment`. Repeat `--poi`
+or comma-separate them; several kinds are **OR**-ed ("a church *or* a ruin"). Every match
+reports the object and **how far off the trail it sits**, so "passes near" and "ends at"
+stay distinguishable.
+
+`--poi-radius M` (default 250, `HIKE_POI_RADIUS_M`) sets how close counts. Distance is
+measured to the trail **line**, not to its mapped nodes — a straight stretch drawn with
+two nodes kilometres apart still reports its true closest approach.
+
+The filter works in **every** mode — a bbox search, `--compose-loops`, the point-based
+modes, and an offline `--area` search — because what a route passes is a property of the
+route, not of how it was found. It runs in the cheap pass, so a `--poi` search costs
+*less* elevation budget than the same search without it.
+
+**Honesty note**, same register as access: no match means nothing of that kind is *mapped*
+in OSM near a route, not that nothing is there. A misspelled kind is a loud error, never a
+silent empty result.
 
 ### Near-miss results (close-but-not-matching)
 
@@ -87,8 +127,32 @@ the *same* engine against the snapshot with **no network at all** — results ar
 identical to a live search by construction (validated: offline gains match a live
 search byte-for-byte). Only the sample interval is frozen into the snapshot; gain
 threshold, smoothing, access radii and shape tolerance stay tunable offline. The
-web UI exposes this as **"Download view"** + a saved-area selector; MCP gains a
+web UI exposes this as a **Download** button + a saved-area selector; MCP gains a
 `download_area` tool and an `area` argument on `find_hikes`.
+
+**Seeing what you already have.** `--list-areas` prints the areas already downloaded —
+name, bounding box, when, and what is in them — and `--area` accepts a bare *name* as well
+as a path:
+
+```bash
+hike-finder --list-areas
+#   ceskyraj             50.5400,15.1800 .. 50.5700,15.2400
+#                        12 routes, 3198 elevation samples, 280 POIs  ·  0.2 MB, downloaded 2026-08-09 12:07Z
+hike-finder --area ceskyraj --poi castle          # by name, offline, zero API calls
+```
+
+The **web UI outlines every downloaded area on the map** and lists them beside it; click
+one to search it offline. MCP gets the same inventory as a `list_areas` tool. Scope: this
+tracks the *named* snapshot directory (`HIKE_SNAPSHOT_DIR`, where the web UI downloads);
+a file you wrote with `--download some/path.json` isn't registered anywhere — search it
+with `--area some/path.json`. An area downloaded before points of interest existed reports
+`0 POIs` and is flagged for re-download, so a `--poi` search against it can't be mistaken
+for "there is nothing of that kind here".
+
+**Drawing the area.** In the web UI, **Draw a box** lets you drag an exact rectangle rather
+than relying on however the map is panned; it shows the size in km before you spend a query
+on it. The same box is used for both downloading and searching, so the two can't disagree.
+With nothing drawn it falls back to the whole map view.
 
 ### Transparent cache (automatic, on by default)
 
@@ -556,6 +620,7 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 | `HIKE_COMPOSE_OVERLAP_FRAC` | Compose mode: drop a loop sharing more than this fraction of its length with an already-kept loop (near-duplicate collapse) | `0.6` |
 | `HIKE_COMPOSE_MAX_LOOPS` | Compose mode: max loops returned, ranked by compactness (roundest first); bounds the per-loop elevation cost | `15` |
 | `HIKE_COMPOSE_MIN_COMPACTNESS` | Compose mode: drop a loop below this Polsby–Popper compactness (4πA/P²) — a degenerate thin sliver, not a real loop; `0` disables | `0.05` |
+| `HIKE_POI_RADIUS_M` | How close a route must pass to a `--poi` object (church, ruin, peak…) to count as reaching it, metres. Measured to the trail line | `250` |
 
 > **Snapshot caveat:** `--area` locks the snapshot's sample interval (the saved
 > elevation points were taken at it), so `HIKE_SAMPLE_INTERVAL` can't break an
@@ -583,8 +648,9 @@ The whole pipeline — geometry/gain/access math, the Overpass parser, both
 elevation backends (API with rate-limit throttle, retry/backoff, and a persistent
 daily-request counter; local DEM via a point-sampled GDAL VRT), the transparent
 cache, loop composition, offline snapshots, near-misses, reverse-geocode naming,
-and GPX/GeoJSON export — is **implemented, unit-tested (offline), and validated
-live** across all three frontends (CLI + web + MCP), with computed gain
-cross-checked against the loop invariant (gain ≈ loss). Released as v0.2.0. See
+GPX/GeoJSON export, point-based route drawing, the points-of-interest destination
+filter, and the downloaded-area inventory — is **implemented, unit-tested
+(offline), and validated live** across all three frontends (CLI + web + MCP), with
+computed gain cross-checked against the loop invariant (gain ≈ loss). Released as v0.2.0. See
 [`CHANGELOG.md`](CHANGELOG.md) for the per-release breakdown and
 [`HANDOFF.md`](HANDOFF.md) for the architecture and open design notes.

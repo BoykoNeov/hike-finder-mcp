@@ -5,9 +5,13 @@ Relations are the signed, named, maintained trails — including the Czech KČT
 network that mapy.cz renders — which is what gives results the "mapy.cz feel"
 instead of every unmarked path.
 
-In ONE Overpass round-trip we also pull the features the new filters need:
+In ONE Overpass round-trip we also pull the features the other filters need:
   - amenity=parking  (car access; ``out center`` gives a representative coord)
   - ride-up aerialways (chairlift access; ``out geom`` gives station endpoints)
+  - every registered point of interest (poi.POI_KINDS — churches, ruins, peaks…;
+    ``out center`` again). These come along on EVERY query, not only when a POI
+    filter is set: one query shape means one Overpass cache key and a snapshot that
+    always carries its POIs, so an offline POI search works by construction.
 
 Returns lightweight dicts; geometry assembly/distance/elevation/access happen
 downstream so this module stays a thin transport layer.
@@ -27,6 +31,7 @@ from importlib.metadata import PackageNotFoundError, version
 import requests
 
 from .access import RIDE_UP_AERIALWAYS
+from . import poi as _poi
 
 Coord = tuple[float, float]
 
@@ -58,12 +63,30 @@ class AreaData:
     routes: list[dict] = field(default_factory=list)
     parking: list[dict] = field(default_factory=list)  # {"coord", "name"}
     lifts: list[dict] = field(default_factory=list)  # {"stations", "kind", "name"}
+    # Registered points of interest (see poi.py): {"coord", "kind", "name"}. Default
+    # empty so every AreaData built before this feature — including a pre-existing
+    # snapshot — loads unchanged and simply matches no POI filter.
+    pois: list[dict] = field(default_factory=list)
+
+
+def _poi_clauses(bbox: str) -> str:
+    """One ``nwr[key~"^(v1|v2|…)$"]`` clause per POI tag key, from the registry.
+
+    Derived from ``poi.selectors_by_key()`` rather than written out here, so the query
+    and the classifier can never disagree about which objects exist (see poi.py). One
+    regex per key keeps the query compact as the registry grows.
+    """
+    lines = []
+    for key, values in _poi.selectors_by_key().items():
+        alt = "|".join(values)
+        lines.append(f'    nwr["{key}"~"^({alt})$"]({bbox});\n    out center;')
+    return "\n".join(lines)
 
 
 def build_query(
     south: float, west: float, north: float, east: float, timeout_s: int = 60
 ) -> str:
-    """Overpass QL: hiking routes + parking + ride-up aerialways in the bbox."""
+    """Overpass QL: hiking routes + parking + ride-up aerialways + POIs in the bbox."""
     bbox = f"{south},{west},{north},{east}"
     lift_re = "|".join(sorted(RIDE_UP_AERIALWAYS))
     return f"""
@@ -77,6 +100,7 @@ def build_query(
     out center;
     way["aerialway"~"^({lift_re})$"]({bbox});
     out geom;
+{_poi_clauses(bbox)}
     """
 
 
@@ -111,6 +135,10 @@ def parse_area(elements: list[dict]) -> AreaData:
     so it lives here, isolated and unit-tested without a live endpoint.
     """
     area = AreaData()
+    # A POI can satisfy two registry clauses at once (a shelter that is also a picnic
+    # site), and Overpass emits an element once per matching statement — so key the POI
+    # list by the element's identity to keep one entry per real-world object.
+    seen_pois: set[tuple[str, object]] = set()
     for el in elements:
         tags = el.get("tags", {}) or {}
         if el.get("type") == "relation" and tags.get("route") in ("hiking", "foot"):
@@ -148,6 +176,21 @@ def parse_area(elements: list[dict]) -> AreaData:
                         "kind": tags.get("aerialway"),
                         "name": tags.get("name"),
                     }
+                )
+        else:
+            # Points of interest, LAST so the access branches above always win a
+            # double-tagged element (a parking lot is car access, not a destination).
+            kind = _poi.classify(tags)
+            if kind is None:
+                continue
+            ident = (el.get("type", ""), el.get("id"))
+            if ident in seen_pois:
+                continue
+            coord = _representative_coord(el)
+            if coord:
+                seen_pois.add(ident)
+                area.pois.append(
+                    {"coord": coord, "kind": kind, "name": tags.get("name")}
                 )
     return area
 

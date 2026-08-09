@@ -19,6 +19,8 @@ access, parsing, snapshot round-trip) is unit-tested offline.
 from __future__ import annotations
 
 import asyncio
+import json
+from dataclasses import replace
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -28,6 +30,7 @@ from . import config as _config
 from .export import hikes_to_geojson, hikes_to_gpx
 from .filters import Criteria
 from .format import format_hike
+from .poi import POI_KINDS, kind_labels, normalise_kinds
 from .search import (
     compose_loops,
     compose_loops_around,
@@ -37,10 +40,36 @@ from .search import (
     search_hikes,
     search_snapshot,
 )
-from .snapshot import load_snapshot, save_snapshot
+from .snapshot import list_snapshots, load_snapshot, save_snapshot
 
 app = Server("hike-finder")
 CFG = _config.load()
+
+# The destination filter, offered identically by every search tool — "a 10 km hike that
+# goes to a ruin" is the same question whether the routes come from a bounding box, a
+# composed loop, or a point-to-point draw. Defined once so the wording can't drift, and
+# the kind list is generated from the ONE registry (poi.py) so it can never offer
+# something the engine would reject.
+_POI_SCHEMA = {
+    "poi": {
+        "type": "array",
+        "items": {"type": "string", "enum": sorted(POI_KINDS)},
+        "description": (
+            "Keep only routes that pass a point of interest of one of these kinds — "
+            "e.g. [\"ruins\"] for 'a hike that goes to a ruin'. Several kinds are OR-ed. "
+            "Each result lists what it reaches and how far off the trail it sits. "
+            "Available: "
+            + "; ".join(f"{k} ({lbl})" for k, lbl in kind_labels())
+            + ". A miss means nothing of that kind is MAPPED in OSM near the route, not "
+            "that nothing is there."
+        ),
+    },
+    "poi_radius_m": {
+        "type": "number",
+        "description": "How close a route must pass to count as reaching a `poi`, in "
+        "metres (default 250). Measured to the trail line, not to its mapped nodes.",
+    },
+}
 
 
 @app.list_tools()
@@ -94,6 +123,7 @@ async def list_tools() -> list[Tool]:
                         "type": "boolean",
                         "description": "true = require a ride-up aerialway near an endpoint.",
                     },
+                    **_POI_SCHEMA,
                     "near_misses": {
                         "type": "boolean",
                         "description": "Also return routes that just miss the filters, each "
@@ -164,6 +194,7 @@ async def list_tools() -> list[Tool]:
                         "type": "boolean",
                         "description": "true = require a ride-up aerialway near the loop.",
                     },
+                    **_POI_SCHEMA,
                     "near_misses": {
                         "type": "boolean",
                         "description": "Also return loops that just miss the filters, annotated.",
@@ -205,6 +236,7 @@ async def list_tools() -> list[Tool]:
                         "type": "number",
                         "description": "Cap a route's length, km (default: 3x the straight-line gap).",
                     },
+                    **_POI_SCHEMA,
                     "format": {
                         "type": "string",
                         "enum": ["text", "gpx", "geojson"],
@@ -254,6 +286,7 @@ async def list_tools() -> list[Tool]:
                         "type": "number",
                         "description": "Drop the linked route if it runs longer than this, km.",
                     },
+                    **_POI_SCHEMA,
                     "format": {
                         "type": "string",
                         "enum": ["text", "gpx", "geojson"],
@@ -291,6 +324,22 @@ async def list_tools() -> list[Tool]:
                 "required": ["south", "west", "north", "east", "path"],
             },
         ),
+        Tool(
+            name="list_areas",
+            description=(
+                "List the areas already downloaded for offline searching — name, bounding "
+                "box, when it was fetched, and what it contains (routes, elevation samples, "
+                "points of interest). Use it before download_area to avoid re-fetching "
+                "ground you already have, and to find the `area` value for an offline "
+                "find_hikes. "
+                "Scope: this lists the NAMED snapshot directory (HIKE_SNAPSHOT_DIR, the one "
+                "the web UI downloads into). A snapshot written by download_area to an "
+                "arbitrary `path` is not tracked here — pass that path to find_hikes(area=…) "
+                "directly. An entry reporting 0 points of interest predates the POI feature "
+                "and cannot answer a `poi` search until it is re-downloaded."
+            ),
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        ),
     ]
 
 
@@ -301,6 +350,9 @@ def _near_miss(arguments: dict) -> bool | str:
 
 
 def _criteria(arguments: dict) -> Criteria:
+    # `poi` is validated against the registry: an unknown kind raises here (surfaced to
+    # the caller by call_tool) rather than quietly matching nothing, which an LLM client
+    # would read as "there are no ruins in this valley".
     return Criteria(
         min_gain_m=arguments.get("min_gain_m"),
         max_gain_m=arguments.get("max_gain_m"),
@@ -309,7 +361,18 @@ def _criteria(arguments: dict) -> Criteria:
         circular=arguments.get("circular"),
         car_access=arguments.get("car_access"),
         chairlift_access=arguments.get("chairlift_access"),
+        poi_kinds=normalise_kinds(arguments.get("poi")),
     )
+
+
+def _cfg(arguments: dict):
+    """The shared config, with any per-call knob applied to a COPY.
+
+    ``CFG`` is a module-level singleton and tool calls run on worker threads, so
+    mutating it in place would leak one caller's POI radius into another's search.
+    """
+    radius = arguments.get("poi_radius_m")
+    return CFG if radius is None else replace(CFG, poi_radius_m=float(radius))
 
 
 def _serialize(hikes: list, fmt: str, empty_msg: str) -> list[TextContent]:
@@ -335,6 +398,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return await _call_route_via(arguments)
     if name == "download_area":
         return await _call_download_area(arguments)
+    if name == "list_areas":
+        return await _call_list_areas(arguments)
     raise ValueError(f"unknown tool: {name}")
 
 
@@ -347,7 +412,7 @@ async def _call_circular_routes(arguments: dict) -> list[TextContent]:
         compose_loops_around,
         point,
         _criteria(arguments),
-        CFG,
+        _cfg(arguments),
         radius_m=arguments.get("radius_m"),
         near_miss=_near_miss(arguments),
     )
@@ -373,7 +438,7 @@ async def _call_routes_between(arguments: dict) -> list[TextContent]:
     start = (arguments["start_lat"], arguments["start_lon"])
     finish = (arguments["finish_lat"], arguments["finish_lon"])
     hikes = await asyncio.to_thread(
-        routes_between, start, finish, _criteria(arguments), CFG, k=arguments.get("routes")
+        routes_between, start, finish, _criteria(arguments), _cfg(arguments), k=arguments.get("routes")
     )
     return _serialize(
         hikes,
@@ -400,7 +465,7 @@ async def _call_route_via(arguments: dict) -> list[TextContent]:
         ]
     loop = bool(arguments.get("loop"))
     hikes = await asyncio.to_thread(
-        route_via, points, _criteria(arguments), CFG, loop=loop
+        route_via, points, _criteria(arguments), _cfg(arguments), loop=loop
     )
     empty = (
         "No circular route could be drawn through your points — a point may be off-network "
@@ -424,7 +489,8 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
     if area_path:
         snap = await asyncio.to_thread(load_snapshot, area_path)
         hikes = await asyncio.to_thread(
-            search_snapshot, snap, criteria, CFG, near_miss=near_miss, name_places=name_places
+            search_snapshot, snap, criteria, _cfg(arguments), near_miss=near_miss,
+            name_places=name_places
         )
     else:
         missing = [k for k in ("south", "west", "north", "east") if k not in arguments]
@@ -444,7 +510,7 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
         kwargs = {"near_miss": near_miss}
         if not composing:
             kwargs["name_places"] = name_places
-        hikes = await asyncio.to_thread(search, bbox, criteria, CFG, **kwargs)
+        hikes = await asyncio.to_thread(search, bbox, criteria, _cfg(arguments), **kwargs)
 
     if not hikes:
         composing = arguments.get("compose_loops") and not area_path
@@ -477,6 +543,20 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
     return [TextContent(type="text", text="\n".join(format_hike(h) for h in hikes))]
 
 
+async def _call_list_areas(arguments: dict) -> list[TextContent]:
+    """"What have I already downloaded?" — the offline inventory, as JSON."""
+    areas = await asyncio.to_thread(list_snapshots)
+    if not areas:
+        return [
+            TextContent(
+                type="text",
+                text="No named areas downloaded yet. Fetch one with download_area, or "
+                "search a snapshot you saved elsewhere with find_hikes(area=\"<path>\").",
+            )
+        ]
+    return [TextContent(type="text", text=json.dumps(areas, ensure_ascii=False, indent=2))]
+
+
 async def _call_download_area(arguments: dict) -> list[TextContent]:
     bbox = (arguments["south"], arguments["west"], arguments["north"], arguments["east"])
     path = arguments["path"]
@@ -489,7 +569,8 @@ async def _call_download_area(arguments: dict) -> list[TextContent]:
             type="text",
             text=(
                 f"Saved snapshot to {path}: {snap.route_count} routes, "
-                f"{snap.sample_count} elevation samples{baked}. "
+                f"{snap.sample_count} elevation samples, {snap.poi_count} points of "
+                f"interest{baked}. "
                 f"Search it offline with find_hikes(area=\"{path}\")."
             ),
         )

@@ -72,7 +72,10 @@ def test_list_tools_advertises_find_hikes(monkeypatch):
 
     result = asyncio.run(_impl())
     tools = {t.name: t for t in result.tools}
-    assert set(tools) == {"find_hikes", "circular_routes", "routes_between", "route_via", "download_area"}
+    assert set(tools) == {
+        "find_hikes", "circular_routes", "routes_between", "route_via", "download_area",
+        "list_areas",
+    }
 
     schema = tools["find_hikes"].inputSchema
     assert schema["type"] == "object"
@@ -458,5 +461,105 @@ def test_real_stdio_transport_lists_the_tool():
 
     result = asyncio.run(asyncio.wait_for(_impl(), timeout=60))
     assert {t.name for t in result.tools} == {
-        "find_hikes", "circular_routes", "routes_between", "route_via", "download_area"
+        "find_hikes", "circular_routes", "routes_between", "route_via", "download_area",
+        "list_areas",
     }
+
+
+# --------------------------------------------------- points of interest + area listing
+
+
+def test_every_search_tool_offers_the_same_poi_filter():
+    """"Does it go past a ruin?" is the same question in all four modes, so all four
+    advertise the same two parameters, generated from the ONE registry."""
+    from hike_finder.poi import POI_KINDS
+
+    async def _impl():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.list_tools()
+
+    tools = {t.name: t for t in asyncio.run(_impl()).tools}
+    for name in ("find_hikes", "circular_routes", "routes_between", "route_via"):
+        props = tools[name].inputSchema["properties"]
+        assert props["poi"]["type"] == "array"
+        # The enum comes from the registry, so the schema can never offer a kind the
+        # engine would reject (nor omit one it accepts).
+        assert set(props["poi"]["items"]["enum"]) == set(POI_KINDS)
+        assert props["poi_radius_m"]["type"] == "number"
+    # list_areas takes nothing — it is an inventory, not a search.
+    assert tools["list_areas"].inputSchema["required"] == []
+
+
+def test_poi_arguments_reach_the_engine(monkeypatch):
+    captured = {}
+
+    def _stub(bbox, criteria, cfg=None, **kwargs):
+        captured["criteria"] = criteria
+        captured["cfg"] = cfg
+        return SAMPLE_HIKES
+
+    monkeypatch.setattr(server, "search_hikes", _stub)
+
+    async def _impl():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.call_tool(
+                "find_hikes",
+                {"south": 50.7, "west": 15.5, "north": 50.8, "east": 15.7,
+                 "poi": ["ruins", "church"], "poi_radius_m": 600},
+            )
+
+    assert not asyncio.run(_impl()).isError
+    assert captured["criteria"].poi_kinds == ("ruins", "church")
+    assert captured["cfg"].poi_radius_m == 600
+    # The per-call override must NOT leak into the shared module-level config.
+    assert server.CFG.poi_radius_m != 600
+
+
+def test_unknown_poi_kind_is_an_error_not_an_empty_result(monkeypatch):
+    """An LLM client would read an empty list as "there are no ruins here"."""
+    monkeypatch.setattr(server, "search_hikes", lambda *a, **k: SAMPLE_HIKES)
+
+    async def _impl():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.call_tool(
+                "find_hikes",
+                {"south": 50.7, "west": 15.5, "north": 50.8, "east": 15.7,
+                 "poi": ["cathedral"]},
+            )
+
+    result = asyncio.run(_impl())
+    assert result.isError
+    assert "cathedral" in result.content[0].text
+
+
+def test_list_areas_reports_the_offline_inventory(tmp_path, monkeypatch):
+    monkeypatch.setenv("HIKE_SNAPSHOT_DIR", str(tmp_path))
+
+    async def _call():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.call_tool("list_areas", {})
+
+    # Empty: a sentence that says what to do next, not an empty array.
+    empty = asyncio.run(_call())
+    assert not empty.isError and "No named areas downloaded" in empty.content[0].text
+
+    from hike_finder.overpass import AreaData
+    from hike_finder.snapshot import AreaSnapshot, save_snapshot
+
+    save_snapshot(
+        AreaSnapshot(
+            bbox=(49.9, 13.9, 50.2, 14.2),
+            area=AreaData(
+                routes=[{"id": 1, "name": "N", "ways": [[(50.0, 14.0), (50.05, 14.0)]],
+                         "tags": {}}],
+                pois=[{"coord": (50.02, 14.001), "kind": "ruins", "name": "Hrad"}],
+            ),
+            elevations={},
+            sample_interval_m=25.0,
+        ),
+        tmp_path / "krkonose.json",
+    )
+    listed = json.loads(asyncio.run(_call()).content[0].text)
+    assert [a["name"] for a in listed] == ["krkonose"]
+    assert listed[0]["bbox"] == [49.9, 13.9, 50.2, 14.2]
+    assert listed[0]["routes"] == 1 and listed[0]["pois"] == 1

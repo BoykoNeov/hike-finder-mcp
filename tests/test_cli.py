@@ -89,10 +89,13 @@ def test_hike_to_dict_shape():
         "osm_id", "name", "ref", "distance_km", "gain_m", "loss_m",
         "circular", "car_access", "chairlift_access", "lift_type", "start",
         "near_miss", "notes", "composed", "composed_of", "unnamed", "place_name",
+        "pois",
     }
     # A plain match serialises as not-a-near-miss with no notes, and not composed.
     assert d["near_miss"] is False and d["notes"] == []
     assert d["composed"] is False and d["composed_of"] == []
+    # No POI filter was set, so nothing was scanned and nothing is claimed.
+    assert d["pois"] == []
     # An ordinary named route is not flagged unnamed and carries no derived label.
     assert d["unnamed"] is False and d["place_name"] is None
 
@@ -184,3 +187,77 @@ def test_run_requires_bbox_without_area(capsys):
     rc = run(build_parser().parse_args(["--min-gain", "100"]))
     assert rc == 2
     assert "--bbox is required" in capsys.readouterr().err
+
+
+# --------------------------------------------------- points of interest + area listing
+
+
+def test_poi_flag_is_repeatable_and_comma_separated():
+    # Both spellings are natural at a prompt, so both are accepted and normalise the same.
+    a = _parse("--bbox", "1", "2", "3", "4", "--poi", "ruins", "--poi", "church")
+    b = _parse("--bbox", "1", "2", "3", "4", "--poi", "ruins,church")
+    assert build_criteria(a).poi_kinds == ("ruins", "church")
+    assert build_criteria(b).poi_kinds == ("ruins", "church")
+    # Omitted -> no destination filter at all.
+    assert build_criteria(_parse("--bbox", "1", "2", "3", "4")).poi_kinds == ()
+
+
+def test_unknown_poi_kind_exits_2_with_a_named_error(capsys):
+    # A typo must fail loudly: an empty result set would read as "none of those exist".
+    code = run(_parse("--bbox", "1", "2", "3", "4", "--poi", "cathedral"))
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "cathedral" in err and "church" in err
+
+
+def test_list_pois_prints_the_registry_and_exits(capsys):
+    from hike_finder.poi import POI_KINDS
+
+    assert run(_parse("--list-pois")) == 0
+    out = capsys.readouterr().out
+    for kind in POI_KINDS:
+        assert kind in out
+
+
+def test_list_areas_reports_what_is_downloaded(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HIKE_SNAPSHOT_DIR", str(tmp_path))
+    # Nothing downloaded yet: say so, and point at how to get one.
+    assert run(_parse("--list-areas")) == 0
+    assert "No downloaded areas" in capsys.readouterr().out
+
+    area = AreaData(
+        routes=[{"id": 7, "name": "N", "ways": [[(50.0, 14.0), (50.05, 14.0)]], "tags": {}}],
+        pois=[{"coord": (50.025, 14.001), "kind": "ruins", "name": "Hrad"}],
+    )
+    save_snapshot(
+        AreaSnapshot(bbox=(49.9, 13.9, 50.2, 14.2), area=area, elevations={},
+                     sample_interval_m=25.0),
+        tmp_path / "krkonose.json",
+    )
+    assert run(_parse("--list-areas")) == 0
+    out = capsys.readouterr().out
+    assert "krkonose" in out and "1 routes" in out and "1 POIs" in out
+    assert "49.9000,13.9000" in out  # the bbox, so you can see WHERE it covers
+
+    # --json gives the same inventory machine-readably.
+    assert run(_parse("--list-areas", "--json")) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert [a["name"] for a in data] == ["krkonose"]
+    assert data[0]["bbox"] == [49.9, 13.9, 50.2, 14.2] and data[0]["pois"] == 1
+
+
+def test_area_accepts_a_bare_name_from_list_areas(tmp_path, monkeypatch, capsys):
+    """The names --list-areas prints are usable verbatim, not just full paths."""
+    monkeypatch.setenv("HIKE_SNAPSHOT_DIR", str(tmp_path))
+    area = AreaData(
+        routes=[{"id": 7, "name": "WebNorth", "ways": [[(50.0, 14.0), (50.05, 14.0)]], "tags": {}}]
+    )
+    rec = RecordingElevationProvider(_Ramp())
+    bbox = (49.9, 13.9, 50.2, 14.2)
+    find_hikes(area, rec, Criteria(), bbox=bbox)
+    save_snapshot(
+        AreaSnapshot(bbox=bbox, area=area, elevations=rec.samples, sample_interval_m=25.0),
+        tmp_path / "krkonose.json",
+    )
+    assert run(_parse("--area", "krkonose", "--json")) == 0
+    assert json.loads(capsys.readouterr().out)[0]["name"] == "WebNorth"

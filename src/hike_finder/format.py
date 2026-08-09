@@ -26,6 +26,11 @@ def format_hike(h: Hike) -> str:
         elev = "gain n/a"
     prefix = "~ " if h.near_miss else ""
     suffix = f"  [near miss: {'; '.join(h.notes)}]" if h.near_miss and h.notes else ""
+    # What the route actually reaches, nearest first — the answer to "does this one go
+    # past a ruin?". Only ever populated when a POI filter was set, so the ordinary
+    # one-line summary is byte-for-byte unchanged.
+    if h.pois:
+        suffix += "  [passes " + "; ".join(p.describe() for p in h.pois) + "]"
     # A composed loop has no single OSM relation — name its constituent trails instead
     # of a (dishonest) relation id, so it always reads as a stitched-together suggestion.
     # An UNNAMED route given a reverse-geocoded place label shows that label as its
@@ -78,6 +83,9 @@ def hike_to_dict(h: Hike, *, geometry: bool = False) -> dict:
         "notes": list(h.notes),
         "composed": h.composed,
         "composed_of": list(h.composed_of),
+        # Reached points of interest (empty unless a POI filter was set). Each carries
+        # its own coordinate so a client can pin it without a second lookup.
+        "pois": [p.to_dict() for p in h.pois],
     }
     if geometry:
         d["geometry"] = [[[lat, lon] for lat, lon in way] for way in h.ways]

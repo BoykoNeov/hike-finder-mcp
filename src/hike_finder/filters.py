@@ -38,6 +38,7 @@ from .geometry import (
     total_way_length_m,
 )
 from .overpass import AreaData
+from .poi import PoiHit, PoiIndex, route_pois
 
 
 def _within(d: float | None, radius_m: float) -> bool:
@@ -105,6 +106,11 @@ class Hike:
     # of `hike_to_dict` / `format_hike`, so ordinary output is byte-for-byte unchanged.
     # Default empty so every Hike construction that predates it keeps working.
     track: tuple[tuple[float, float, float], ...] = ()
+    # Points of interest this route passes (see poi.py), nearest first, each with the
+    # measured distance from the route's geometry. Filled by the CHEAP pass only when a
+    # POI filter is active — so the ordinary search costs nothing extra — and it is what
+    # `Criteria.poi_kinds` filters on. Empty on every non-POI search.
+    pois: tuple[PoiHit, ...] = ()
 
 
 @dataclass
@@ -117,6 +123,13 @@ class Criteria:
     circular: bool | None = None
     car_access: bool | None = None
     chairlift_access: bool | None = None
+    # Destination filter (see poi.py): keep only routes that pass within the POI radius
+    # of an object of one of these registered kinds ("a hike that goes to a ruin").
+    # Empty = don't care, which is the default, so every existing search is unchanged.
+    # Several kinds are OR-ed — "a church OR a ruin" — because that is what picking two
+    # entries from a list means to a user; AND-ing several would almost always return
+    # nothing. Which objects were actually reached is reported in `Hike.pois`.
+    poi_kinds: tuple[str, ...] = ()
 
     def accepts_geometry(self, h: Hike) -> bool:
         """Everything decidable from the cheap pass (no elevation)."""
@@ -129,6 +142,8 @@ class Criteria:
         if self.car_access is not None and h.car_access != self.car_access:
             return False
         if self.chairlift_access is not None and h.chairlift_access != self.chairlift_access:
+            return False
+        if self.poi_kinds and not h.pois:
             return False
         return True
 
@@ -162,6 +177,11 @@ class Criteria:
             parking lot just past the limit still counts;
           - ``circular`` is NOT relaxed: a loop is not "almost point-to-point", and
             relaxing shape would surface wrong-shape routes mislabelled "close";
+          - ``poi_kinds`` is NOT relaxed either, but for a different reason than shape:
+            the POI radius is itself a *per-search user knob* (``--poi-radius``), unlike
+            the car/lift radii, which are fixed config a user is not expected to tune
+            per search. Someone who wants "within 600 m of a ruin" says so directly, so
+            an invisible second tolerance on top would only blur what they asked for;
           - an *excluded* access (``False``) stays strict — "almost excluded" is not
             a useful near-miss.
         """
@@ -180,6 +200,8 @@ class Criteria:
             if not _within(h.lift_distance_m, lift_radius_m * (1 + radius_frac)):
                 return False
         elif self.chairlift_access is False and h.chairlift_access:
+            return False
+        if self.poi_kinds and not h.pois:
             return False
         return True
 
@@ -293,14 +315,23 @@ def measure_geometry(
     lift_radius_m: float = 400.0,
     car_max_m: float | None = None,
     lift_max_m: float | None = None,
+    poi_index: PoiIndex | None = None,
+    poi_kinds: tuple[str, ...] = (),
+    poi_radius_m: float = 250.0,
 ) -> tuple[Hike, list[Coord]] | None:
-    """Cheap pass: distance, shape, and access. Returns (hike, stitched line).
+    """Cheap pass: distance, shape, access, and reached points of interest.
+    Returns (hike, stitched line).
 
     When ``car_max_m`` / ``lift_max_m`` are given (the near-miss path), also records
     the nearest mapped parking / lift station to an access point — capped at those
     relaxed radii — onto the Hike, so a feature just past the strict limit can later
     be reported as a near-miss. They default to ``None`` (no measurement, no extra
     cost) so the ordinary search path is byte-for-byte unchanged.
+
+    ``poi_index`` + ``poi_kinds`` (both supplied only when a POI filter is active)
+    likewise record which registered objects — churches, ruins, peaks — the route passes
+    within ``poi_radius_m`` of. Absent them the POI scan does not run at all, so a
+    non-POI search pays nothing.
     """
     line = stitch_ways(route["ways"])
     if len(line) < 2:
@@ -365,6 +396,15 @@ def measure_geometry(
         endpoints, parking, lifts, car_radius_m=car_radius_m, lift_radius_m=lift_radius_m
     )
 
+    # Reached points of interest, measured against the RAW member ways — not the stitched
+    # line — for the same reason distance sums the members: a church beside a member
+    # `stitch_ways` couldn't chain is still a church you walk past. `route_pois` measures
+    # to the line itself, so a straight member mapped with two far-apart nodes still
+    # reports the true closest approach.
+    pois: tuple[PoiHit, ...] = ()
+    if poi_index is not None and poi_kinds:
+        pois = route_pois(ways, poi_index, poi_kinds, poi_radius_m)
+
     hike = Hike(
         osm_id=route["id"],
         name=route["name"],
@@ -382,6 +422,7 @@ def measure_geometry(
         # Truthful "no signed name/ref" flag from the parser (default False for the
         # synthetic compose routes, which carry their own provenance instead).
         unnamed=bool(route.get("unnamed", False)),
+        pois=pois,
     )
     return hike, line
 
@@ -490,6 +531,7 @@ def find_hikes(
     near_miss_dist_km: float = 2.0,
     near_miss_radius_frac: float = 0.5,
     near_miss_trigger: int = 1,
+    poi_radius_m: float = 250.0,
     pre_elevations_by_id: dict[int, list[float]] | None = None,
     pre_points_by_id: dict[int, list[Coord]] | None = None,
 ) -> list[Hike]:
@@ -520,6 +562,11 @@ def find_hikes(
     to the resampled points behind each series, so the presampled route can still record
     a per-point elevation ``track`` for export; absent it, gain/loss are unaffected and
     only the track is skipped.
+
+    ``criteria.poi_kinds`` adds the destination filter (see poi.py). It lands in the
+    CHEAP pass, so a POI-filtered search spends *less* elevation budget than the same
+    search without it — the routes that reach nothing are dropped before anyone pays for
+    their gain profile.
     """
     use_pre = pre_elevations_by_id is not None
     want_band = near_miss is True or near_miss == "auto"
@@ -537,6 +584,17 @@ def find_hikes(
         diagonal_m = haversine_m((south, west), (north, east))
         max_len_m = diagonal_m * max_route_factor
 
+    # Build the POI grid ONCE for the whole search, not once per route: the POIs belong
+    # to the fetched area and never change while we iterate the routes, so every route
+    # queries the same structure (see poi.PoiIndex). Skipped entirely when no POI filter
+    # is set, keeping the ordinary path free of it. The bbox's worst-case latitude is
+    # handed over so the grid's longitude cells stay wide enough across the whole area.
+    poi_kinds = tuple(criteria.poi_kinds or ())
+    poi_index: PoiIndex | None = None
+    if poi_kinds:
+        worst_lat = max(abs(bbox[0]), abs(bbox[2])) if bbox is not None else None
+        poi_index = PoiIndex(area.pois, cell_m=poi_radius_m, worst_lat=worst_lat)
+
     # Cheap pass. Bucket each route by the STRICT cheap filter; when near-misses are
     # wanted, also collect the ones that clear only the RELAXED cheap filter (the
     # near-miss pool) so they can earn an elevation lookup below.
@@ -552,6 +610,9 @@ def find_hikes(
             lift_radius_m=lift_radius_m,
             car_max_m=car_max_m,
             lift_max_m=lift_max_m,
+            poi_index=poi_index,
+            poi_kinds=poi_kinds,
+            poi_radius_m=poi_radius_m,
         )
         if measured is None:
             continue

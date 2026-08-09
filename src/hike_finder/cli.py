@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from . import cache
@@ -22,6 +23,7 @@ from .elevation import api_quota_snapshot
 from .export import hikes_to_geojson, hikes_to_gpx
 from .filters import Criteria
 from .format import format_hike, hike_to_dict
+from .poi import kind_labels, normalise_kinds
 from .search import (
     compose_loops,
     compose_loops_around,
@@ -31,7 +33,13 @@ from .search import (
     search_hikes,
     search_snapshot,
 )
-from .snapshot import load_snapshot, save_snapshot
+from .snapshot import (
+    default_snapshot_dir,
+    list_snapshots,
+    load_snapshot,
+    save_snapshot,
+    snapshot_path,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -94,6 +102,23 @@ def build_parser() -> argparse.ArgumentParser:
         "'composed of ...'). Loops are kept inside the --bbox area. Combine with "
         "--car-access / --chairlift-access to get only loops reachable from a parking "
         "lot / lift, each started at that trailhead ('a loop from where I park').",
+    )
+    g.add_argument(
+        "--poi",
+        action="append",
+        metavar="KIND",
+        help="Keep only routes that pass a point of interest of this KIND — e.g. "
+        "--poi church --poi ruins ('a 10 km hike that goes to a ruin'). Repeat the flag "
+        "or give a comma-separated list; several kinds are OR-ed. Each match is reported "
+        "with the measured distance. Run --list-pois for the kinds. Works with a live, "
+        "--compose-loops, point-based, or offline --area search.",
+    )
+    g.add_argument(
+        "--poi-radius",
+        type=float,
+        metavar="M",
+        help="How close a route must pass to count as reaching a --poi, in metres "
+        "(default HIKE_POI_RADIUS_M = 250).",
     )
 
     r = p.add_argument_group(
@@ -168,8 +193,22 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--area",
         metavar="FILE",
-        help="Search a snapshot saved by --download instead of fetching live. No network, "
-        "no API calls; --bbox is taken from the snapshot.",
+        help="Search a snapshot instead of fetching live. No network, no API calls; "
+        "--bbox is taken from the snapshot. Takes a path saved by --download, or the "
+        "bare NAME of an area shown by --list-areas.",
+    )
+    s.add_argument(
+        "--list-areas",
+        action="store_true",
+        help="Show which areas are already downloaded — name, bbox, when, and what is in "
+        "them — then exit. Lists the NAMED snapshot directory (HIKE_SNAPSHOT_DIR, the one "
+        "the web UI downloads into); a snapshot you saved elsewhere with --download PATH "
+        "is not tracked, search it with --area PATH.",
+    )
+    s.add_argument(
+        "--list-pois",
+        action="store_true",
+        help="List the point-of-interest kinds --poi accepts, then exit.",
     )
 
     o = p.add_argument_group("data sources (override env / config defaults)")
@@ -227,6 +266,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def build_criteria(args: argparse.Namespace) -> Criteria:
+    # --poi is repeatable AND accepts a comma-separated list, because both spellings are
+    # natural at a shell prompt. normalise_kinds validates against the registry, so a
+    # typo raises here (caught in run()) instead of quietly matching nothing.
+    raw_poi: list[str] = []
+    for item in getattr(args, "poi", None) or ():
+        raw_poi.extend(part for part in str(item).split(",") if part.strip())
     return Criteria(
         min_gain_m=args.min_gain,
         max_gain_m=args.max_gain,
@@ -235,6 +280,7 @@ def build_criteria(args: argparse.Namespace) -> Criteria:
         circular=args.circular,
         car_access=args.car_access,
         chairlift_access=args.chairlift_access,
+        poi_kinds=normalise_kinds(raw_poi),
     )
 
 
@@ -294,9 +340,74 @@ def _fetch_hint(e: Exception) -> None:
         )
 
 
+_POI_EMPTY = (
+    "No routes pass a point of interest of that kind here — widen --poi-radius, try "
+    "another --poi kind, or search a wider area. (A miss means nothing of that kind is "
+    "*mapped* in OSM near a route, not that nothing is there.)"
+)
+
+
+def _print_areas(as_json: bool) -> int:
+    """Show the already-downloaded areas (the named snapshot directory)."""
+    areas = list_snapshots()
+    if as_json:
+        print(json.dumps(areas, ensure_ascii=False, indent=2))
+        return 0
+    if not areas:
+        print(
+            f"No downloaded areas in {default_snapshot_dir()}.\n"
+            "Download one with the web UI, or search a file saved by --download FILE "
+            "using --area FILE."
+        )
+        return 0
+    print(f"Downloaded areas in {default_snapshot_dir()}:")
+    for a in areas:
+        bbox = a.get("bbox") or []
+        where = (
+            f"{bbox[0]:.4f},{bbox[1]:.4f} .. {bbox[2]:.4f},{bbox[3]:.4f}"
+            if len(bbox) == 4
+            else "bbox unknown"
+        )
+        when = (a.get("created_at") or "?").replace("T", " ").replace("+00:00", "Z")
+        # An older snapshot has no POIs, so say so here rather than letting a --poi
+        # search against it look like "there are no churches in Krkonoše".
+        poi = f"{a['pois']} POIs" if a.get("pois") else "no POIs (re-download for --poi)"
+        names = f", {a['places']} baked names" if a.get("places") else ""
+        print(
+            f"  {a['name']:<20} {where}\n"
+            f"  {'':<20} {a['routes']} routes, {a['samples']} elevation samples, "
+            f"{poi}{names}  ·  {a['bytes'] / 1e6:.1f} MB, downloaded {when}"
+        )
+    print("\nSearch one with:  hike-finder --area <name>   (or --area <path/to/file.json>)")
+    return 0
+
+
 def run(args: argparse.Namespace) -> int:
     cfg = _config.load()
     near_miss = "auto" if args.near_misses is None else args.near_misses
+
+    # Standalone informational actions: print and exit, no network, no bbox needed.
+    if getattr(args, "list_pois", False):
+        print("Point-of-interest kinds for --poi (several are OR-ed):")
+        for kind, plural in kind_labels():
+            print(f"  {kind:<14} {plural}")
+        print(
+            "\ne.g.  hike-finder --bbox 50.72 15.58 50.78 15.68 --poi ruins,church "
+            "--max-distance 12"
+        )
+        return 0
+    if getattr(args, "list_areas", False):
+        return _print_areas(args.json)
+
+    # Validate --poi once, up front: an unknown kind is a typo, and the whole point of
+    # raising is that it must not read as "nothing of that kind is out there".
+    try:
+        build_criteria(args)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    if getattr(args, "poi_radius", None) is not None:
+        cfg.poi_radius_m = args.poi_radius
 
     # --clear-cache is a standalone maintenance action: empty the cache and exit.
     if getattr(args, "clear_cache", False):
@@ -449,16 +560,29 @@ def run(args: argparse.Namespace) -> int:
 
     # Offline: search a saved snapshot. No network, no API calls, no quota line.
     if args.area:
+        # A path wins; otherwise fall back to the NAMED snapshot directory, so the names
+        # --list-areas (and the web UI) show are usable here verbatim.
+        target = args.area
+        if not os.path.isfile(target):
+            named = snapshot_path(args.area)
+            if named is not None and named.is_file():
+                target = str(named)
         try:
-            snap = load_snapshot(args.area)
+            snap = load_snapshot(target)
         except (OSError, ValueError) as e:
             print(f"error: could not read snapshot {args.area!r}: {e}", file=sys.stderr)
             return 1
+        criteria = build_criteria(args)
         hikes = search_snapshot(
-            snap, build_criteria(args), cfg, near_miss=near_miss,
-            name_places=args.name_places,
+            snap, criteria, cfg, near_miss=near_miss, name_places=args.name_places,
         )
-        _emit(hikes, args.json)
+        # A POI filter that finds nothing offline gets the same "here's the lever" wording
+        # as the live search — plus, from search_snapshot, a loud warning when the
+        # snapshot simply predates POIs and could never have matched.
+        _emit(
+            hikes, args.json,
+            _POI_EMPTY if criteria.poi_kinds else "No matching hikes found in that area.",
+        )
         _write_exports(hikes, args)
         return 0
 
@@ -493,8 +617,8 @@ def run(args: argparse.Namespace) -> int:
         baked = f", {snap.place_count} baked place name(s)" if args.name_places else ""
         print(
             f"Saved snapshot to {args.download}: {snap.route_count} routes, "
-            f"{snap.sample_count} elevation samples{baked}. "
-            f"Search it offline with --area {args.download}."
+            f"{snap.sample_count} elevation samples, {snap.poi_count} points of "
+            f"interest{baked}. Search it offline with --area {args.download}."
         )
         _quota_line(cfg, used_before)
         return 0
@@ -534,6 +658,11 @@ def run(args: argparse.Namespace) -> int:
             else "No loops could be composed in that area — try a wider --bbox or a wider "
             "--min-distance/--max-distance band."
         )
+    elif build_criteria(args).poi_kinds:
+        # Say which lever to pull: with a POI filter on, "nothing matched" most often
+        # means the radius is too tight or nothing of that kind is mapped here — not
+        # that the distance/gain band was wrong.
+        empty_msg = _POI_EMPTY
     else:
         empty_msg = "No matching hikes found in that area."
     _emit(hikes, args.json, empty_msg)
