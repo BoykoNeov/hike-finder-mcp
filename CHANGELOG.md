@@ -40,7 +40,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   from the existing `spring`: the tag key differs (`amenity`, not `natural`), which the
   one-clause-per-key query shape makes a hard constraint, and the two are different
   promises anyway — a spring is water you find, a tap is water someone maintains.
-- **What you walk on** — every result now reports its `surface` (and `tracktype`) read from
+- **What you walk on** — routes that come from an OSM relation now report their `surface` (and `tracktype`) read from
   the member ways, weighted **by length rather than by way count**, since OSM splits a trail
   at every attribute change and counting ways would call four asphalt slivers plus one long
   forest track "mostly asphalt". The one-line flag appears only when at least half the route
@@ -49,7 +49,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fraction. `sac_scale`/`trail_visibility` are deliberately excluded: measured at 4 % and 1 %
   coverage on real data, a difficulty claim that absent reads as "easy" rather than "unknown".
   This adds a second Overpass statement (`way(r); out tags;`, about +22 % response size) and
-  so invalidates the Overpass cache.
+  so invalidates the Overpass cache. Synthesised routes (`--compose-loops`, `--around`,
+  `--from`/`--to`, `--via`, `--to-poi`) are stitched from graph segments rather than relation
+  members and report no surface yet — nothing wrong, just nothing.
+- **A public-transport near-miss** is annotated like a parking one: a station just past the
+  radius now reads "nearest public transport 1100 m away — just past the 1000 m limit"
+  instead of being dropped silently.
 - **CI runs weekly on a schedule**, so a dependency going incompatible upstream is caught by a
   dated run instead of reddening whichever unrelated commit happens to land next — which is
   exactly how mcp 2.0.0 surfaced in v0.3.0.

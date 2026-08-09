@@ -234,3 +234,36 @@ def test_snapshot_round_trips_member_tags_and_absence_stays_absence():
     assert reloaded.area.routes[0]["way_tags"] == []
     hike, _ = measure_geometry(reloaded.area.routes[0], [], [])
     assert hike.surface is None
+
+
+def test_clipping_keeps_way_tags_parallel_to_ways():
+    """`way_tags` is defined as parallel to `ways`, and clipping changes how many ways
+    there are — a member can split into several runs or vanish. A `{**r}` that carried
+    the old list through would mis-attribute every surface after the first split."""
+    from hike_finder.compose import clip_routes_to_bbox
+
+    # way 0 straddles the west edge and survives as ONE run; way 1 is fully inside.
+    r = {"id": 1, "name": "R", "ways": [
+            [(50.0, 14.90), (50.0, 14.99), (50.0, 15.05), (50.0, 15.06)],
+            [(50.02, 15.02), (50.02, 15.03)],
+         ],
+         "way_tags": [{"surface": "asphalt"}, {"surface": "ground"}]}
+    out = clip_routes_to_bbox([r], (49.9, 15.0, 50.1, 15.1))[0]
+
+    assert len(out["way_tags"]) == len(out["ways"])
+    # every surviving run still carries ITS OWN way's surface
+    for way, tags in zip(out["ways"], out["way_tags"]):
+        expected = "asphalt" if way[0][0] == 50.0 else "ground"
+        assert tags["surface"] == expected
+
+
+def test_clipping_a_route_that_never_had_tags_stays_untagged():
+    """Absence must survive clipping too — inventing [] parallel entries would turn
+    "never fetched" into "fetched, nothing tagged"."""
+    from hike_finder.compose import clip_routes_to_bbox
+
+    r = {"id": 1, "name": "R", "ways": [[(50.02, 15.02), (50.02, 15.03)]]}
+    out = clip_routes_to_bbox([r], (49.9, 15.0, 50.1, 15.1))[0]
+    assert out["way_tags"] == []
+    hike, _ = measure_geometry(out, [], [])
+    assert hike.surface is None

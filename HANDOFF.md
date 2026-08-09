@@ -490,6 +490,19 @@ skip without the `mcp` extra).
   A difficulty claim absent 96 % of the time reads as "easy" rather than "unknown", which is
   the failure mode this project spends most of its comments avoiding. Revisit if OSM coverage
   improves; the fetch mechanism is already in place, so it is a rendering decision now.
+- **Surface covers OSM-relation routes only; every SYNTHESISED mode reports none.**
+  `--compose-loops`, `--around`, `--from`/`--to`, `--via` and `--to-poi` build their route
+  dicts from contracted graph segments (`"ways": [route.coords]` — one assembled polyline),
+  not from relation members, so there is no per-member list for `way_tags` to be parallel
+  to and the summary stays `None`. That is the honest output, not a wrong one, but it means
+  four of the six search modes are silent here — confirmed live (`--compose-loops` over
+  Špindl: 0 surface flags). Fixing it means carrying per-segment surface through
+  `build_trail_graph`'s degree-2 contraction and assembling it like `assemble_loop_series`
+  already does for elevation (`seg_elev`/`seg_points`) — a real change, and the reason the
+  README/GUIDE now say "routes that come from an OSM relation" rather than "every result".
+  `clip_routes_to_bbox` DOES rebuild `way_tags` alongside `ways` so the parallel invariant
+  holds by construction; today those dicts only feed `build_trail_graph`, but a stale
+  parallel list would mis-attribute surfaces the moment one reached `measure_geometry`.
 - **Unrecognised `surface` values pass through verbatim**, e.g. a real route near Špindl tagged
   `surface=pfad, wurzeln, steine` (German free text stuffed into an enum field). It prints
   looking like a bug and is not one — it is what OSM says. Bucketing it into "other" would

@@ -242,6 +242,38 @@ def test_a_snapshot_written_before_transit_existed_loads_as_unknown():
     assert snapshot_from_json(d).area.transit is None
 
 
+def test_a_station_just_past_the_radius_is_a_near_miss_not_a_silent_drop():
+    """transit_distance_m exists so a station 1.1 km out reads like a parking lot
+    380 m out — annotated, not dropped. A computed-but-unread field would be worse
+    than no field: it looks complete."""
+    hike = Hike(osm_id=1, name="x", distance_km=5.0, circular=True,
+                car_access=False, chairlift_access=False, start=(50.0, 15.0),
+                transit_access=False, transit_distance_m=1100.0)
+    crit = Criteria(transit_access=True)
+
+    assert not crit.accepts_geometry(hike)  # strict: still not a match
+    assert crit.accepts_geometry_relaxed(
+        hike, dist_km_margin=2.0, radius_frac=0.5,
+        car_radius_m=300.0, lift_radius_m=400.0,
+    )
+    notes = crit.near_miss_notes(hike, gain_frac=0.2, car_radius_m=300.0,
+                                 lift_radius_m=400.0)
+    assert notes and any("public transport" in n and "1100 m" in n for n in notes)
+
+
+def test_the_near_miss_pool_still_refuses_an_unmeasured_route():
+    """Relaxing the RADIUS must not relax the tri-state: a route from a snapshot that
+    never recorded transit has no distance either, so it stays out of the pool rather
+    than sneaking in through the widened gate."""
+    unknown = Hike(osm_id=1, name="x", distance_km=5.0, circular=True,
+                   car_access=False, chairlift_access=False, start=(50.0, 15.0))
+    assert unknown.transit_access is None and unknown.transit_distance_m is None
+    assert not Criteria(transit_access=True).accepts_geometry_relaxed(
+        unknown, dist_km_margin=2.0, radius_frac=0.5,
+        car_radius_m=300.0, lift_radius_m=400.0,
+    )
+
+
 def test_an_unanswerable_offline_transit_search_says_so(caplog):
     """Returning nothing is correct but not sufficient — silence would read as
     "nowhere here is reachable by public transport", which for a Czech valley with a

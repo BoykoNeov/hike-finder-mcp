@@ -203,6 +203,7 @@ class Criteria:
         radius_frac: float,
         car_radius_m: float,
         lift_radius_m: float,
+        transit_radius_m: float = TRANSIT_RAIL_RADIUS_M,
     ) -> bool:
         """The widened cheap-pass gate that admits a route into the near-miss pool.
 
@@ -241,6 +242,16 @@ class Criteria:
                 return False
         elif self.chairlift_access is False and h.chairlift_access:
             return False
+        if self.transit_access is True:
+            # Relaxed against the RAIL radius, the larger of the two, matching the
+            # `transit_max_m` the measurement was capped at. An unknown route measures
+            # None here, so `_within` rejects it — the strict gate's "refuse to answer
+            # from data nobody gathered" survives into the near-miss pool rather than
+            # being quietly relaxed away.
+            if not _within(h.transit_distance_m, transit_radius_m * (1 + radius_frac)):
+                return False
+        elif self.transit_access is False and h.transit_access:
+            return False
         if self.poi_kinds and not h.pois:
             return False
         return True
@@ -252,6 +263,7 @@ class Criteria:
         gain_frac: float,
         car_radius_m: float,
         lift_radius_m: float,
+        transit_radius_m: float = TRANSIT_RAIL_RADIUS_M,
     ) -> tuple[str, ...] | None:
         """Human notes for each strict criterion ``h`` misses but stays close to —
         or ``None`` if it misses one too hard to call a near-miss.
@@ -308,6 +320,15 @@ class Criteria:
             notes.append(
                 f"nearest lift {round(h.lift_distance_m)} m away — "
                 f"just past the {round(lift_radius_m)} m limit"
+            )
+        if (
+            self.transit_access is True
+            and not h.transit_access
+            and h.transit_distance_m is not None
+        ):
+            notes.append(
+                f"nearest public transport {round(h.transit_distance_m)} m away — "
+                f"just past the {round(transit_radius_m)} m limit"
             )
         return tuple(notes) if notes else None
 
@@ -717,6 +738,7 @@ def find_hikes(
             radius_frac=near_miss_radius_frac,
             car_radius_m=car_radius_m,
             lift_radius_m=lift_radius_m,
+            transit_radius_m=transit_rail_radius_m,
         ):
             relaxed_only.append((hike, line))
 
@@ -763,6 +785,7 @@ def find_hikes(
                 gain_frac=near_miss_gain_frac,
                 car_radius_m=car_radius_m,
                 lift_radius_m=lift_radius_m,
+                transit_radius_m=transit_rail_radius_m,
             )
             if notes is not None:
                 h.near_miss = True

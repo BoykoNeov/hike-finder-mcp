@@ -119,7 +119,16 @@ def clip_routes_to_bbox(routes: list[dict], bbox: tuple[float, float, float, flo
     out: list[dict] = []
     for r in routes:
         ways: list[list[Coord]] = []
-        for w in r.get("ways", []):
+        # `way_tags` is defined as PARALLEL to `ways` (overpass.parse_area), and
+        # clipping changes how many ways there are — one member can split into several
+        # runs or vanish entirely. Rebuilding it alongside keeps the invariant true by
+        # construction instead of merely unreachable: today these clipped dicts only
+        # feed `build_trail_graph` (which reads `ways` alone), but a stale parallel list
+        # would mis-attribute surfaces the moment one reached `measure_geometry`.
+        tags_in = r.get("way_tags") or []
+        way_tags: list[dict] = []
+        for i, w in enumerate(r.get("ways", [])):
+            w_tags = tags_in[i] if i < len(tags_in) else {}
             run: list[Coord] = []
             for pt in w:
                 if inside(pt):
@@ -127,10 +136,12 @@ def clip_routes_to_bbox(routes: list[dict], bbox: tuple[float, float, float, flo
                 else:
                     if len(run) >= 2:
                         ways.append(run)
+                        way_tags.append(w_tags)
                     run = []
             if len(run) >= 2:
                 ways.append(run)
-        out.append({**r, "ways": ways})
+                way_tags.append(w_tags)
+        out.append({**r, "ways": ways, "way_tags": way_tags if tags_in else []})
     return out
 
 

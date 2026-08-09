@@ -49,8 +49,8 @@ The four boolean filters are **tri-state**: omit = don't care, `true` = require,
 reflect OSM *mapping*, not the world — a `false` means nothing of that kind is mapped
 near the route's ends, not that it's impossible to get there. Loop detection is reliable.
 
-Every result also reports **what you walk on**, read from the member ways' `surface`
-and `tracktype` tags and weighted **by length, never by way count** (OSM splits a trail
+Routes that come from an **OSM relation** also report **what you walk on**, read from the
+member ways' `surface` and `tracktype` tags and weighted **by length, never by way count** (OSM splits a trail
 at every attribute change, so counting ways would call four asphalt slivers plus one
 long forest track "mostly asphalt"):
 
@@ -63,7 +63,11 @@ Two gates keep that flag honest. It appears only when **at least half** the rout
 length is tagged at all, and it names a surface only when that surface is **at least
 40 %** of the route — otherwise it says `surface:mixed (77% known)` rather than letting
 a 21 % plurality pose as the answer. `--json` carries the full breakdown plus the
-`coverage` fraction. `sac_scale` and `trail_visibility` are deliberately *not* reported:
+`coverage` fraction. Synthesised routes — `--compose-loops`, `--around`, `--from`/`--to`, `--via`, `--to-poi` —
+do **not** carry a surface yet: they are stitched from contracted graph segments rather
+than from relation members, so the per-way tags do not survive the assembly. They report
+no surface at all rather than a wrong one. `sac_scale` and `trail_visibility` are
+deliberately *not* reported either:
 measured against real data they are mapped on 4 % and 1 % of member ways, and a
 difficulty claim that is absent 96 % of the time reads as "easy" rather than "unknown".
 
