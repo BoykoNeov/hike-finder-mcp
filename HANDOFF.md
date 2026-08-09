@@ -408,7 +408,11 @@ skip without the `mcp` extra).
   wrong; the world moved. The lesson is narrower than "pin everything": a test-only import of a
   third-party symbol takes down the whole suite, while the same dep behind `importorskip` only
   skips. Cap majors on optional extras, and treat a suite that fails at collection as a
-  dependency question first.
+  dependency question first. **CI now runs weekly on a cron** (`schedule` in `ci.yml`) so the
+  *next* dep to move upstream is caught by a dated run on main rather than by whatever
+  unrelated commit lands first — capping `mcp` fixed one instance, the schedule addresses the
+  class. The concurrency group includes `github.event_name` so a Monday cron can't cancel an
+  in-flight push run and be misread as that commit failing.
 - **PyPI publish** is deliberately parked — GitHub-only for now. Metadata is publish-ready; the
   clean path when revisited is Trusted Publishing (OIDC) via a tag-triggered workflow.
 

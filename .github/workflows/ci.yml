@@ -5,10 +5,22 @@ on:
     branches: ["**"]
   pull_request:
     branches: [main]
+  # Weekly run against the same config, to catch the world moving under us. An
+  # unpinned dependency going incompatible upstream reddens CI on whatever commit
+  # happens to land next — which is how mcp 2.0.0 broke this repo on a commit that
+  # touched none of it. A schedule makes that a dated signal on main instead of a
+  # false accusation against an unrelated change. (GitHub disables cron on a repo
+  # with no activity for 60 days; a manual run re-arms it.)
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
 
-# Cancel an in-flight run when a new commit is pushed to the same ref.
+# Cancel an in-flight run when a new commit is pushed to the same ref. The event
+# name is in the group so a Monday cron cannot cancel an in-flight push run on
+# main (and be read as that commit failing) — the exact confusion this file's
+# scheduled run exists to prevent.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
