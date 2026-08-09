@@ -300,8 +300,12 @@ thing is validated live against real OSM. Highlights:
   node against a stubbed Leaflet/DOM (skipped without node). That harness is not decoration: it
   caught a drag's trailing `click` being taken for a point-pick.
 - **All three frontends validated live**, including the MCP server over real stdio.
-- **Repo hygiene**: MIT license, CHANGELOG, green CI (Linux 3.10–3.14 + Windows), complete
-  pyproject; v0.1.0, v0.2.0, v0.3.0 and v0.3.1 tagged + GitHub-released.
+- **Repo hygiene**: MIT license, CHANGELOG, complete pyproject, and CI across Linux 3.10–3.14 +
+  Windows; v0.1.0, v0.2.0, v0.3.0 and v0.3.1 tagged + GitHub-released. **CI being green is a
+  per-commit fact, not a standing property of this repo** — check it (`gh run list`) before
+  asserting it anywhere, a release body most of all. An unpinned optional extra silently
+  falsified this very line for four commits while the sentence sat here unchanged; see the
+  `mcp<2` entry under Known limitations.
 
 Run it: `pytest -q` — the full suite is offline (a few `.sh` launcher cases need bash; MCP tests
 skip without the `mcp` extra).
