@@ -170,6 +170,11 @@ INDEX_HTML = """<!doctype html>
       <option value="">any</option><option value="true">required</option><option value="false">excluded</option>
     </select>
 
+    <label>Public transport (station/stop near an end)</label>
+    <select id="transit_access">
+      <option value="">any</option><option value="true">required</option><option value="false">excluded</option>
+    </select>
+
     <label>Must pass (churches, ruins, peaks…)</label>
     <select id="poi" multiple size="7"></select>
     <p class="muted">Ctrl/&#8984;-click for several — a route passing <b>any</b> of them is kept, and what it reaches is listed with the distance. Leave empty for no destination filter.</p>
@@ -399,7 +404,7 @@ document.getElementById('via_undo').addEventListener('click', () => {
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function val(id){ const v = document.getElementById(id).value.trim(); return v === '' ? null : v; }
 
-const FIELDS = ['circular','car_access','chairlift_access','near_misses',
+const FIELDS = ['circular','car_access','chairlift_access','transit_access','near_misses',
                 'min_gain_m','max_gain_m','min_distance_km','max_distance_km','user_agent'];
 
 function fmtWhen(iso){
@@ -738,6 +743,9 @@ function render(hikes){
     const flags = [ h.circular ? 'loop' : 'one-way' ];
     if (h.car_access) flags.push('car');
     if (h.chairlift_access) flags.push('lift:' + esc(h.lift_type));
+    // Only a positive result is shown, and it names the kind — same rule as format.py:
+    // false and "never recorded" (null) are different, and a flag can't say which.
+    if (h.transit_access) flags.push('transit:' + esc(h.transit_label || h.transit_type));
     const gain = (h.gain_m != null) ? ('+' + h.gain_m + ' m / -' + h.loss_m + ' m') : 'gain n/a';
     const note = (h.near_miss && h.notes && h.notes.length)
       ? '<div class="note">near miss: ' + esc(h.notes.join('; ')) + '</div>' : '';
@@ -1081,6 +1089,7 @@ class Handler(BaseHTTPRequestHandler):
             circular=_tri(qs, "circular"),
             car_access=_tri(qs, "car_access"),
             chairlift_access=_tri(qs, "chairlift_access"),
+            transit_access=_tri(qs, "transit_access"),
             poi_kinds=poi_kinds,
         )
         # near_misses tri-state: absent -> "auto", true -> always, false -> never.

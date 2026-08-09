@@ -19,13 +19,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .access import (
+    TRANSIT_RAIL_RADIUS_M,
+    TRANSIT_STOP_RADIUS_M,
     car_accessible,
     chairlift_access,
     is_circular,
     matched_access_points,
     nearest_lift_m,
     nearest_parking_m,
+    nearest_transit_m,
     route_endpoints,
+    transit_access,
 )
 from .elevation import ElevationError, ElevationProvider, cumulative_gain_loss
 from .geometry import (
@@ -59,6 +63,16 @@ class Hike:
     loss_m: float | None = None
     lift_type: str | None = None
     ref: str | None = None
+    # Public-transport access. The ONLY access field that is `bool | None` rather than
+    # `bool`, because it is the only one that postdates existing snapshots: `None` means
+    # "this area's data never recorded transit", which is a different claim from False
+    # ("nothing is mapped near the ends"). Answering a transit filter from a v1 snapshot
+    # would confidently label every route "no transit access" — and around here that
+    # would be absurd, since a Czech trailhead is very often a railway halt. `Criteria`
+    # therefore refuses the question rather than guessing; see `accepts_geometry`.
+    transit_access: bool | None = None
+    transit_type: str | None = None  # which kind granted it (access.TRANSIT_KINDS key)
+    transit_distance_m: float | None = None  # near-miss measurement, like car/lift
     # Near-miss annotation. `near_miss` marks a route that does NOT meet the strict
     # criteria but is within tolerance of them; `notes` says exactly how it misses
     # ("gain 720 m — 80 m below the 800 m minimum"), so it is never mistaken for a
@@ -131,6 +145,7 @@ class Criteria:
     circular: bool | None = None
     car_access: bool | None = None
     chairlift_access: bool | None = None
+    transit_access: bool | None = None
     # Destination filter (see poi.py): keep only routes that pass within the POI radius
     # of an object of one of these registered kinds ("a hike that goes to a ruin").
     # Empty = don't care, which is the default, so every existing search is unchanged.
@@ -151,6 +166,14 @@ class Criteria:
             return False
         if self.chairlift_access is not None and h.chairlift_access != self.chairlift_access:
             return False
+        if self.transit_access is not None:
+            # Unknown fails an active filter — the same rule `accepts_gain` applies to a
+            # route with no measured gain. A pre-transit snapshot yields None here, and
+            # dropping the route is the honest answer: we cannot say either way, so the
+            # search comes back empty (and says why) instead of returning routes labelled
+            # with an access verdict nothing ever measured.
+            if h.transit_access is None or h.transit_access != self.transit_access:
+                return False
         if self.poi_kinds and not h.pois:
             return False
         return True
@@ -318,11 +341,15 @@ def measure_geometry(
     parking: list[dict],
     lifts: list[dict],
     *,
+    transit: list[dict] | None = None,
     loop_tolerance_m: float = 150.0,
     car_radius_m: float = 300.0,
     lift_radius_m: float = 400.0,
+    transit_rail_radius_m: float = TRANSIT_RAIL_RADIUS_M,
+    transit_stop_radius_m: float = TRANSIT_STOP_RADIUS_M,
     car_max_m: float | None = None,
     lift_max_m: float | None = None,
+    transit_max_m: float | None = None,
     poi_index: PoiIndex | None = None,
     poi_kinds: tuple[str, ...] = (),
     poi_radius_m: float = 250.0,
@@ -379,6 +406,20 @@ def measure_geometry(
     car = car_accessible(access_pts, parking, car_radius_m)
     lift_ok, lift_kind = chairlift_access(access_pts, lifts, lift_radius_m)
 
+    # `transit is None` means the area data never recorded stops (a pre-transit
+    # snapshot) — propagate the not-known state rather than collapsing it to False.
+    # An empty LIST is a real answer ("none mapped here") and gives False as usual.
+    if transit is None:
+        transit_ok: bool | None = None
+        transit_kind: str | None = None
+    else:
+        transit_ok, transit_kind = transit_access(
+            access_pts,
+            transit,
+            rail_radius_m=transit_rail_radius_m,
+            stop_radius_m=transit_stop_radius_m,
+        )
+
     # Near-miss measurement (only when a relaxed cap is supplied): how far is the
     # closest parking / lift, even if it sits just beyond the access radius? Measured
     # against the SAME access_pts the booleans use, so "within radius" and "nearest
@@ -388,6 +429,11 @@ def measure_geometry(
     )
     lift_distance_m = (
         nearest_lift_m(access_pts, lifts, lift_max_m)[0] if lift_max_m is not None else None
+    )
+    transit_distance_m = (
+        nearest_transit_m(access_pts, transit, transit_max_m)[0]
+        if transit_max_m is not None and transit
+        else None
     )
 
     # Couple the start marker to the access result: aim it at the terminus
@@ -422,9 +468,12 @@ def measure_geometry(
         chairlift_access=lift_ok,
         start=_route_start(line, termini, access_points),
         lift_type=lift_kind,
+        transit_access=transit_ok,
+        transit_type=transit_kind,
         ref=route.get("ref"),
         car_distance_m=car_distance_m,
         lift_distance_m=lift_distance_m,
+        transit_distance_m=transit_distance_m,
         # Carry the raw member-way geometry for export / map draw (immutable copy).
         ways=tuple(tuple(w) for w in ways),
         # Truthful "no signed name/ref" flag from the parser (default False for the
@@ -534,6 +583,8 @@ def find_hikes(
     loop_tolerance_m: float = 150.0,
     car_radius_m: float = 300.0,
     lift_radius_m: float = 400.0,
+    transit_rail_radius_m: float = TRANSIT_RAIL_RADIUS_M,
+    transit_stop_radius_m: float = TRANSIT_STOP_RADIUS_M,
     near_miss: bool | str = False,
     near_miss_gain_frac: float = 0.2,
     near_miss_dist_km: float = 2.0,
@@ -582,6 +633,11 @@ def find_hikes(
     # report a feature just past the limit; None disables the scan on the plain path.
     car_max_m = car_radius_m * (1 + near_miss_radius_frac) if want_band else None
     lift_max_m = lift_radius_m * (1 + near_miss_radius_frac) if want_band else None
+    # Relaxed by the rail radius: it is the larger of the two, so the near-miss note
+    # can reach a station just past its own limit as well as a bus stop past its.
+    transit_max_m = (
+        transit_rail_radius_m * (1 + near_miss_radius_frac) if want_band else None
+    )
 
     # Over-length guard: a through-route (e.g. a national trail) intersecting the
     # bbox comes back with its FULL geometry, so its length and endpoints belong
@@ -613,11 +669,15 @@ def find_hikes(
             r,
             area.parking,
             area.lifts,
+            transit=area.transit,
             loop_tolerance_m=loop_tolerance_m,
             car_radius_m=car_radius_m,
             lift_radius_m=lift_radius_m,
+            transit_rail_radius_m=transit_rail_radius_m,
+            transit_stop_radius_m=transit_stop_radius_m,
             car_max_m=car_max_m,
             lift_max_m=lift_max_m,
+            transit_max_m=transit_max_m,
             poi_index=poi_index,
             poi_kinds=poi_kinds,
             poi_radius_m=poi_radius_m,

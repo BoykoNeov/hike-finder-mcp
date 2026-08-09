@@ -9,6 +9,7 @@ The same applies to the *inventory* mode's output (:func:`format_poi`,
 """
 from __future__ import annotations
 
+from .access import transit_label
 from .filters import Hike
 from .poi import count_by_kind, kind_label
 
@@ -52,6 +53,13 @@ def format_hike(h: Hike) -> str:
         flags.append("car")
     if h.chairlift_access:
         flags.append(f"lift:{h.lift_type}")
+    # Only a positive transit result gets a flag, and it NAMES the kind: "train station"
+    # and "bus stop" are very different promises about actually getting there. False and
+    # "never recorded" (None) both stay silent — the one-liner has no room to explain the
+    # difference, and printing a bare "no transit" would assert something a pre-transit
+    # snapshot cannot support.
+    if h.transit_access:
+        flags.append(f"transit:{transit_label(h.transit_type) or h.transit_type}")
     if h.gain_m is not None:
         elev = f"+{h.gain_m} m / -{h.loss_m} m"
     else:
@@ -117,6 +125,11 @@ def hike_to_dict(h: Hike, *, geometry: bool = False) -> dict:
         "car_access": h.car_access,
         "chairlift_access": h.chairlift_access,
         "lift_type": h.lift_type,
+        # null (not false) when the area's data never recorded transit — a JSON consumer
+        # must be able to tell "none mapped" from "not measured".
+        "transit_access": h.transit_access,
+        "transit_type": h.transit_type,
+        "transit_label": transit_label(h.transit_type),
         "start": {"lat": h.start[0], "lon": h.start[1]},
         "near_miss": h.near_miss,
         "notes": list(h.notes),

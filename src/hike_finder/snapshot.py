@@ -252,6 +252,19 @@ def _area_to_json(area: AreaData) -> dict:
             }
             for p in area.pois
         ],
+        # Public-transport stops (access.TRANSIT_KINDS). The key is written even when
+        # the area has NO stops — an empty list is the record of a real answer, and it
+        # is what distinguishes this file from one written before transit existed. On
+        # load, a MISSING key restores `None` ("never recorded") and the transit filter
+        # then declines to answer rather than reporting every route as unreachable.
+        "transit": [
+            {
+                "coord": [t["coord"][0], t["coord"][1]],
+                "kind": t.get("kind"),
+                "name": t.get("name"),
+            }
+            for t in (area.transit or [])
+        ],
     }
 
 
@@ -290,6 +303,16 @@ def _area_from_json(d: dict) -> AreaData:
         area.pois.append(
             {"coord": (c[0], c[1]), "kind": p.get("kind"), "name": p.get("name")}
         )
+    # Transit is the one field whose ABSENCE is meaningful, so it is read with a `None`
+    # default rather than `[]`: a file without the key predates the feature and cannot
+    # answer a transit question, while a file WITH an empty list positively recorded
+    # "no stops in this area". Everything downstream keeps the two apart.
+    if "transit" in d:
+        area.transit = [
+            {"coord": (t["coord"][0], t["coord"][1]), "kind": t.get("kind"),
+             "name": t.get("name")}
+            for t in (d.get("transit") or [])
+        ]
     return area
 
 

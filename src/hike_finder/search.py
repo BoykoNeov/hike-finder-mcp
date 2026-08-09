@@ -175,6 +175,8 @@ def search_hikes(
         loop_tolerance_m=cfg.loop_tolerance_m,
         car_radius_m=cfg.car_radius_m,
         lift_radius_m=cfg.lift_radius_m,
+        transit_rail_radius_m=cfg.transit_rail_radius_m,
+        transit_stop_radius_m=cfg.transit_stop_radius_m,
         near_miss=near_miss,
         poi_radius_m=cfg.poi_radius_m,
         **_near_miss_kwargs(cfg),
@@ -283,6 +285,8 @@ def _measure_composed(
         loop_tolerance_m=cfg.loop_tolerance_m,
         car_radius_m=cfg.car_radius_m,
         lift_radius_m=cfg.lift_radius_m,
+        transit_rail_radius_m=cfg.transit_rail_radius_m,
+        transit_stop_radius_m=cfg.transit_stop_radius_m,
         near_miss=near_miss,
         poi_radius_m=cfg.poi_radius_m,
         pre_elevations_by_id=pre_elev_by_id,
@@ -1069,6 +1073,8 @@ def download_area(
         loop_tolerance_m=cfg.loop_tolerance_m,
         car_radius_m=cfg.car_radius_m,
         lift_radius_m=cfg.lift_radius_m,
+        transit_rail_radius_m=cfg.transit_rail_radius_m,
+        transit_stop_radius_m=cfg.transit_stop_radius_m,
     )
     # Keep ONLY the routes the over-length guard accepted (exactly the ones we
     # sampled). Pruning the unsampled through-routes makes the snapshot self-
@@ -1190,6 +1196,16 @@ def search_snapshot(
             "only return nothing",
             ", ".join(criteria.poi_kinds),
         )
+    # Same hazard, sharper: an unanswerable transit filter would otherwise return a
+    # confident verdict. `find_hikes` already drops every route whose transit is
+    # unknown, so the result is empty either way — this is what stops that emptiness
+    # from reading as "nowhere here is reachable by public transport".
+    if criteria.transit_access is not None and snapshot.area.transit is None:
+        _log.warning(
+            "transit: this snapshot has no public-transport data (it predates the "
+            "feature), so the transit filter cannot be answered from it — re-download "
+            "the area. Returning nothing rather than labelling every route unreachable"
+        )
     hikes = find_hikes(
         snapshot.area,
         provider,
@@ -1202,6 +1218,8 @@ def search_snapshot(
         loop_tolerance_m=cfg.loop_tolerance_m,
         car_radius_m=cfg.car_radius_m,
         lift_radius_m=cfg.lift_radius_m,
+        transit_rail_radius_m=cfg.transit_rail_radius_m,
+        transit_stop_radius_m=cfg.transit_stop_radius_m,
         near_miss=near_miss,
         poi_radius_m=cfg.poi_radius_m,
         **_near_miss_kwargs(cfg),

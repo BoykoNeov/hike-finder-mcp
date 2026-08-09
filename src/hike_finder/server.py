@@ -142,6 +142,15 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                         "type": "boolean",
                         "description": "true = require a ride-up aerialway near an endpoint.",
                     },
+                    "transit_access": {
+                        "type": "boolean",
+                        "description": "true = require public transport near an endpoint — a "
+                        "train station or halt within 1 km, or a tram/bus stop within 400 m "
+                        "('a hike I can reach without a car'). Each result names which kind. "
+                        "An `area` snapshot downloaded before this feature carries no transit "
+                        "data; the search then returns nothing and says so, rather than "
+                        "reporting every route as unreachable.",
+                    },
                     **_POI_SCHEMA,
                     "near_misses": {
                         "type": "boolean",
@@ -212,6 +221,11 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                     "chairlift_access": {
                         "type": "boolean",
                         "description": "true = require a ride-up aerialway near the loop.",
+                    },
+                    "transit_access": {
+                        "type": "boolean",
+                        "description": "true = require public transport near the loop (rail "
+                        "within 1 km, tram/bus within 400 m).",
                     },
                     **_POI_SCHEMA,
                     "near_misses": {
@@ -498,6 +512,7 @@ def _criteria(arguments: dict) -> Criteria:
         circular=arguments.get("circular"),
         car_access=arguments.get("car_access"),
         chairlift_access=arguments.get("chairlift_access"),
+        transit_access=arguments.get("transit_access"),
         poi_kinds=normalise_kinds(arguments.get("poi")),
     )
 

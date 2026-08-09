@@ -10,7 +10,7 @@ release-by-release feature history see `CHANGELOG.md`; for user docs see `README
 Replace "search the web and trust whatever gain number a trail site printed" with "query
 OpenStreetMap for marked routes and compute gain/distance ourselves" — exposed as a CLI, a
 local web UI, and an MCP tool `find_hikes(bbox, gain range, distance range, circular?,
-car_access?, chairlift_access?)`.
+car_access?, chairlift_access?, transit_access?)`.
 
 ## The user's context (don't lose this)
 
@@ -49,7 +49,7 @@ frontends (pick one; cli/web need no LLM):
   cli.py  ─┐
   web.py  ─┼─→ search.search_hikes(bbox, criteria, cfg)   # shared orchestration
   server.py┘     (MCP tool find_hikes; needs the optional `mcp` extra)
-       ├─ overpass.fetch_area(bbox)          # routes + parking + lifts + POIs [NETWORK, CACHED (TTL)]
+       ├─ overpass.fetch_area(bbox)          # routes + parking + lifts + transit + POIs [NETWORK, CACHED (TTL)]
        │    └─ overpass.parse_area(elements) # split mixed response      [PURE, TESTED]
        ├─ elevation.get_provider(mode)       # api | local | auto        [NETWORK/DISK]
        └─ filters.find_hikes(area, elevation, criteria, bbox)
@@ -57,7 +57,7 @@ frontends (pick one; cli/web need no LLM):
             ├─ CHEAP pass  → filters.measure_geometry(route, parking, lifts, poi_index)
             │    ├─ geometry._vertex_graph → route_cycle_count / route_termini  [PURE, TESTED]
             │    ├─ geometry.total_way_length_m    # distance = sum of member ways [PURE, TESTED]
-            │    ├─ access.is_circular / car_accessible / chairlift_access [PURE, TESTED]
+            │    ├─ access.is_circular / car_accessible / chairlift_access / transit_access [PURE, TESTED]
             │    └─ poi.route_pois            # which churches/ruins/peaks it passes [PURE, TESTED]
             │  → apply over-length guard + distance/shape/access/POI filters
             └─ EXPENSIVE pass (survivors only) → filters.add_elevation(hike, line)
@@ -68,7 +68,7 @@ frontends (pick one; cli/web need no LLM):
   → results rendered by format.format_hike / format.hike_to_dict (shared)
 ```
 
-**The three filters on top of gain/distance** (all tri-state in `Criteria`: None = don't care,
+**The four filters on top of gain/distance** (all tri-state in `Criteria`: None = don't care,
 True = require, False = exclude):
 
 - **`circular`** — `access.is_circular`. The OSM `roundtrip` tag is authoritative; else closure
@@ -81,8 +81,25 @@ True = require, False = exclude):
 - **`chairlift_access`** — `access.chairlift_access`. A ride-up aerialway
   (`chair_lift`/`gondola`/`cable_car`/`mixed_lift`; drag/T-bar excluded) within `HIKE_LIFT_RADIUS`.
   Best-effort; the lift type is reported.
+- **`transit_access`** — `access.transit_access`. "Can I get here without a car?" A mapped
+  `railway=station|halt|tram_stop` or `highway=bus_stop` near an endpoint, driven by the
+  `access.TRANSIT_KINDS` registry (one table → both the Overpass selectors and the classifier,
+  the `poi.POI_KINDS` pattern). `railway=halt` is the load-bearing entry: a Czech trailhead is
+  far more often a request-stop *zastávka* than a full station. Three design points:
+  - **Two radii, not one** (`HIKE_TRANSIT_RAIL_RADIUS` 1000 m, `HIKE_TRANSIT_STOP_RADIUS`
+    400 m). `highway=bus_stop` is mapped along nearly every rural road, so a single generous
+    radius makes `transit_access=True` almost free and the filter stops discriminating.
+  - **Rail beats road when both qualify**, rather than `chairlift_access`'s nearest-wins (all
+    of whose candidates are one family). A bus stop at 50 m is not the more useful fact when a
+    station sits at 300 m. Nearest still wins *within* a class.
+  - **It is the only `bool | None` access field**, and that is the honesty-critical part —
+    see the tri-state note under Known limitations.
+  Live-validated over Adršpach/Teplice: 23 routes in the box, 16 with transit and 7 without —
+  an exact partition, so the filter genuinely discriminates. The top hit is a route OSM itself
+  names `… - Teplice nad Metují žst.` (*žst.* = railway station), which our independent
+  geometry measurement agreed reaches a train halt.
 
-**The destination filter** (`criteria.poi_kinds`, `poi.py`) is the fourth, and the only one
+**The destination filter** (`criteria.poi_kinds`, `poi.py`) is the fifth, and the only one
 that is a *list* rather than tri-state: empty = don't care, otherwise keep routes passing
 within `HIKE_POI_RADIUS_M` (250 m) of an object of ANY listed kind. Design points worth
 keeping:
@@ -433,6 +450,23 @@ skip without the `mcp` extra).
   capping `mcp` fixed one instance, the schedule addresses the class. The concurrency group
   includes `github.event_name` so a Monday cron can't cancel an in-flight push run and be
   misread as that commit failing.
+- **`transit_access` is tri-state `bool | None`, and collapsing it to `False` would be a lie.**
+  Every other access field is a plain `bool`, because every other one predates the snapshots on
+  disk. Transit does not: a snapshot written before the feature has NO transit data, so `None`
+  ("never measured") has to stay distinguishable from `False` ("nothing mapped near the ends")
+  all the way from `snapshot._area_from_json` through `Criteria.accepts_geometry`. The failure
+  it prevents is specific and bad: with a plain bool, `--no-transit-access` against an old
+  snapshot returns a *full list of routes* confidently labelled by a measurement that never
+  happened, and `--transit-access` returns empty in a way that reads as "nowhere here is
+  reachable by train" — absurd in a valley with a railway halt in it. So an active transit
+  filter REJECTS an unknown route (the rule `accepts_gain` already applies to unmeasured gain),
+  and `search_snapshot` logs that the *data* is missing, not the transport. The distinction is
+  carried in the file format too: `AreaData.transit` defaults to `None`, a live parse always
+  sets a list (empty is a real answer), and the loader reads the key with `.get`-style presence
+  detection rather than an `[]` default.
+- **Adding transit widened the Overpass query**, which invalidates the Overpass cache (the
+  query text is the key) — the same price `poi.POI_KINDS` pays, and the reason transit and any
+  new POI kinds are worth batching into one release rather than dribbling out.
 - **PyPI publish** is deliberately parked — GitHub-only for now. Metadata is publish-ready; the
   clean path when revisited is Trusted Publishing (OIDC) via a tag-triggered workflow.
 

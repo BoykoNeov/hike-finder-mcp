@@ -41,12 +41,23 @@ climbs with a hysteresis threshold so DEM noise isn't mistaken for ascent.
 | `circular` | `true` = loops only, `false` = point-to-point only | high |
 | `car_access` | `true`/`false`: is `amenity=parking` mapped near a trail end? | best-effort |
 | `chairlift_access` | `true`/`false`: is a ride-up aerialway (chairlift/gondola/cable car) mapped near a trail end? | best-effort |
+| `transit_access` | `true`/`false`: is a train station/halt (within 1 km) or tram/bus stop (within 400 m) mapped near a trail end? | best-effort |
 | `poi` | only routes that pass a church / ruin / peak / … (see below) | best-effort |
 
-The three boolean filters are **tri-state**: omit = don't care, `true` = require,
-`false` = exclude. **Honesty note:** `car_access`/`chairlift_access` reflect OSM
-*mapping*, not the world — a `false` means nothing of that kind is mapped near the
-route's ends, not that it's impossible to get there. Loop detection is reliable.
+The four boolean filters are **tri-state**: omit = don't care, `true` = require,
+`false` = exclude. **Honesty note:** `car_access`/`chairlift_access`/`transit_access`
+reflect OSM *mapping*, not the world — a `false` means nothing of that kind is mapped
+near the route's ends, not that it's impossible to get there. Loop detection is reliable.
+
+`transit_access` answers **"a hike I can reach without a car"**, and each match names
+which kind it found (`transit:train halt`, `transit:bus stop`) — the two are very
+different promises about actually getting there. Rail gets a generous 1 km radius and a
+tram/bus stop a tight 400 m, deliberately: `highway=bus_stop` is mapped along nearly
+every rural road, so one generous radius for both would match almost everything and the
+filter would stop discriminating. Both are tunable (`HIKE_TRANSIT_RAIL_RADIUS`,
+`HIKE_TRANSIT_STOP_RADIUS`). An area downloaded **before** this feature carries no
+transit data at all: rather than labelling every route unreachable, the search returns
+nothing and tells you to re-download the area.
 
 Internally the search is two-pass: cheap geometry/shape/access filters run first
 and a long through-route that merely crosses the area is dropped, so the

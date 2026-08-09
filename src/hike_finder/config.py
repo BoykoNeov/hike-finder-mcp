@@ -25,6 +25,11 @@
   HIKE_LOOP_TOLERANCE   metres; start≈end closes a loop (default 150)
   HIKE_CAR_RADIUS       metres; parking within this of an endpoint = car access (default 300)
   HIKE_LIFT_RADIUS      metres; lift station within this of an endpoint = lift access (default 400)
+  HIKE_TRANSIT_RAIL_RADIUS  metres; train station/halt within this of an endpoint =
+                        transit access (default 1000)
+  HIKE_TRANSIT_STOP_RADIUS  metres; same for a tram/bus stop (default 400). Tighter than
+                        rail on purpose: bus stops are mapped along nearly every rural
+                        road, so a generous radius would make the filter match everything
   HIKE_MAX_ROUTE_FACTOR drop routes longer than factor x bbox diagonal (default 4.0).
                         Guards against through-routes (national trails) that merely
                         cross the area being returned with their full geometry.
@@ -142,6 +147,8 @@ class Config:
     loop_tolerance_m: float = _f("HIKE_LOOP_TOLERANCE", "150")
     car_radius_m: float = _f("HIKE_CAR_RADIUS", "300")
     lift_radius_m: float = _f("HIKE_LIFT_RADIUS", "400")
+    transit_rail_radius_m: float = _f("HIKE_TRANSIT_RAIL_RADIUS", "1000")
+    transit_stop_radius_m: float = _f("HIKE_TRANSIT_STOP_RADIUS", "400")
     max_route_factor: float = _f("HIKE_MAX_ROUTE_FACTOR", "4.0")
 
     near_miss_gain_frac: float = _f("HIKE_NEAR_MISS_GAIN_FRAC", "0.2")

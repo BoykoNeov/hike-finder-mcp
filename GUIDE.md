@@ -238,7 +238,27 @@ min-lon max-lat max-lon). You need the coordinates here (the Web UI hands them t
 you for free); get them from **openstreetmap.org → "Export" tab** (drag a box, copy
 the four edges) or read them off mapy.cz. The boolean filters are **tri-state**:
 omit = don't care, `--circular` = require loops, `--no-circular` = exclude loops
-(same pattern for `--car-access` and `--chairlift-access`). Numeric filters:
+(same pattern for `--car-access`, `--chairlift-access` and `--transit-access`).
+
+**`--transit-access` — "a hike I can reach without a car."** Requires a public-transport
+stop near a trail end: a train station or halt within 1 km, or a tram/bus stop within
+400 m. Each match names which it found, because they are not the same promise:
+
+```
+hike-finder --bbox 50.58 16.08 50.64 16.16 --transit-access --max-distance 30
+```
+```
+[M] Teplické skalní město - Teplice nad Metují žst. — 7.54 km, +230 m / -45 m
+    [loop, car, transit:train halt] (start 50.5815,16.1781, OSM relation 552377)
+```
+
+The radii differ on purpose: `highway=bus_stop` is mapped along nearly every rural road,
+so giving bus stops the same 1 km reach as rail would make the filter match almost
+everything. Tune with `HIKE_TRANSIT_RAIL_RADIUS` / `HIKE_TRANSIT_STOP_RADIUS`.
+
+If you search a **saved area downloaded before this feature existed**, it holds no
+transit data — the search says so and returns nothing, instead of reporting every route
+as unreachable. Re-download the area to fix it. Numeric filters:
 `--min-gain`/`--max-gain` (m), `--min-distance`/`--max-distance` (km). To require
 that a route actually goes somewhere — a church, a ruin, a summit — add
 `--poi KIND` (see [Hiking *to* something](#hiking-to-something--churches-ruins-peaks)).

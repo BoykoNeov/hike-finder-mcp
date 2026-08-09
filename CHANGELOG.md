@@ -23,6 +23,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`transit_access` — "a hike I can reach without a car."** A fourth boolean filter
+  (`--transit-access` / MCP `transit_access` / a web dropdown), alongside `car_access` and
+  `chairlift_access`: is a train station or halt mapped within 1 km of a trail end, or a
+  tram/bus stop within 400 m? Each match names which kind it found (`transit:train halt`),
+  because a station and a request-stop bus shelter are not the same promise. The two radii
+  differ deliberately — `highway=bus_stop` is mapped along nearly every rural road, so one
+  generous radius for both would match almost everything. Tunable via
+  `HIKE_TRANSIT_RAIL_RADIUS` / `HIKE_TRANSIT_STOP_RADIUS`.
+  **An area downloaded before this release holds no transit data.** Rather than reporting
+  every one of its routes as unreachable, a transit search over such a snapshot returns
+  nothing and says the data is missing. Re-download the area to use the filter offline.
+  This widens the Overpass query, so it invalidates the Overpass cache (the query text is
+  the cache key) — the first search after upgrading refetches.
 - **CI runs weekly on a schedule**, so a dependency going incompatible upstream is caught by a
   dated run instead of reddening whichever unrelated commit happens to land next — which is
   exactly how mcp 2.0.0 surfaced in v0.3.0.

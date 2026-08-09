@@ -8,6 +8,8 @@ instead of every unmarked path.
 In ONE Overpass round-trip we also pull the features the other filters need:
   - amenity=parking  (car access; ``out center`` gives a representative coord)
   - ride-up aerialways (chairlift access; ``out geom`` gives station endpoints)
+  - public-transport stops (access.TRANSIT_KINDS — stations, halts, tram/bus stops;
+    ``out center``)
   - every registered point of interest (poi.POI_KINDS — churches, ruins, peaks…;
     ``out center`` again). These come along on EVERY query, not only when a POI
     filter is set: one query shape means one Overpass cache key and a snapshot that
@@ -30,7 +32,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 import requests
 
-from .access import RIDE_UP_AERIALWAYS
+from .access import RIDE_UP_AERIALWAYS, classify_transit, transit_selectors_by_key
 from . import poi as _poi
 
 Coord = tuple[float, float]
@@ -63,6 +65,13 @@ class AreaData:
     routes: list[dict] = field(default_factory=list)
     parking: list[dict] = field(default_factory=list)  # {"coord", "name"}
     lifts: list[dict] = field(default_factory=list)  # {"stations", "kind", "name"}
+    # Public-transport stops (see access.TRANSIT_KINDS): {"coord", "kind", "name"}.
+    # `None` — not `[]` — is the default ON PURPOSE, and only here: an AreaData built
+    # before this feature (a v1 snapshot on disk) genuinely does not KNOW whether the
+    # area has transit, which is a different claim from "it has none". The tri-state
+    # survives all the way to the filter, which refuses to answer a transit question
+    # from a snapshot that never recorded one. A live fetch always sets a list.
+    transit: list[dict] | None = None
     # Registered points of interest (see poi.py): {"coord", "kind", "name"}. Default
     # empty so every AreaData built before this feature — including a pre-existing
     # snapshot — loads unchanged and simply matches no POI filter.
@@ -83,10 +92,24 @@ def _poi_clauses(bbox: str) -> str:
     return "\n".join(lines)
 
 
+def _transit_clauses(bbox: str) -> str:
+    """One clause per transit tag key, from ``access.TRANSIT_KINDS``.
+
+    Same one-registry-two-derivations rule as ``_poi_clauses``: the query and
+    ``access.classify_transit`` read the same table, so they cannot disagree about
+    which stops exist.
+    """
+    lines = []
+    for key, values in transit_selectors_by_key().items():
+        alt = "|".join(values)
+        lines.append(f'    nwr["{key}"~"^({alt})$"]({bbox});\n    out center;')
+    return "\n".join(lines)
+
+
 def build_query(
     south: float, west: float, north: float, east: float, timeout_s: int = 60
 ) -> str:
-    """Overpass QL: hiking routes + parking + ride-up aerialways + POIs in the bbox."""
+    """Overpass QL: hiking routes + parking + aerialways + transit stops + POIs."""
     bbox = f"{south},{west},{north},{east}"
     lift_re = "|".join(sorted(RIDE_UP_AERIALWAYS))
     return f"""
@@ -100,6 +123,7 @@ def build_query(
     out center;
     way["aerialway"~"^({lift_re})$"]({bbox});
     out geom;
+{_transit_clauses(bbox)}
 {_poi_clauses(bbox)}
     """
 
@@ -134,11 +158,14 @@ def parse_area(elements: list[dict]) -> AreaData:
     *way* never collide. This is the failure-prone part of the network layer,
     so it lives here, isolated and unit-tested without a live endpoint.
     """
-    area = AreaData()
+    # A live parse always KNOWS the transit answer, even when it is "none here" — so
+    # the list starts empty rather than at the not-recorded `None` default.
+    area = AreaData(transit=[])
     # A POI can satisfy two registry clauses at once (a shelter that is also a picnic
     # site), and Overpass emits an element once per matching statement — so key the POI
     # list by the element's identity to keep one entry per real-world object.
     seen_pois: set[tuple[str, object]] = set()
+    seen_transit: set[tuple[str, object]] = set()
     for el in elements:
         tags = el.get("tags", {}) or {}
         if el.get("type") == "relation" and tags.get("route") in ("hiking", "foot"):
@@ -176,6 +203,19 @@ def parse_area(elements: list[dict]) -> AreaData:
                         "kind": tags.get("aerialway"),
                         "name": tags.get("name"),
                     }
+                )
+        elif classify_transit(tags) is not None:
+            # Above the POI branch, with parking and lifts, for the same reason: an
+            # access feature that is ALSO tagged like a destination is access first.
+            # (No registry kind uses the `railway`/`highway` keys, so today nothing
+            # actually contends — the ordering is here so it stays true if one does.)
+            kind = classify_transit(tags)
+            ident = (el.get("type", ""), el.get("id"))
+            coord = _representative_coord(el)
+            if coord and ident not in seen_transit:
+                seen_transit.add(ident)
+                area.transit.append(
+                    {"coord": coord, "kind": kind, "name": tags.get("name")}
                 )
         else:
             # Points of interest, LAST so the access branches above always win a

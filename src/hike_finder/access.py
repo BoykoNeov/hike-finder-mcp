@@ -6,11 +6,12 @@ fetched from OSM — no extra network calls:
   - is it CIRCULAR (a loop you return to your car on) vs point-to-point?
   - is there CAR access near an endpoint (a mapped parking lot)?
   - is there CHAIRLIFT access near an endpoint (a ride-up aerialway station)?
+  - is there TRANSIT access near an endpoint (a train/tram/bus stop)?
 
 All of this is cheap (geometry + proximity), so the pipeline runs it BEFORE the
 expensive elevation pass and filters on it first — see filters.py.
 
-Honesty note: car/chairlift access is best-effort from OSM completeness. A
+Honesty note: car/chairlift/transit access is best-effort from OSM completeness. A
 "False" means "nothing of that kind is mapped near the route's ends," NOT
 "you cannot get there." Loop detection is high-confidence; access is not.
 
@@ -20,6 +21,7 @@ convention.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 from .geometry import Coord, haversine_m, route_cycle_count
 
@@ -28,6 +30,72 @@ from .geometry import Coord, haversine_m, route_cycle_count
 # (ski-only) and pylons. The actual type is reported so the broadening is
 # never hidden from the user.
 RIDE_UP_AERIALWAYS = frozenset({"chair_lift", "gondola", "cable_car", "mixed_lift"})
+
+
+@dataclass(frozen=True)
+class TransitKind:
+    """One kind of public-transport stop you could arrive on."""
+
+    key: str  # OSM tag key, e.g. "railway"
+    values: tuple[str, ...]  # accepted values for that key
+    label: str  # how to say it, e.g. "train station"
+    rail: bool  # rail gets the generous radius; see TRANSIT_* defaults below
+
+
+# The transit registry — ONE table driving both the Overpass selectors
+# (``overpass._transit_clauses``) and the classifier (:func:`classify_transit`),
+# exactly as ``poi.POI_KINDS`` does for destinations. Written separately they drift,
+# and a stop that is *fetchable but unclassifiable* fails as a silently-empty result
+# rather than an error.
+#
+# ``railway=halt`` is the load-bearing entry here, not an afterthought: a Czech
+# trailhead is far more often a request-stop *zastávka* than a full station.
+#
+# Deliberately NOT included: ``public_transport=stop_position``. Those nodes sit on
+# the rails/carriageway rather than where you get off, and they duplicate the
+# station/halt node that is already matched — including them would double-count every
+# stop and pull the measured distance toward the track centre. Don't "fix" this.
+TRANSIT_KINDS: dict[str, TransitKind] = {
+    "station": TransitKind("railway", ("station",), "train station", True),
+    "halt": TransitKind("railway", ("halt",), "train halt", True),
+    "tram_stop": TransitKind("railway", ("tram_stop",), "tram stop", False),
+    "bus_stop": TransitKind("highway", ("bus_stop",), "bus stop", False),
+}
+
+# Two radii, not one, and the asymmetry is the whole point. A station 1 km from the
+# trailhead is a genuine way to arrive; a bus stop 1 km away is not much of a fact,
+# because `highway=bus_stop` is mapped along essentially every rural road — including
+# roads that see three buses a day. One generous radius for both would make
+# `transit_access=True` almost free and the filter would stop discriminating.
+TRANSIT_RAIL_RADIUS_M = 1000.0
+TRANSIT_STOP_RADIUS_M = 400.0
+
+
+def transit_selectors_by_key() -> dict[str, tuple[str, ...]]:
+    """``{tag key: accepted values}`` for the Overpass query, from the registry."""
+    by_key: dict[str, tuple[str, ...]] = {}
+    for spec in TRANSIT_KINDS.values():
+        by_key[spec.key] = by_key.get(spec.key, ()) + spec.values
+    return by_key
+
+
+def classify_transit(tags: dict) -> str | None:
+    """The registry key for an element's tags, or None if it isn't a stop we serve."""
+    for kind, spec in TRANSIT_KINDS.items():
+        if (tags or {}).get(spec.key) in spec.values:
+            return kind
+    return None
+
+
+def transit_label(kind: str | None) -> str | None:
+    """Human label for a registry key ("halt" -> "train halt")."""
+    spec = TRANSIT_KINDS.get(kind or "")
+    return spec.label if spec else None
+
+
+def _transit_radius(kind: str, rail_radius_m: float, stop_radius_m: float) -> float:
+    spec = TRANSIT_KINDS.get(kind)
+    return rail_radius_m if (spec and spec.rail) else stop_radius_m
 
 # OSM truthy/falsy spellings for the roundtrip tag.
 _TRUE = {"yes", "true", "1"}
@@ -150,6 +218,90 @@ def chairlift_access(
                     best_d = d
                     best_kind = lift.get("kind")
     return (best_kind is not None, best_kind)
+
+
+def transit_access(
+    endpoints: list[Coord],
+    transit: list[dict],
+    *,
+    rail_radius_m: float = TRANSIT_RAIL_RADIUS_M,
+    stop_radius_m: float = TRANSIT_STOP_RADIUS_M,
+) -> tuple[bool, str | None]:
+    """Is there a public-transport stop within reach of an endpoint?
+
+    Returns ``(accessible, kind)`` with ``kind`` a :data:`TRANSIT_KINDS` key, so the
+    output can say *which* — "train halt" and "bus stop" are very different promises
+    and collapsing them to a bare True would hide that.
+
+    Each stop is tested against the radius for ITS OWN kind (see
+    ``TRANSIT_RAIL_RADIUS_M`` / ``TRANSIT_STOP_RADIUS_M``), so the bbox prune is
+    padded by the larger of the two — pruning by the smaller would drop a station
+    that legitimately qualifies.
+
+    **Rail wins over road when both qualify**, rather than nearest-wins (which is what
+    ``chairlift_access`` does, all its candidates being one family). A bus stop 50 m
+    away is not the more useful fact when there is also a station 300 m away — the
+    question this answers is "can I get here without a car?", and the train is the
+    answer a hiker plans around. Within a class, nearest wins.
+    """
+    if not endpoints or not transit:
+        return (False, None)
+    lo_lat, hi_lat, lo_lon, hi_lon = _bbox_pad(
+        endpoints, max(rail_radius_m, stop_radius_m)
+    )
+    best_rail: tuple[float, str] | None = None
+    best_road: tuple[float, str] | None = None
+    for stop in transit:
+        kind = stop.get("kind")
+        spec = TRANSIT_KINDS.get(kind or "")
+        if spec is None:
+            continue
+        slat, slon = stop["coord"]
+        if not (lo_lat <= slat <= hi_lat and lo_lon <= slon <= hi_lon):
+            continue
+        radius = _transit_radius(kind, rail_radius_m, stop_radius_m)
+        for e in endpoints:
+            d = haversine_m(e, stop["coord"])
+            if d > radius:
+                continue
+            slot = best_rail if spec.rail else best_road
+            if slot is None or d < slot[0]:
+                if spec.rail:
+                    best_rail = (d, kind)
+                else:
+                    best_road = (d, kind)
+    best = best_rail or best_road
+    return (best is not None, best[1] if best else None)
+
+
+def nearest_transit_m(
+    endpoints: list[Coord],
+    transit: list[dict],
+    max_m: float,
+) -> tuple[float | None, str | None]:
+    """``(distance, kind)`` of the nearest stop of ANY kind within ``max_m``.
+
+    The measuring sibling of :func:`transit_access` (see :func:`nearest_parking_m`).
+    Unlike the boolean it applies ONE relaxed cap to every kind and reports the plain
+    nearest: a near-miss note is answering "how close did it come?", where the
+    per-kind radius has already been missed and rail-preference would only obscure
+    which stop the number refers to.
+    """
+    if not endpoints or not transit:
+        return (None, None)
+    lo_lat, hi_lat, lo_lon, hi_lon = _bbox_pad(endpoints, max_m)
+    best_d: float | None = None
+    best_kind: str | None = None
+    for stop in transit:
+        slat, slon = stop["coord"]
+        if not (lo_lat <= slat <= hi_lat and lo_lon <= slon <= hi_lon):
+            continue
+        for e in endpoints:
+            d = haversine_m(e, stop["coord"])
+            if d <= max_m and (best_d is None or d < best_d):
+                best_d = d
+                best_kind = stop.get("kind")
+    return (best_d, best_kind)
 
 
 def nearest_parking_m(

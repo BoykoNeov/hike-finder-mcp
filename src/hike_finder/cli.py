@@ -88,6 +88,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="--chairlift-access = require a ride-up lift near an endpoint; --no-chairlift-access = exclude.",
     )
     g.add_argument(
+        "--transit-access",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="--transit-access = require a train/tram/bus stop near an endpoint (get "
+        "there without a car); --no-transit-access = exclude. Rail counts within 1 km, "
+        "a tram/bus stop within 400 m. A downloaded area from before this feature has "
+        "no transit data and the search will say so rather than guess.",
+    )
+    g.add_argument(
         "--near-misses",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -331,6 +340,7 @@ def build_criteria(args: argparse.Namespace) -> Criteria:
         circular=args.circular,
         car_access=args.car_access,
         chairlift_access=args.chairlift_access,
+        transit_access=args.transit_access,
         poi_kinds=normalise_kinds(raw_poi),
     )
 
