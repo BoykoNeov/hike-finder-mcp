@@ -10,6 +10,11 @@ In ONE Overpass round-trip we also pull the features the other filters need:
   - ride-up aerialways (chairlift access; ``out geom`` gives station endpoints)
   - public-transport stops (access.TRANSIT_KINDS — stations, halts, tram/bus stops;
     ``out center``)
+  - the member ways' OWN tags (``way(r); out tags;``) for surface/tracktype. A route
+    relation carries neither — they live on the ways, and ``out body geom`` returns
+    member geometry WITHOUT member tags, so this second statement is the only way to
+    see them. It costs about +22 % response size (measured: 712 KB -> 866 KB on a
+    Krkonoše box) and returns no geometry, only tags to join back by way id.
   - every registered point of interest (poi.POI_KINDS — churches, ruins, peaks…;
     ``out center`` again). These come along on EVERY query, not only when a POI
     filter is set: one query shape means one Overpass cache key and a snapshot that
@@ -119,6 +124,8 @@ def build_query(
       relation["route"="foot"]({bbox});
     );
     out body geom;
+    way(r);
+    out tags;
     nwr["amenity"="parking"]({bbox});
     out center;
     way["aerialway"~"^({lift_re})$"]({bbox});
@@ -151,6 +158,19 @@ def _way_endpoints(el: dict) -> list[Coord]:
     return [head] if head == tail else [head, tail]
 
 
+def _is_tag_only_way(el: dict) -> bool:
+    """True for a record produced by ``way(r); out tags;`` — tags and an id, but no
+    geometry of ANY kind (no ``geometry``, no ``center``, no ``lat``). That absence is
+    what distinguishes it from a parking way (``out center``) or an aerialway
+    (``out geom``), both of which are matched by the feature branches."""
+    return (
+        el.get("type") == "way"
+        and "geometry" not in el
+        and "center" not in el
+        and "lat" not in el
+    )
+
+
 def parse_area(elements: list[dict]) -> AreaData:
     """Pure: split a mixed Overpass element list into routes/parking/lifts.
 
@@ -161,18 +181,36 @@ def parse_area(elements: list[dict]) -> AreaData:
     # A live parse always KNOWS the transit answer, even when it is "none here" — so
     # the list starts empty rather than at the not-recorded `None` default.
     area = AreaData(transit=[])
+    # FIRST: the tag-only member-way records from `way(r); out tags;`, keyed by way id
+    # so the relation branch below can join them onto its members. They must also be
+    # skipped by the feature branches — a member way carrying, say, `tourism=viewpoint`
+    # would otherwise be filed as a POI at no coordinate. (The branches happen to be
+    # coord-guarded already, so nothing leaks today; this makes it deliberate.)
+    way_tags: dict[object, dict] = {
+        el["id"]: (el.get("tags") or {})
+        for el in elements
+        if _is_tag_only_way(el) and el.get("id") is not None
+    }
     # A POI can satisfy two registry clauses at once (a shelter that is also a picnic
     # site), and Overpass emits an element once per matching statement — so key the POI
     # list by the element's identity to keep one entry per real-world object.
     seen_pois: set[tuple[str, object]] = set()
     seen_transit: set[tuple[str, object]] = set()
     for el in elements:
+        if _is_tag_only_way(el):
+            continue  # already harvested into way_tags above
         tags = el.get("tags", {}) or {}
         if el.get("type") == "relation" and tags.get("route") in ("hiking", "foot"):
             ways: list[list[Coord]] = []
+            # Kept strictly parallel to `ways` — index i of one describes index i of
+            # the other — because surface is measured per member and weighted by that
+            # member's length. A dict keyed by way id would lose the pairing whenever
+            # a relation includes the same way twice (an out-and-back leg does).
+            member_tags: list[dict] = []
             for member in el.get("members", []):
                 if member.get("type") == "way" and "geometry" in member:
                     ways.append([(pt["lat"], pt["lon"]) for pt in member["geometry"]])
+                    member_tags.append(way_tags.get(member.get("ref"), {}))
             if not ways:
                 continue
             area.routes.append(
@@ -188,6 +226,11 @@ def parse_area(elements: list[dict]) -> AreaData:
                     "osmc_color": tags.get("osmc:symbol"),  # KČT marking, if present
                     "tags": tags,
                     "ways": ways,
+                    # Parallel to "ways". An empty dict means "this way carried no
+                    # tags we asked for"; the LIST being empty overall means the data
+                    # predates the member-tag fetch, and the surface summary is then
+                    # simply absent rather than reported as untagged ground.
+                    "way_tags": member_tags,
                 }
             )
         elif tags.get("amenity") == "parking":

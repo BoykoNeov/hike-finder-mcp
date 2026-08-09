@@ -49,6 +49,24 @@ The four boolean filters are **tri-state**: omit = don't care, `true` = require,
 reflect OSM *mapping*, not the world — a `false` means nothing of that kind is mapped
 near the route's ends, not that it's impossible to get there. Loop detection is reliable.
 
+Every result also reports **what you walk on**, read from the member ways' `surface`
+and `tracktype` tags and weighted **by length, never by way count** (OSM splits a trail
+at every attribute change, so counting ways would call four asphalt slivers plus one
+long forest track "mostly asphalt"):
+
+```
+[M] Harrachov - Špindlerův mlýn — 21.54 km, +701 m / -644 m
+    [one-way, car, lift:chair_lift, transit:bus stop, surface:asphalt 69%]
+```
+
+Two gates keep that flag honest. It appears only when **at least half** the route's
+length is tagged at all, and it names a surface only when that surface is **at least
+40 %** of the route — otherwise it says `surface:mixed (77% known)` rather than letting
+a 21 % plurality pose as the answer. `--json` carries the full breakdown plus the
+`coverage` fraction. `sac_scale` and `trail_visibility` are deliberately *not* reported:
+measured against real data they are mapped on 4 % and 1 % of member ways, and a
+difficulty claim that is absent 96 % of the time reads as "easy" rather than "unknown".
+
 `transit_access` answers **"a hike I can reach without a car"**, and each match names
 which kind it found (`transit:train halt`, `transit:bus stop`) — the two are very
 different promises about actually getting there. Rail gets a generous 1 km radius and a

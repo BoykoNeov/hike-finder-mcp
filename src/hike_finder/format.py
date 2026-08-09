@@ -42,6 +42,19 @@ def format_poi_summary(places) -> str:
     return f"{total} object{'s' if total != 1 else ''}: {mix}"
 
 
+def _surface_to_dict(s) -> dict | None:
+    """Serialise a SurfaceSummary, or None when nothing was ever measured."""
+    if s is None:
+        return None
+    return {
+        "coverage": round(s.coverage, 3),
+        "shares": [
+            {"value": sh.value, "label": sh.label, "fraction": round(sh.fraction, 3)}
+            for sh in s.shares
+        ],
+    }
+
+
 def format_hike(h: Hike) -> str:
     """The canonical one-line summary of a hike.
 
@@ -60,6 +73,18 @@ def format_hike(h: Hike) -> str:
     # snapshot cannot support.
     if h.transit_access:
         flags.append(f"transit:{transit_label(h.transit_type) or h.transit_type}")
+    # Two gates, because they catch different lies. COVERAGE guards against speaking
+    # for a route that is mostly untagged — "ground" off 8 % of the length is a fact
+    # about three slivers, not about the walk. DOMINANCE guards against a plurality
+    # posing as an answer: `surface:grass 21%` reads as "this is a grass walk" when
+    # 79 % of it is something else, so a route with no real majority says `mixed` and
+    # names nothing. The full breakdown stays in `hike_to_dict` either way.
+    if h.surface is not None and h.surface.coverage >= 0.5 and h.surface.dominant:
+        dom = h.surface.dominant
+        if dom.fraction >= 0.4:
+            flags.append(f"surface:{dom.label} {round(dom.fraction * 100)}%")
+        else:
+            flags.append(f"surface:mixed ({round(h.surface.coverage * 100)}% known)")
     if h.gain_m is not None:
         elev = f"+{h.gain_m} m / -{h.loss_m} m"
     else:
@@ -130,6 +155,11 @@ def hike_to_dict(h: Hike, *, geometry: bool = False) -> dict:
         "transit_access": h.transit_access,
         "transit_type": h.transit_type,
         "transit_label": transit_label(h.transit_type),
+        # null when member-way tags were never fetched (a pre-feature snapshot);
+        # `coverage` is the fraction of the route's length the breakdown is based on,
+        # so a consumer can weigh it instead of trusting a bare dominant value.
+        "surface": _surface_to_dict(h.surface),
+        "tracktype": _surface_to_dict(h.tracktype),
         "start": {"lat": h.start[0], "lon": h.start[1]},
         "near_miss": h.near_miss,
         "notes": list(h.notes),

@@ -43,6 +43,7 @@ from .geometry import (
 )
 from .overpass import AreaData
 from .poi import PoiHit, PoiIndex, route_pois
+from .surface import SurfaceSummary, summarise_surface, summarise_tracktype
 
 
 def _within(d: float | None, radius_m: float) -> bool:
@@ -73,6 +74,14 @@ class Hike:
     transit_access: bool | None = None
     transit_type: str | None = None  # which kind granted it (access.TRANSIT_KINDS key)
     transit_distance_m: float | None = None  # near-miss measurement, like car/lift
+    # What you walk ON (see surface.py): length-weighted `surface` / `tracktype`
+    # breakdowns over the member ways, each carrying the fraction of the route the
+    # answer covers. `None` — not an empty summary — when the area data never fetched
+    # member-way tags (a snapshot predating the feature), so "we didn't look" stays
+    # distinct from "nothing is tagged". Report-only: nothing filters on these, which
+    # is why they need no Criteria tri-state the way transit_access does.
+    surface: SurfaceSummary | None = None
+    tracktype: SurfaceSummary | None = None
     # Near-miss annotation. `near_miss` marks a route that does NOT meet the strict
     # criteria but is within tolerance of them; `notes` says exactly how it misses
     # ("gain 720 m — 80 m below the 800 m minimum"), so it is never mistaken for a
@@ -455,6 +464,17 @@ def measure_geometry(
     # `stitch_ways` couldn't chain is still a church you walk past. `route_pois` measures
     # to the line itself, so a straight member mapped with two far-apart nodes still
     # reports the true closest approach.
+    # Surface/tracktype, length-weighted over the member ways. `way_tags` is parallel
+    # to `ways`; an EMPTY list means the data predates the member-tag fetch, so the
+    # summaries stay None rather than claiming a fully untagged route.
+    way_tags = route.get("way_tags") or []
+    if way_tags:
+        members = list(zip(ways, way_tags))
+        surface_summary = summarise_surface(members)
+        tracktype_summary = summarise_tracktype(members)
+    else:
+        surface_summary = tracktype_summary = None
+
     pois: tuple[PoiHit, ...] = ()
     if poi_index is not None and poi_kinds:
         pois = route_pois(ways, poi_index, poi_kinds, poi_radius_m)
@@ -474,6 +494,8 @@ def measure_geometry(
         car_distance_m=car_distance_m,
         lift_distance_m=lift_distance_m,
         transit_distance_m=transit_distance_m,
+        surface=surface_summary,
+        tracktype=tracktype_summary,
         # Carry the raw member-way geometry for export / map draw (immutable copy).
         ways=tuple(tuple(w) for w in ways),
         # Truthful "no signed name/ref" flag from the parser (default False for the

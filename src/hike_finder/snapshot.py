@@ -225,6 +225,10 @@ def _area_to_json(area: AreaData) -> dict:
                 "unnamed": r.get("unnamed", False),
                 "tags": r.get("tags", {}),
                 "ways": [[[lat, lon] for lat, lon in way] for way in r["ways"]],
+                # Parallel to "ways" (see overpass.parse_area). Absent in files written
+                # before member-way tags were fetched; on load that absence keeps the
+                # surface summary at None instead of "nothing is tagged".
+                "way_tags": r.get("way_tags", []),
             }
             for r in area.routes
         ],
@@ -282,6 +286,7 @@ def _area_from_json(d: dict) -> AreaData:
                 "tags": r.get("tags", {}) or {},
                 # Restore tuples — geometry de-dup/graph code needs hashable coords.
                 "ways": [[(lat, lon) for lat, lon in way] for way in r["ways"]],
+                "way_tags": r.get("way_tags", []),
             }
         )
     for p in d.get("parking", []):

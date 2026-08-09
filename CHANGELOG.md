@@ -40,6 +40,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   from the existing `spring`: the tag key differs (`amenity`, not `natural`), which the
   one-clause-per-key query shape makes a hard constraint, and the two are different
   promises anyway — a spring is water you find, a tap is water someone maintains.
+- **What you walk on** — every result now reports its `surface` (and `tracktype`) read from
+  the member ways, weighted **by length rather than by way count**, since OSM splits a trail
+  at every attribute change and counting ways would call four asphalt slivers plus one long
+  forest track "mostly asphalt". The one-line flag appears only when at least half the route
+  is tagged, and names a surface only when that surface is at least 40 % of the route —
+  otherwise `surface:mixed (77% known)`. `--json` carries the full breakdown and the coverage
+  fraction. `sac_scale`/`trail_visibility` are deliberately excluded: measured at 4 % and 1 %
+  coverage on real data, a difficulty claim that absent reads as "easy" rather than "unknown".
+  This adds a second Overpass statement (`way(r); out tags;`, about +22 % response size) and
+  so invalidates the Overpass cache.
 - **CI runs weekly on a schedule**, so a dependency going incompatible upstream is caught by a
   dated run instead of reddening whichever unrelated commit happens to land next — which is
   exactly how mcp 2.0.0 surfaced in v0.3.0.

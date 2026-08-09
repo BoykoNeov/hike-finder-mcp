@@ -88,13 +88,16 @@ def test_hike_to_dict_shape():
     assert set(d) == {
         "osm_id", "name", "ref", "distance_km", "gain_m", "loss_m",
         "circular", "car_access", "chairlift_access", "lift_type", "start",
-        "transit_access", "transit_type", "transit_label",
+        "transit_access", "transit_type", "transit_label", "surface", "tracktype",
         "near_miss", "notes", "composed", "composed_of", "unnamed", "place_name",
         "pois", "destination",
     }
     # Transit is null, not false, on a Hike whose area never recorded it — the JSON
     # consumer has to be able to tell "none mapped nearby" from "never measured".
     assert d["transit_access"] is None and d["transit_label"] is None
+    # Same rule for what you walk on: null means member-way tags were never fetched,
+    # which is not the same as a route nobody has tagged.
+    assert d["surface"] is None and d["tracktype"] is None
     # A plain match serialises as not-a-near-miss with no notes, and not composed.
     assert d["near_miss"] is False and d["notes"] == []
     assert d["composed"] is False and d["composed_of"] == []

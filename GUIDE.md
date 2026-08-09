@@ -240,6 +240,19 @@ the four edges) or read them off mapy.cz. The boolean filters are **tri-state**:
 omit = don't care, `--circular` = require loops, `--no-circular` = exclude loops
 (same pattern for `--car-access`, `--chairlift-access` and `--transit-access`).
 
+**What you walk on.** Every result carries a `surface:` flag when the data supports one:
+
+```
+[Z] Richtrovy Boudy - Špindlerův mlýn — 7.81 km, +678 m / -251 m
+    [one-way, car, transit:bus stop, surface:asphalt 56%]
+```
+
+It is weighted by *length*, not by number of ways — OSM splits a trail at every attribute
+change, so counting ways would report four short asphalt slivers plus one long forest
+track as "mostly asphalt". The flag stays quiet unless at least half the route is tagged,
+and prints `surface:mixed (77% known)` instead of a name when nothing reaches 40 % of the
+route. Use `--json` for the full breakdown and the coverage fraction.
+
 **`--transit-access` — "a hike I can reach without a car."** Requires a public-transport
 stop near a trail end: a train station or halt within 1 km, or a tram/bus stop within
 400 m. Each match names which it found, because they are not the same promise:

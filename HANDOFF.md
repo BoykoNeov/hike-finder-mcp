@@ -467,6 +467,34 @@ skip without the `mcp` extra).
 - **Adding transit widened the Overpass query**, which invalidates the Overpass cache (the
   query text is the key) — the same price `poi.POI_KINDS` pays, and the reason transit and any
   new POI kinds are worth batching into one release rather than dribbling out.
+- **Surface/tracktype are report-only, and that is why they need no tri-state filter.**
+  `Hike.surface`/`Hike.tracktype` are `SurfaceSummary | None`, with `None` meaning "member-way
+  tags were never fetched" (a pre-feature snapshot) as opposed to an empty summary meaning
+  "fetched, nobody tagged it" — the same distinction `transit_access` draws. But nothing
+  *filters* on them, so the dangerous case (a filter answering confidently from data that was
+  never gathered) cannot arise; the renderer simply prints nothing.
+- **Getting member-way tags costs a second Overpass statement.** A route relation carries no
+  `surface`, and `out body geom` returns member geometry WITHOUT member tags — verified against
+  the Špindl fixture, where 0 of 15 relations and 0 members carry one. `way(r); out tags;`
+  returns them with no geometry, to be joined back by way id. Measured cost: 712 KB → 866 KB
+  (+22 %) on a Krkonoše box. `way_tags` is stored PARALLEL to `ways` (index for index) rather
+  than as a dict keyed by way id, because a relation can include the same way twice (an
+  out-and-back leg) and a dict would collapse the pair and under-weight that surface.
+- **Two gates on the surface flag, catching two different lies.** Coverage ≥ 50 % stops a
+  mostly-untagged route from being described at all; dominance ≥ 40 % stops a plurality from
+  posing as the answer (seen live: a route whose commonest surface was 21 % printed
+  `surface:grass 21%`, which reads as "a grass walk" when four fifths of it is not — it now
+  reads `surface:mixed`).
+- **`sac_scale` and `trail_visibility` were measured and rejected, not overlooked.** On 689
+  real member ways they are mapped at 4 % and 1 % (against `surface` 62 %, `tracktype` 45 %).
+  A difficulty claim absent 96 % of the time reads as "easy" rather than "unknown", which is
+  the failure mode this project spends most of its comments avoiding. Revisit if OSM coverage
+  improves; the fetch mechanism is already in place, so it is a rendering decision now.
+- **Unrecognised `surface` values pass through verbatim**, e.g. a real route near Špindl tagged
+  `surface=pfad, wurzeln, steine` (German free text stuffed into an enum field). It prints
+  looking like a bug and is not one — it is what OSM says. Bucketing it into "other" would
+  hide real data, and dropping it would silently *raise* the apparent coverage of everything
+  else.
 - **PyPI publish** is deliberately parked — GitHub-only for now. Metadata is publish-ready; the
   clean path when revisited is Trusted Publishing (OIDC) via a tag-triggered workflow.
 
