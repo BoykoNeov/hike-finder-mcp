@@ -28,7 +28,13 @@ from dataclasses import replace
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import (
+    CallToolRequestParams,
+    CallToolResult,
+    ListToolsResult,
+    TextContent,
+    Tool,
+)
 
 from . import config as _config
 from .export import hikes_to_geojson, hikes_to_gpx, pois_to_geojson, pois_to_gpx
@@ -49,8 +55,12 @@ from .search import (
 )
 from .snapshot import list_snapshots, load_snapshot, save_snapshot, snapshot_path
 
-app = Server("hike-finder")
 CFG = _config.load()
+
+# `app` is built at the BOTTOM of this module, not here: the mcp 2.x `Server` takes its
+# handlers as constructor arguments (`on_list_tools` / `on_call_tool`) rather than through
+# decorators, so it cannot exist until they are defined. Everything else about the eight
+# tools is unchanged — `Tool(inputSchema=...)` still validates, via the field's alias.
 
 # The destination filter, offered identically by every search tool — "a 10 km hike that
 # goes to a ruin" is the same question whether the routes come from a bounding box, a
@@ -79,9 +89,11 @@ _POI_SCHEMA = {
 }
 
 
-@app.list_tools()
-async def list_tools() -> list[Tool]:
-    return [
+async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
+    """The eight tools. Both arguments are the mcp 2.x handler signature (request
+    context, pagination params); neither is used — the list is small and static, so it
+    ships in one page with a null cursor."""
+    return ListToolsResult(tools=[
         Tool(
             name="find_hikes",
             description=(
@@ -465,7 +477,7 @@ async def list_tools() -> list[Tool]:
             ),
             inputSchema={"type": "object", "properties": {}, "required": []},
         ),
-    ]
+    ])
 
 
 def _near_miss(arguments: dict) -> bool | str:
@@ -511,31 +523,65 @@ def _serialize(hikes: list, fmt: str, empty_msg: str) -> list[TextContent]:
     return [TextContent(type="text", text="\n".join(format_hike(h) for h in hikes))]
 
 
-@app.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+def _handler_for(name: str):
+    """Resolve a tool name to its implementation, or raise for a name we don't serve.
+
+    Deliberately OUTSIDE the try in `call_tool`: an unknown tool name and a bad argument
+    are different failures and belong on different channels (see `call_tool`).
+    """
     if name == "find_hikes":
-        return await _call_find_hikes(arguments)
+        return _call_find_hikes
     if name == "circular_routes":
-        return await _call_circular_routes(arguments)
+        return _call_circular_routes
     if name == "routes_between":
-        return await _call_routes_between(arguments)
+        return _call_routes_between
     if name == "route_via":
-        return await _call_route_via(arguments)
+        return _call_route_via
     if name == "routes_to_poi":
-        return await _call_routes_to_poi(arguments)
+        return _call_routes_to_poi
     if name == "list_pois":
-        return await _call_list_pois(arguments)
+        return _call_list_pois
     if name == "download_area":
-        return await _call_download_area(arguments)
+        return _call_download_area
     if name == "list_areas":
-        return await _call_list_areas(arguments)
+        return _call_list_areas
     raise ValueError(f"unknown tool: {name}")
 
 
+async def call_tool(_ctx, params: CallToolRequestParams) -> CallToolResult:
+    """Dispatch one tool call. `_ctx` is the mcp 2.x request context; unused.
+
+    The two failure modes go back on deliberately different channels:
+
+    - **Unknown tool name** raises, and the SDK turns that into a JSON-RPC error. The
+      client asked for something this server does not have; that is protocol-level, and
+      there is no sensible tool *output* for it.
+    - **Bad arguments** (an unregistered POI kind, say) come back as ordinary content
+      with `is_error` set. An LLM client has to be able to READ the message to correct
+      its own call — "cathedral is not a kind, try ruins" is useless as an exception it
+      never sees. Under mcp 1.x both landed on the same channel because the framework
+      caught the raise for us; splitting them is the point of doing this by hand.
+
+    Which makes the handlers' own `raise ValueError(...)` argument guards LOAD-BEARING:
+    mcp 2.x does not validate arguments against a tool's `inputSchema` server-side (the
+    `required` list is advice to the client), so a call missing `kinds` reaches the
+    handler. Those guards used to *return* their message, which under 2.x comes back
+    with `is_error` false — i.e. a complaint dressed as a successful answer. Raising
+    puts them on this channel instead. `test_routes_to_poi_without_kinds_asks_for_them`
+    is what caught it.
+    """
+    handler = _handler_for(params.name)
+    try:
+        return CallToolResult(content=await handler(params.arguments or {}))
+    except ValueError as exc:
+        return CallToolResult(
+            content=[TextContent(type="text", text=str(exc))], is_error=True
+        )
+
+
 async def _call_circular_routes(arguments: dict) -> list[TextContent]:
-    missing = [k for k in ("lat", "lon") if k not in arguments]
-    if missing:
-        return [TextContent(type="text", text="provide lat and lon for the point to search around.")]
+    if [k for k in ("lat", "lon") if k not in arguments]:
+        raise ValueError("provide lat and lon for the point to search around.")
     point = (arguments["lat"], arguments["lon"])
     hikes = await asyncio.to_thread(
         compose_loops_around,
@@ -554,16 +600,12 @@ async def _call_circular_routes(arguments: dict) -> list[TextContent]:
 
 
 async def _call_routes_between(arguments: dict) -> list[TextContent]:
-    missing = [
+    if [
         k for k in ("start_lat", "start_lon", "finish_lat", "finish_lon") if k not in arguments
-    ]
-    if missing:
-        return [
-            TextContent(
-                type="text",
-                text="provide start_lat/start_lon and finish_lat/finish_lon for the two points.",
-            )
-        ]
+    ]:
+        raise ValueError(
+            "provide start_lat/start_lon and finish_lat/finish_lon for the two points."
+        )
     start = (arguments["start_lat"], arguments["start_lon"])
     finish = (arguments["finish_lat"], arguments["finish_lon"])
     hikes = await asyncio.to_thread(
@@ -608,15 +650,11 @@ async def _call_route_via(arguments: dict) -> list[TextContent]:
 
 
 async def _call_routes_to_poi(arguments: dict) -> list[TextContent]:
-    missing = [k for k in ("lat", "lon") if k not in arguments]
-    if missing or not arguments.get("kinds"):
-        return [
-            TextContent(
-                type="text",
-                text="provide lat and lon for the start point, and `kinds` — what to walk to "
-                "(e.g. [\"ruins\"]).",
-            )
-        ]
+    if [k for k in ("lat", "lon") if k not in arguments] or not arguments.get("kinds"):
+        raise ValueError(
+            "provide lat and lon for the start point, and `kinds` — what to walk to "
+            "(e.g. [\"ruins\"])."
+        )
     hikes = await asyncio.to_thread(
         routes_to_poi,
         (arguments["lat"], arguments["lon"]),
@@ -656,15 +694,11 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
             name_places=name_places
         )
     else:
-        missing = [k for k in ("south", "west", "north", "east") if k not in arguments]
-        if missing:
-            return [
-                TextContent(
-                    type="text",
-                    text="provide south/west/north/east for a live search, or `area` for an "
-                    "offline snapshot search.",
-                )
-            ]
+        if [k for k in ("south", "west", "north", "east") if k not in arguments]:
+            raise ValueError(
+                "provide south/west/north/east for a live search, or `area` for an "
+                "offline snapshot search."
+            )
         bbox = (arguments["south"], arguments["west"], arguments["north"], arguments["east"])
         # search_hikes / compose_loops are synchronous (network + math); run off the loop.
         composing = arguments.get("compose_loops")
@@ -732,15 +766,11 @@ async def _call_list_pois(arguments: dict) -> list[TextContent]:
         stale = not snap.area.pois
         places = await asyncio.to_thread(list_snapshot_pois, snap, kinds)
     else:
-        missing = [k for k in ("south", "west", "north", "east") if k not in arguments]
-        if missing:
-            return [
-                TextContent(
-                    type="text",
-                    text="provide south/west/north/east for a live listing, or `area` for a "
-                    "downloaded snapshot.",
-                )
-            ]
+        if [k for k in ("south", "west", "north", "east") if k not in arguments]:
+            raise ValueError(
+                "provide south/west/north/east for a live listing, or `area` for a "
+                "downloaded snapshot."
+            )
         bbox = (arguments["south"], arguments["west"], arguments["north"], arguments["east"])
         places = await asyncio.to_thread(list_area_pois, bbox, kinds, CFG)
 
@@ -803,6 +833,10 @@ async def _call_download_area(arguments: dict) -> list[TextContent]:
             ),
         )
     ]
+
+
+# Built here, after the handlers exist — mcp 2.x wires them through the constructor.
+app = Server("hike-finder", on_list_tools=list_tools, on_call_tool=call_tool)
 
 
 def main() -> None:

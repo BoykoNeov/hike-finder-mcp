@@ -305,7 +305,7 @@ thing is validated live against real OSM. Highlights:
   per-commit fact, not a standing property of this repo** — check it (`gh run list`) before
   asserting it anywhere, a release body most of all. An unpinned optional extra silently
   falsified this very line for four commits while the sentence sat here unchanged; see the
-  `mcp<2` entry under Known limitations.
+  `mcp>=2` entry under Known limitations.
 
 Run it: `pytest -q` — the full suite is offline (a few `.sh` launcher cases need bash; MCP tests
 skip without the `mcp` extra).
@@ -393,26 +393,46 @@ skip without the `mcp` extra).
   `--download some/path.json` writes wherever you point it and is tracked nowhere; there is no
   registry of arbitrary paths and inventing one would be a second source of truth. Said in the
   `--list-areas` help text so it isn't discovered the hard way.
-- **The MCP extra is capped at `mcp<2`, and porting to 2.x is real work.** mcp 2.0.0 replaced
-  the `Server` decorator API — `@app.list_tools()` / `@app.call_tool()`, which is how all eight
-  tools in `server.py` are registered — with `add_request_handler`, and dropped
-  `mcp.shared.memory.create_connected_server_and_client_session`, the in-memory session helper
-  `test_server.py` drives the server through in 23 places. The imports still *resolve* under
-  2.0 (`Server`, `stdio_server`, `mcp.types`), so a version probe that only checks importability
-  reports a false all-clear — the break is in the API those names expose. Only the CLI/web are
-  unaffected; `mcp` is an optional extra, so a base install never saw this.
-  **How it surfaced, which is the reusable part:** an unpinned optional dep silently broke CI
-  the moment 2.0.0 shipped upstream, on a commit that touched none of it. Because the failure
-  was an *import* error in a test module, pytest reported it as a **collection** error (exit 2)
-  — so all six jobs went red and *no* test ran, not just the MCP ones. Nothing in the repo was
-  wrong; the world moved. The lesson is narrower than "pin everything": a test-only import of a
-  third-party symbol takes down the whole suite, while the same dep behind `importorskip` only
-  skips. Cap majors on optional extras, and treat a suite that fails at collection as a
-  dependency question first. **CI now runs weekly on a cron** (`schedule` in `ci.yml`) so the
-  *next* dep to move upstream is caught by a dated run on main rather than by whatever
-  unrelated commit lands first — capping `mcp` fixed one instance, the schedule addresses the
-  class. The concurrency group includes `github.event_name` so a Monday cron can't cancel an
-  in-flight push run and be misread as that commit failing.
+- **The MCP extra now requires `mcp>=2`** (it was capped `<2` in v0.3.1, while the port was
+  outstanding). A floor, not a cap: 1.x is no longer supported, because supporting both would
+  mean a version branch in `server.py` *and* in the test harness — two code paths, one of which
+  nobody runs. Only MCP users are affected; `mcp` is an optional extra, so a base CLI/web
+  install never saw any of this. What the port actually changed, all of it plumbing:
+  handlers move from the `@app.list_tools()` / `@app.call_tool()` decorators to the `Server`
+  constructor's `on_list_tools` / `on_call_tool` arguments (**not** `add_request_handler`, which
+  is what this file predicted before anyone read the 2.x source), taking `(ctx, params)` and
+  returning `ListToolsResult` / `CallToolResult`; `app` is therefore built at the BOTTOM of the
+  module, after its handlers exist. All eight `Tool(...)` definitions are untouched —
+  `inputSchema=` still validates, via the field's alias. `stdio_server` and `main()` are
+  unchanged. On the client side `isError`/`inputSchema` became `is_error`/`input_schema`, and
+  `read_timeout_seconds` takes float seconds, not a `timedelta` (it reaches
+  `anyio.fail_after`, so a `timedelta` fails with `float + timedelta` at call time, not at
+  construction — `test_launchers.py` had the same line).
+- **mcp 2.x does NOT validate arguments against a tool's `inputSchema` server-side.** The
+  `required` list is advice to the client. So each handler's own argument guard is the only
+  thing between a malformed call and an unasked-for search, and those guards `raise` rather
+  than return: `call_tool` maps a raised `ValueError` to `CallToolResult(is_error=True)`, which
+  is a *readable* complaint. Returning the message instead — which is what they did under 1.x,
+  where the framework rejected the call before the handler saw it — ships a complaint with
+  `is_error` false, i.e. dressed as a successful answer.
+  **An unknown tool NAME is the opposite case and deliberately still raises**: that is
+  protocol-level, there is no sensible tool *output* for it, and it reaches the client as an
+  `MCPError`. Under 1.x both looked identical from the test's seat; 2.x lets them differ.
+- **The dependency lesson from the `mcp<2` incident stands, and is the reusable part.** An
+  unpinned optional dep silently broke CI the moment 2.0.0 shipped upstream, on a commit that
+  touched none of it. Because the failure was an *import* error in a test module, pytest
+  reported it as a **collection** error (exit 2) — all six jobs red, *no* test run, not just
+  the MCP ones. Nothing in the repo was wrong; the world moved. The lesson is narrower than
+  "pin everything": a test-only import of a third-party symbol takes down the whole suite,
+  while the same dep behind `importorskip` only skips. Bound majors on optional extras, and
+  treat a suite that fails at collection as a dependency question first. Note too that the
+  imports still *resolved* under 2.0 (`Server`, `stdio_server`, `mcp.types`) — a version probe
+  that only checks importability reports a false all-clear; the break was in the API those
+  names expose. **CI now runs weekly on a cron** (`schedule` in `ci.yml`) so the *next* dep to
+  move is caught by a dated run on main rather than by whatever unrelated commit lands first —
+  capping `mcp` fixed one instance, the schedule addresses the class. The concurrency group
+  includes `github.event_name` so a Monday cron can't cancel an in-flight push run and be
+  misread as that commit failing.
 - **PyPI publish** is deliberately parked — GitHub-only for now. Metadata is publish-ready; the
   clean path when revisited is Trusted Publishing (OIDC) via a tag-triggered workflow.
 

@@ -25,7 +25,6 @@ a CI box without that shell — doesn't fail; it just doesn't exercise that flav
 import asyncio
 import shutil
 import subprocess
-from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -113,7 +112,7 @@ def test_mcp_launcher_keeps_stdout_clean(suffix):
     async def _impl():
         async with stdio_client(params) as (read, write):
             async with ClientSession(
-                read, write, read_timeout_seconds=timedelta(seconds=30)
+                read, write, read_timeout_seconds=30
             ) as session:
                 await session.initialize()
                 return await session.list_tools()

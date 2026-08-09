@@ -33,13 +33,14 @@ Repository = "https://github.com/BoykoNeov/hike-finder-mcp"
 Changelog = "https://github.com/BoykoNeov/hike-finder-mcp/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-# mcp is capped below 2.0: the 2.x SDK replaced the `Server` decorator API
-# (`@app.list_tools()` / `@app.call_tool()`) with `add_request_handler`, so server.py does
-# not run on it. The cap states what we actually support instead of letting CI resolve a
-# major we do not — see HANDOFF "Known limitations" for the port.
-mcp = ["mcp>=1.2,<2"]
+# mcp >=2 only. server.py registers its handlers through the 2.x `Server` constructor
+# (`on_list_tools` / `on_call_tool`); the 1.x decorators it used before are gone, and
+# supporting both would mean a version branch in the server AND in the test harness —
+# two code paths, one of which nobody runs. Floor, not cap: the 0.3.1 `<2` pin was a
+# stopgap while the port was outstanding.
+mcp = ["mcp>=2"]
 local-dem = ["rasterio>=1.3"]
-dev = ["pytest>=8.0", "mcp>=1.2,<2"]
+dev = ["pytest>=8.0", "mcp>=2"]
 
 [project.scripts]
 hike-finder = "hike_finder.cli:main"

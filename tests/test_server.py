@@ -29,23 +29,54 @@ HANDOFF.md). This module needs the optional ``mcp`` extra; it is skipped without
 import asyncio
 import json
 import sys
-from datetime import timedelta
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
 
 pytest.importorskip("mcp")  # the MCP server is an optional extra; skip if absent
+import anyio
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import get_default_environment, stdio_client
-from mcp.shared.memory import create_connected_server_and_client_session
+from mcp.shared.memory import create_client_server_memory_streams
 
 from dataclasses import replace
+
 
 from hike_finder import server
 from hike_finder.filters import Criteria, Hike
 from hike_finder.format import format_hike
 
 _SRC = str(Path(__file__).resolve().parent.parent / "src")
+
+
+@asynccontextmanager
+async def create_connected_server_and_client_session(srv):
+    """Stand-in for the helper of the same name that mcp 2.x removed.
+
+    Keeping the name and the shape means the ~23 call sites below read exactly as they
+    did under 1.x, so this port shows up as a change of PLUMBING and not as a rewrite of
+    what is being asserted. It is still the real JSON-RPC machinery — an in-memory pair
+    of streams instead of OS pipes — so these tests still drive the real protocol.
+
+    `raise_exceptions` is deliberately left at its default False, matching what `main()`
+    runs in production: with it on, a handler that raises tears down the task group
+    instead of coming back as a JSON-RPC error, and `test_unknown_tool_is_an_error`
+    would be testing the harness rather than the server.
+    """
+    async with create_client_server_memory_streams() as (client_streams, server_streams):
+        client_read, client_write = client_streams
+        server_read, server_write = server_streams
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(
+                lambda: srv.run(
+                    server_read, server_write, srv.create_initialization_options()
+                )
+            )
+            async with ClientSession(client_read, client_write) as session:
+                await session.initialize()
+                yield session
+            tg.cancel_scope.cancel()
 
 
 # A bare `async def test_*` would be COLLECTED and reported PASSED without ever
@@ -79,7 +110,7 @@ def test_list_tools_advertises_find_hikes(monkeypatch):
         "list_pois", "download_area", "list_areas",
     }
 
-    schema = tools["find_hikes"].inputSchema
+    schema = tools["find_hikes"].input_schema
     assert schema["type"] == "object"
     # No field is unconditionally required now: a live search needs the four corners,
     # an offline search needs `area` instead — validated in call_tool, not the schema.
@@ -95,7 +126,7 @@ def test_list_tools_advertises_find_hikes(monkeypatch):
     assert set(schema["properties"]["format"]["enum"]) == {"text", "gpx", "geojson"}
 
     # download_area requires the corners plus a destination path.
-    dl = tools["download_area"].inputSchema
+    dl = tools["download_area"].input_schema
     assert dl["required"] == ["south", "west", "north", "east", "path"]
 
 
@@ -123,7 +154,7 @@ def test_call_tool_maps_arguments_and_renders(monkeypatch):
             )
 
     result = asyncio.run(_impl())
-    assert not result.isError
+    assert not result.is_error
 
     # bbox is forwarded as (south, west, north, east) IN THAT ORDER
     assert captured["bbox"] == (50.72, 15.58, 50.74, 15.62)
@@ -167,7 +198,7 @@ def test_call_tool_area_searches_snapshot_offline(monkeypatch):
             )
 
     result = asyncio.run(_impl())
-    assert not result.isError
+    assert not result.is_error
     assert captured["snap"] == "SNAP:krkonose.json"
     assert captured["near_miss"] == "auto"      # near_misses omitted -> auto
     assert captured["circular"] is True
@@ -223,7 +254,7 @@ def test_call_tool_compose_loops_routes_to_compose_engine(monkeypatch):
             )
 
     result = asyncio.run(_impl())
-    assert not result.isError
+    assert not result.is_error
     assert captured["bbox"] == (50.72, 15.58, 50.74, 15.62)
     text = result.content[0].text
     assert "composed of 0402 + 1801" in text
@@ -256,7 +287,7 @@ def test_circular_routes_tool_maps_point_and_renders(monkeypatch):
             )
 
     result = asyncio.run(_impl())
-    assert not result.isError
+    assert not result.is_error
     assert captured["point"] == (50.73, 15.60)
     assert captured["radius_m"] == 500
     assert captured["criteria"].car_access is True
@@ -293,7 +324,7 @@ def test_routes_between_tool_maps_two_points_and_k(monkeypatch):
             )
 
     result = asyncio.run(_impl())
-    assert not result.isError
+    assert not result.is_error
     assert captured["start"] == (50.72, 15.58)
     assert captured["finish"] == (50.74, 15.62)
     assert captured["k"] == 2
@@ -321,7 +352,7 @@ def test_call_tool_format_gpx_returns_a_gpx_document(monkeypatch):
             )
 
     result = asyncio.run(_impl())
-    assert not result.isError
+    assert not result.is_error
     text = result.content[0].text
     import xml.etree.ElementTree as ET
 
@@ -347,7 +378,7 @@ def test_call_tool_format_geojson_returns_a_feature_collection(monkeypatch):
             )
 
     result = asyncio.run(_impl())
-    assert not result.isError
+    assert not result.is_error
     obj = json.loads(result.content[0].text)
     assert obj["type"] == "FeatureCollection" and len(obj["features"]) == 1
 
@@ -362,7 +393,7 @@ def test_call_tool_empty_result_is_friendly(monkeypatch):
             )
 
     result = asyncio.run(_impl())
-    assert not result.isError
+    assert not result.is_error
     assert result.content[0].text == "No matching hikes found in that area."
 
 
@@ -377,20 +408,32 @@ def test_call_tool_compose_empty_message_is_compose_specific(monkeypatch):
             )
 
     result = asyncio.run(_impl())
-    assert not result.isError
+    assert not result.is_error
     assert "compose" in result.content[0].text.lower()
 
 
 def test_unknown_tool_is_an_error(monkeypatch):
+    """A tool name we don't serve is a PROTOCOL error, so it arrives as a raised
+    exception rather than as tool output — the opposite channel from a bad *argument*
+    (see test_unknown_poi_kind_is_an_error_not_an_empty_result, which stays readable
+    content on purpose). Under mcp 1.x the framework caught the raise and both looked
+    the same from here; 2.x lets them differ, and they should."""
     monkeypatch.setattr(server, "search_hikes", lambda *a, **k: [])
 
     async def _impl():
+        # Caught HERE, inside the session, on purpose: letting it escape the harness's
+        # task group wraps it in nested ExceptionGroups whose str() is "unhandled errors
+        # in a TaskGroup" — which would assert on anyio's plumbing, not on the server.
         async with create_connected_server_and_client_session(server.app) as session:
-            return await session.call_tool("does_not_exist", {})
+            try:
+                await session.call_tool("does_not_exist", {})
+            except Exception as exc:  # MCPError
+                return exc
+            return None
 
-    result = asyncio.run(_impl())
-    assert result.isError
-    assert "unknown tool" in result.content[0].text.lower()
+    err = asyncio.run(_impl())
+    assert err is not None, "an unknown tool must raise, not return a result"
+    assert "unknown tool" in str(err).lower()
 
 
 # --- the call reaches the REAL engine, against live fixture data --------------
@@ -426,7 +469,7 @@ def test_call_tool_runs_the_real_engine_on_fixture(monkeypatch):
             )
 
     result = asyncio.run(_impl())
-    assert not result.isError
+    assert not result.is_error
 
     lines = result.content[0].text.splitlines()
     assert len(lines) >= 5                                  # 11 survive on this bbox
@@ -456,7 +499,7 @@ def test_real_stdio_transport_lists_the_tool():
     async def _impl():
         async with stdio_client(params) as (read, write):
             async with ClientSession(
-                read, write, read_timeout_seconds=timedelta(seconds=30)
+                read, write, read_timeout_seconds=30
             ) as session:
                 await session.initialize()
                 return await session.list_tools()
@@ -489,14 +532,14 @@ def test_every_search_tool_offers_the_same_poi_filter():
     for name in (
         "find_hikes", "circular_routes", "routes_between", "route_via", "routes_to_poi",
     ):
-        props = tools[name].inputSchema["properties"]
+        props = tools[name].input_schema["properties"]
         assert props["poi"]["type"] == "array"
         # The enum comes from the registry, so the schema can never offer a kind the
         # engine would reject (nor omit one it accepts).
         assert set(props["poi"]["items"]["enum"]) == set(POI_KINDS)
         assert props["poi_radius_m"]["type"] == "number"
     # list_areas takes nothing — it is an inventory, not a search.
-    assert tools["list_areas"].inputSchema["required"] == []
+    assert tools["list_areas"].input_schema["required"] == []
 
 
 def test_poi_arguments_reach_the_engine(monkeypatch):
@@ -517,7 +560,7 @@ def test_poi_arguments_reach_the_engine(monkeypatch):
                  "poi": ["ruins", "church"], "poi_radius_m": 600},
             )
 
-    assert not asyncio.run(_impl()).isError
+    assert not asyncio.run(_impl()).is_error
     assert captured["criteria"].poi_kinds == ("ruins", "church")
     assert captured["cfg"].poi_radius_m == 600
     # The per-call override must NOT leak into the shared module-level config.
@@ -537,7 +580,7 @@ def test_unknown_poi_kind_is_an_error_not_an_empty_result(monkeypatch):
             )
 
     result = asyncio.run(_impl())
-    assert result.isError
+    assert result.is_error
     assert "cathedral" in result.content[0].text
 
 
@@ -550,7 +593,7 @@ def test_list_areas_reports_the_offline_inventory(tmp_path, monkeypatch):
 
     # Empty: a sentence that says what to do next, not an empty array.
     empty = asyncio.run(_call())
-    assert not empty.isError and "No named areas downloaded" in empty.content[0].text
+    assert not empty.is_error and "No named areas downloaded" in empty.content[0].text
 
     from hike_finder.overpass import AreaData
     from hike_finder.snapshot import AreaSnapshot, save_snapshot
@@ -606,7 +649,7 @@ def test_routes_to_poi_reaches_the_engine(monkeypatch):
             )
 
     result = asyncio.run(_impl())
-    assert not result.isError
+    assert not result.is_error
     assert captured["start"] == (50.73, 15.60)
     assert captured["kinds"] == ("ruins",) and captured["poi_filter"] == ("refreshment",)
     assert captured["n"] == 2 and captured["radius"] == 4500
@@ -618,10 +661,12 @@ def test_routes_to_poi_reaches_the_engine(monkeypatch):
 def test_routes_to_poi_without_kinds_asks_for_them(monkeypatch):
     """No destination kind is refused, never answered with an unasked-for search.
 
-    The schema marks `kinds` required, so the protocol's own validation catches it first
-    and names the missing field. The handler keeps its own guard for a client that skips
-    validation (or sends an empty list) — checked directly, since the protocol never lets
-    that reach it here.
+    The schema marks `kinds` required, but under mcp 2.x that is advice to the CLIENT —
+    the server does not validate arguments against `inputSchema` — so the call lands in
+    the handler and the handler's own guard is the only thing standing between a missing
+    `kinds` and an unasked-for search. It raises, which `call_tool` turns into a result
+    the client can read, with `is_error` set. (Under 1.x the framework rejected this
+    before the handler saw it; when that stopped being true, this test is what noticed.)
     """
     def _fail(*a, **k):
         raise AssertionError("the engine must not run without a destination kind")
@@ -633,12 +678,13 @@ def test_routes_to_poi_without_kinds_asks_for_them(monkeypatch):
             return await session.call_tool("routes_to_poi", {"lat": 50.73, "lon": 15.60})
 
     result = asyncio.run(_impl())
-    assert result.isError and "kinds" in result.content[0].text
+    assert result.is_error and "kinds" in result.content[0].text
 
-    text = asyncio.run(
-        server._call_routes_to_poi({"lat": 50.73, "lon": 15.60, "kinds": []})
-    )[0].text
-    assert "what to walk to" in text
+    # An EMPTY kinds list is the same refusal, straight at the handler.
+    with pytest.raises(ValueError, match="what to walk to"):
+        asyncio.run(
+            server._call_routes_to_poi({"lat": 50.73, "lon": 15.60, "kinds": []})
+        )
 
 
 def test_routes_to_poi_empty_result_is_destination_shaped(monkeypatch):
@@ -697,7 +743,7 @@ def test_list_pois_advertises_the_browse():
             return await session.list_tools()
 
     tool = {t.name: t for t in asyncio.run(_impl()).tools}["list_pois"]
-    schema = tool.inputSchema
+    schema = tool.input_schema
     # Nothing is required: a live listing needs the corners, an offline one needs `area`
     # — validated in call_tool, like find_hikes.
     assert schema["required"] == []
@@ -712,7 +758,7 @@ def test_list_pois_reads_a_snapshot_offline(tmp_path):
     path = tmp_path / "browse.json"
     _browse_snapshot(path, _BROWSE_POIS)
     result = _call("list_pois", {"area": str(path)})
-    assert not result.isError
+    assert not result.is_error
     text = result.content[0].text
     assert text.startswith("2 objects: 1 church, 1 ruin")
     assert "Sv. Petr" in text and "Nistejka" in text
@@ -772,7 +818,7 @@ def test_list_pois_accepts_a_bare_area_name(tmp_path, monkeypatch):
 
     _browse_snapshot(snapshot_path("ceskyraj"), _BROWSE_POIS)
     result = _call("list_pois", {"area": "ceskyraj"})
-    assert not result.isError
+    assert not result.is_error
     assert "Sv. Petr" in result.content[0].text
 
 
