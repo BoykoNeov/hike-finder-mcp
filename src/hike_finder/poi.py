@@ -12,7 +12,9 @@ Three pieces, all pure and network-free (the project's trust-anchor convention):
     unclassifiable* (or the reverse) fails as a silently-empty result set rather than
     an error — the same drift hazard ``access.matched_access_points`` and the shared
     ``geometry._vertex_graph`` are built to remove. ``test_poi.py`` asserts the
-    round-trip for every registered kind.
+    round-trip for every registered kind. The one thing the query fetches and the
+    classifier deliberately drops is a registered kind's ``exclude`` list (below):
+    excluded, not unclassifiable, and pinned by its own test.
   * :class:`PoiIndex` — a cell grid over an area's POIs, so "does this route pass a
     church?" costs ~O(route points) instead of O(route points × POIs). Built ONCE per
     search (POIs are few and constant across the whole ``find_hikes`` call) and reused
@@ -70,6 +72,23 @@ class PoiKind:
     values: tuple[str, ...]  # accepted values for that key
     label: str  # singular human label, e.g. "ruin"
     plural: str  # human label for the UI list, e.g. "ruins"
+    # Secondary tags that DISQUALIFY an otherwise-matching element: ``(key, values)``
+    # pairs, e.g. ``(("shelter_type", ("public_transport",)),)`` to keep bus shelters out
+    # of ``shelter``. Needed because a few OSM primary tags are broader than the walk-
+    # planning concept they are registered under, and no wording of the label fixes that
+    # (a bus shelter genuinely IS a shelter).
+    #
+    # A MISSING secondary tag never disqualifies. That is the same rule
+    # ``transit_access`` and the surface summary follow — "not recorded" must not
+    # collapse into "no" — and here it is what keeps an untagged real lookout tower in
+    # ``tower``. The cost is that the deny-list only removes what OSM has positively
+    # said is something else, which is the conservative direction.
+    #
+    # Filtering happens in :func:`classify`, NOT in the query: the excluded objects are
+    # still fetched (harmless, they were already being fetched) and the query TEXT is
+    # unchanged, so adding an exclusion does not invalidate the Overpass cache the way
+    # adding a kind does. ``test_poi.py`` pins that property.
+    exclude: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 # The registry. Every entry is fetched on EVERY area query (see overpass.build_query),
@@ -105,12 +124,41 @@ POI_KINDS: dict[str, PoiKind] = {
     ),
     "waterfall": PoiKind("waterway", ("waterfall",), "waterfall", "waterfalls"),
     "viewpoint": PoiKind("tourism", ("viewpoint",), "viewpoint", "viewpoints"),
-    "tower": PoiKind("man_made", ("tower",), "tower", "lookout towers"),
+    # "towers", NOT "lookout towers". `man_made=tower` is every tower — transmission
+    # masts, water towers, chimneys — and the old plural promised a viewing platform the
+    # selector never checked for. The deny-list removes the unambiguous non-destinations;
+    # what is left is lookouts, historic towers, and the untagged, so the honest plural is
+    # the plain one. (Narrowing to `tower:type=observation` instead was rejected: it reads
+    # as more precise but silently drops every untagged real lookout.)
+    "tower": PoiKind(
+        "man_made",
+        ("tower",),
+        "tower",
+        "towers",
+        exclude=(
+            (
+                "tower:type",
+                ("communication", "communications", "transmission", "water_tower",
+                 "cooling", "chimney"),
+            ),
+        ),
+    ),
     "museum": PoiKind("tourism", ("museum",), "museum", "museums"),
     "hut": PoiKind(
         "tourism", ("alpine_hut", "wilderness_hut"), "mountain hut", "mountain huts"
     ),
-    "shelter": PoiKind("amenity", ("shelter",), "shelter", "shelters"),
+    # A bus shelter is `amenity=shelter` too, and unlike `tower` no relabelling helps —
+    # it genuinely IS a shelter, just not one you plan a walk around. The exclusion is
+    # the fix. It also matters more since transit landed: `access.TRANSIT_KINDS` fetches
+    # `highway=bus_stop`, so the roadside shelters this drops are precisely the objects
+    # the transit filter is already reporting as *road access*.
+    "shelter": PoiKind(
+        "amenity",
+        ("shelter",),
+        "shelter",
+        "shelters",
+        exclude=(("shelter_type", ("public_transport",)),),
+    ),
     "picnic": PoiKind("tourism", ("picnic_site",), "picnic site", "picnic sites"),
     "refreshment": PoiKind(
         "amenity", ("pub", "restaurant", "cafe"), "pub/restaurant", "pubs & restaurants"
@@ -161,15 +209,23 @@ def classify(tags: dict) -> str | None:
     """The registered kind an OSM element belongs to, or ``None``.
 
     The inverse of :func:`selectors_by_key` over the SAME table, so anything the query
-    fetches is classifiable and anything classifiable is fetched. First match wins;
-    kinds keyed on different tags can't collide, and within a key the registered value
-    sets are disjoint.
+    fetches is classifiable *or explicitly excluded*, and anything classifiable is
+    fetched. First match wins; kinds keyed on different tags can't collide, and within a
+    key the registered value sets are disjoint.
+
+    A kind's ``exclude`` list is checked after its primary tag matches, and a hit falls
+    through to the REMAINING kinds rather than returning ``None`` — an object can carry
+    two registered primary tags, and disqualifying it from one must not cost it the
+    other (a communication tower that is also ``tourism=museum`` is a museum).
     """
     if not tags:
         return None
     for kind, spec in POI_KINDS.items():
-        if tags.get(spec.key) in spec.values:
-            return kind
+        if tags.get(spec.key) not in spec.values:
+            continue
+        if any(tags.get(k) in vals for k, vals in spec.exclude):
+            continue  # fetched, but not what this kind promises
+        return kind
     return None
 
 

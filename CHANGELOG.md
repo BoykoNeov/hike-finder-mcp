@@ -59,6 +59,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   dated run instead of reddening whichever unrelated commit happens to land next — which is
   exactly how mcp 2.0.0 surfaced in v0.3.0.
 
+### Fixed
+
+- **The `tower` POI kind no longer calls transmission masts "lookout towers", and `shelter`
+  no longer offers you a bus stop.** `man_made=tower` is every tower — masts, water towers,
+  chimneys — and `amenity=shelter` includes the shelter at a bus stop, so both kinds were
+  listing objects nobody plans a walk around. `tower` is now labelled plainly **"towers"**
+  (the old plural promised a viewing platform the tag never checked for) and both kinds skip
+  the types OSM has *positively* marked as something else. Anything OSM leaves untyped is
+  still included — most real lookout towers carry no `tower:type`, so dropping the untyped
+  to look precise would lose them.
+  This changes no Overpass query text, so **your cached areas stay valid**. An
+  already-downloaded snapshot keeps the classifications it was saved with; re-download the
+  area to apply the fix offline.
+
 ## [0.3.1] - 2026-08-09
 
 ### Fixed

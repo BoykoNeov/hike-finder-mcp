@@ -604,13 +604,19 @@ reaches and how far off the trail it sits:
     (start 50.5947,15.2640, OSM relation 369232)  [passes ruin "Rotštejn" (20 m)]
 ```
 
-**Why** — the eighteen kinds are the things people actually plan a walk around:
+**Why** — the nineteen kinds are the things people actually plan a walk around:
 
 | | |
 |---|---|
 | heritage | `church`, `shrine` (wayside shrines & crosses), `ruins`, `castle`, `memorial`, `archaeology`, `museum` |
 | landscape | `peak`, `rock`, `cave`, `spring`, `waterfall`, `viewpoint`, `tower` |
-| comfort | `hut`, `shelter`, `picnic`, `refreshment` |
+| comfort | `drinking_water`, `hut`, `shelter`, `picnic`, `refreshment` |
+
+Two of them are narrower than the raw OSM tag suggests. `man_made=tower` is every tower
+— transmission masts, water towers, chimneys — and `amenity=shelter` includes bus
+shelters, so both drop the types OSM has positively marked as those. Anything OSM leaves
+untyped stays in: most real lookout towers carry no `tower:type`, and losing them to look
+precise would be the worse trade.
 
 Repeat `--poi` or comma-separate: several kinds are **OR**-ed, so `--poi church --poi ruins`
 means "a church *or* a ruin", which is what picking two things off a list normally means.

@@ -110,6 +110,8 @@ keeping:
   *fetchable but unclassifiable* fails as a silently-empty result set, not an error — the
   same hazard `access.matched_access_points` and the shared `_vertex_graph` exist to remove.
   `test_poi.py` pins the round-trip and pins that `build_query` still contains the clauses.
+  The one thing fetched but deliberately not classified is a kind's `exclude` deny-list
+  (see Known limitations); the round-trip test cannot see it, so it has its own pins.
 - **POIs are fetched on EVERY query**, not only when asked for. That keeps one Overpass
   cache key and makes every snapshot able to answer any destination question later; the
   alternative gives two cache keys and snapshots that only sometimes carry POIs, breaking
@@ -373,9 +375,24 @@ skip without the `mcp` extra).
 - **Daily quota** assumes a UTC-midnight reset and can lose an update under a cross-*process*
   race (acceptable for a soft advisory limit; no file locking).
 - **POI proximity is best-effort, like access.** No hit means nothing of that kind is *mapped*
-  in OSM near the route. The registry is also a curated subset — 18 kinds a walk is planned
+  in OSM near the route. The registry is also a curated subset — 19 kinds a walk is planned
   around — so a "monastery" or a "windmill" is simply not askable until someone adds it to
   `POI_KINDS` (one line; the query and classifier follow automatically).
+- **Two kinds carry a deny-list, and it lives in the classifier, not the query.**
+  `man_made=tower` is every tower (transmission, water, chimney) and `amenity=shelter`
+  includes bus shelters, so both were reporting objects nobody plans a walk around — the
+  tower kind while labelling itself *"lookout towers"*, which is the label promising what
+  the selector never checked. `PoiKind.exclude` disqualifies on a secondary tag. Three
+  design points: (1) a **missing** secondary tag never disqualifies (most real lookouts
+  have no `tower:type`), the same "not recorded ≠ no" rule as `transit_access`; (2) it
+  filters in `classify`, so the query TEXT is unchanged and the Overpass **cache is not
+  invalidated** — unlike adding a kind, which is why this was cheap to ship alone; (3) an
+  exclusion **falls through** to the remaining kinds rather than returning `None`, or a
+  communication tower tagged `tourism=museum` would lose its museum classification.
+  Consequence to know: an **already-downloaded snapshot keeps its old classifications**,
+  because `classify` runs upstream in `parse_area`. Re-download to reclassify. That is the
+  surface/tracktype precedent (nothing *filters* on ungathered data), not a staleness bug,
+  and it needs no version field.
 - **Adding a POI kind widens every Overpass query** and invalidates the Overpass cache (the
   query text is the cache key), which is the price of the single-query-shape design. Weigh a
   new kind's density before adding it: `amenity=restaurant` in a city bbox is hundreds of

@@ -104,12 +104,17 @@ hike-finder --bbox 50.52 15.15 50.60 15.28 --poi ruins,castle --max-distance 25
     (start 50.5947,15.2640, OSM relation 369232)  [passes ruin "Rotštejn" (20 m)]
 ```
 
-Eighteen kinds are available: `church`, `shrine` (wayside shrines & crosses), `ruins`,
-`castle`, `memorial`, `archaeology`, `peak`, `rock`, `cave`, `spring`, `waterfall`,
-`viewpoint`, `tower`, `museum`, `hut`, `shelter`, `picnic`, `refreshment`. Repeat `--poi`
+Nineteen kinds are available: `church`, `shrine` (wayside shrines & crosses), `ruins`,
+`castle`, `memorial`, `archaeology`, `peak`, `rock`, `cave`, `spring`, `drinking_water`,
+`waterfall`, `viewpoint`, `tower`, `museum`, `hut`, `shelter`, `picnic`, `refreshment`. Repeat `--poi`
 or comma-separate them; several kinds are **OR**-ed ("a church *or* a ruin"). Every match
 reports the object and **how far off the trail it sits**, so "passes near" and "ends at"
 stay distinguishable.
+
+Two kinds are narrower than their OSM tag: `tower` skips towers OSM records as
+transmission masts, water towers or chimneys, and `shelter` skips bus shelters. Objects
+OSM leaves untyped are kept either way — most real lookout towers carry no type tag at
+all, so dropping the untyped would lose them.
 
 `--poi-radius M` (default 250, `HIKE_POI_RADIUS_M`) sets how close counts. Distance is
 measured to the trail **line**, not to its mapped nodes — a straight stretch drawn with
@@ -149,7 +154,7 @@ hike-finder --area ceskyraj --show-pois --poi viewpoint      # offline, zero net
   ...
 ```
 
-The same eighteen kinds as `--poi` select what to list; **omit `--poi` to show every
+The same nineteen kinds as `--poi` select what to list; **omit `--poi` to show every
 kind** — at real density that can be a lot (the box above returns **887 objects**
 unfiltered), so the count-by-kind header comes first and nothing is capped. Results are
 grouped by kind and ordered the same way every run. Walk-shaped flags (`--min-gain`,
@@ -403,7 +408,7 @@ hike-finder --from 50.73 15.60 --to-poi refreshment --routes 1 --to-poi-radius 6
             --user-agent you@example.com
 ```
 
-Same eighteen kinds as `--poi` (`--list-poi-kinds`), but they mean something different here.
+Same nineteen kinds as `--poi` (`--list-poi-kinds`), but they mean something different here.
 **`--poi` filters** routes you already found by what they happen to pass; **`--to-poi`
 draws** the route to the object. You can use both at once — "a route to the nearest ruin
 that also passes a pub" — because they answer different questions.

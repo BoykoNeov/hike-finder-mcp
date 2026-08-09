@@ -5,7 +5,9 @@ matter most here are:
 
   * ``test_every_registered_kind_round_trips`` — the query and the classifier are both
     derived from ``POI_KINDS``; this pins that they agree, because a drift between them
-    fails as a silently-empty result set, not an error.
+    fails as a silently-empty result set, not an error. The single deliberate exception
+    is a kind's ``exclude`` list — objects fetched and then dropped on purpose — which
+    has its own pins below, because the round-trip test cannot see them.
   * ``test_index_matches_brute_force`` — the grid is an optimisation, so it must be
     *exactly* equivalent to scanning every POI. A false negative there would silently
     drop real matches.
@@ -42,11 +44,16 @@ from hike_finder.snapshot import AreaSnapshot, snapshot_from_json, snapshot_to_j
 
 
 def test_every_registered_kind_round_trips():
-    """Everything the query fetches is classifiable, and vice versa.
+    """Everything the query fetches is classifiable *or excluded*, and vice versa.
 
     For each registered kind, a synthetic element carrying each of its accepted tag
     values must classify back to that same kind, AND that value must appear in the
     selector set the Overpass query is built from. This is the anti-drift pin.
+
+    It says nothing about ``exclude``: the synthetic element carries only the primary
+    tag, so no deny-list can fire here. That is deliberate — the round-trip is about the
+    query and the classifier agreeing on which kinds EXIST — and it is why the
+    exclusions need the separate pins below.
     """
     selectors = selectors_by_key()
     for kind, spec in POI_KINDS.items():
@@ -78,6 +85,59 @@ def test_classify_ignores_unregistered_tags():
     assert classify({"amenity": "parking"}) is None  # access, not a destination
     assert classify({"highway": "path"}) is None
     assert classify(None) is None
+
+
+def test_a_secondary_tag_can_disqualify_a_primary_match():
+    """The deny-list drops what OSM has positively said is something else.
+
+    `man_made=tower` covers transmission masts and water towers; `amenity=shelter`
+    covers bus shelters. Both were being reported as walk destinations — the tower kind
+    while calling itself "lookout towers".
+    """
+    assert classify({"man_made": "tower", "tower:type": "communication"}) is None
+    assert classify({"man_made": "tower", "tower:type": "water_tower"}) is None
+    assert classify({"amenity": "shelter", "shelter_type": "public_transport"}) is None
+
+
+def test_a_missing_secondary_tag_never_disqualifies():
+    """"Not recorded" must not collapse into "no" — the `transit_access` rule.
+
+    Most real lookout towers carry no `tower:type` at all, so an allow-list would drop
+    them. The deny-list keeps anything OSM has not positively excluded, and this pins
+    that conservative direction rather than leaving it to the implementation.
+    """
+    assert classify({"man_made": "tower"}) == "tower"
+    assert classify({"man_made": "tower", "tower:type": "observation"}) == "tower"
+    assert classify({"amenity": "shelter"}) == "shelter"
+    assert classify({"amenity": "shelter", "shelter_type": "weather_shelter"}) == "shelter"
+
+
+def test_an_exclusion_falls_through_to_the_remaining_kinds():
+    """Disqualifying an object from one kind must not cost it another it really is.
+
+    `classify` continues rather than returning `None`, so a communication tower that is
+    also a museum classifies as a museum. Registry order puts `tower` before `museum`,
+    so an early return would silently lose it.
+    """
+    tags = {"man_made": "tower", "tower:type": "communication", "tourism": "museum"}
+    assert classify(tags) == "museum"
+
+
+def test_exclusions_never_reach_the_query():
+    """Adding an exclusion must NOT change the Overpass query text.
+
+    The query text is the Overpass cache key, so a deny-list applied in the query would
+    invalidate every cached area — the price `POI_KINDS` pays for a new KIND. Filtering
+    in the classifier instead keeps that cost at zero, and this pins the property: the
+    primary selectors are still fetched wholesale, and no secondary tag appears.
+    """
+    selectors = selectors_by_key()
+    assert "tower" in selectors["man_made"]
+    assert "shelter" in selectors["amenity"]
+    q = build_query(50.7, 15.5, 50.8, 15.7)
+    for spec in POI_KINDS.values():
+        for secondary, _values in spec.exclude:
+            assert secondary not in q
 
 
 def test_kind_labels_covers_the_registry():
