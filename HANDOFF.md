@@ -246,10 +246,16 @@ thing is validated live against real OSM. Highlights:
   pinned property, not a docstring); **empty kinds expand to all** (the opposite convention to
   `route_pois`, where `()` means match nothing); and **a pre-POI snapshot says it cannot know**
   rather than reporting an empty landscape, with the complement pinned too (a current snapshot
-  with no caves must *not* be flagged stale). **Not yet run against live Overpass** — the two
-  network-touching paths are `list_area_pois`'s single `_fetch_area` call (shared, already
-  live-verified by every other mode) and nothing else, so the exposure is small, but the
-  end-to-end live run is still owed.
+  with no caves must *not* be flagged stale). **Verified live** over Český ráj (the same box
+  the `--poi` filter was verified on): `--show-pois --poi ruins,castle` listed the four
+  objects HANDOFF already records for it — Valdštejn, zámek Hrubá Skála, Rotštejn, Hrubý
+  Rohozec — plus Radeč and Kavčiny; a download baked **887 POIs** into a named snapshot, and
+  the offline browse of it by bare name produced **byte-identical output to the live run**.
+  The 887-object export was checked in bulk: 887 `<wpt>`, **zero tracks, zero empty names**
+  (unnamed objects carry their kind), zero mojibake in the file, and the GeoJSON's
+  `[lon, lat]` ranges land inside the bbox on the right axes. Unfiltered listings are big at
+  real density (501 of those 887 are summits) — deliberately uncapped, with the
+  count-by-kind header carrying the "what's the mix" answer; noted in README/GUIDE.
 - **Downloaded-area inventory + drawn-box selection** (`--list-areas`, MCP `list_areas`, web
   "Already downloaded" / "Draw a box") — live-verified for the CLI/HTTP paths. The web UI's
   *browser* logic is covered by `tests/test_web_js.py`, which runs the page's real script under

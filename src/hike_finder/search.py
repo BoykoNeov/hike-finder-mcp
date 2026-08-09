@@ -1135,11 +1135,11 @@ def list_area_pois(
     area = _fetch_area(
         bbox, cfg, cache, user_agent=user_agent, overpass_url=overpass_url, read_cache=True
     )
-    places = _poi.select_pois(area.pois, kinds)
-    _log.warning(
-        "points of interest: %d object(s) found in the area", len(places)
-    )
-    return places
+    # Deliberately silent on success. Every frontend already prints the count-by-kind
+    # summary, and a log line here would appear on the live path only — making the live
+    # and offline listings differ in what the USER sees, which is exactly the kind of
+    # drift the shared `select_pois` call exists to rule out.
+    return _poi.select_pois(area.pois, kinds)
 
 
 def list_snapshot_pois(snapshot: AreaSnapshot, kinds=()) -> tuple[_poi.PoiPlace, ...]:

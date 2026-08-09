@@ -38,8 +38,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     POIs existed says so, in all three frontends, instead of reporting an empty landscape.
   - Ordering is registry-then-name-then-coordinate, so a listing comes out grouped the way
     the kind menu prints and identically on every run.
+  - **Walk-shaped flags are named, not silently ignored**: passing `--min-gain` /
+    `--circular` / `--poi-radius` to a listing prints which ones had nothing to act on.
+  - Nothing is capped — an unfiltered listing over real ground is genuinely large (887
+    objects in the Český ráj box) and a silent truncation would read as "that's all there
+    is"; the count-by-kind header carries the summary instead.
   - `--list-poi-kinds` is the new, unambiguous spelling of the kind list; **`--list-pois`
     keeps working** as an alias.
+  - MCP `list_pois` accepts the bare area **name** from `list_areas`, not just a path, and
+    turns an unreadable area into a message rather than a traceback.
 
 - **Draw a route *to* the nearest ruin** (`--from LAT LON --to-poi KIND`, MCP `routes_to_poi`,
   web "Route to the nearest church / ruin / peak…"). The fourth point-based mode, and the

@@ -475,3 +475,27 @@ def test_list_poi_kinds_keeps_its_old_spelling(capsys):
     assert run(_parse("--list-poi-kinds")) == 0
     out = capsys.readouterr().out
     assert "ruins" in out and "--show-pois LISTS the objects" in out
+
+
+def test_show_pois_says_which_flags_it_ignored(tmp_path, capsys):
+    """A filter that silently does nothing is the outcome this project forbids.
+
+    Not an error — they are plausibly left over from the previous command — but the run
+    must say the walk-shaped flags had nothing to act on.
+    """
+    path = tmp_path / "demo.json"
+    _poi_snapshot(path, _DEMO_POIS)
+    assert run(_parse(
+        "--show-pois", "--area", str(path), "--min-gain", "500", "--circular",
+        "--poi-radius", "100",
+    )) == 0
+    err = capsys.readouterr().err
+    assert "--min-gain" in err and "--circular" in err and "--poi-radius" in err
+    assert "do not apply and were ignored" in err
+
+
+def test_show_pois_stays_quiet_when_nothing_was_ignored(tmp_path, capsys):
+    path = tmp_path / "demo.json"
+    _poi_snapshot(path, _DEMO_POIS)
+    assert run(_parse("--show-pois", "--area", str(path), "--poi", "ruins")) == 0
+    assert "ignored" not in capsys.readouterr().err

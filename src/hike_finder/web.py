@@ -802,7 +802,14 @@ function download(fmt){
   // Re-runs the LAST search server-side and streams the file (cache-hot live, free
   // offline). Uses the stored params so the download matches what's listed.
   const status = document.getElementById('status');
-  if (!lastParams){ status.textContent = 'Search first, then download GPX/GeoJSON.'; return; }
+  if (!lastParams){
+    // Match the verb of the button that produces the list — "search" is wrong in the
+    // browse mode, where the button says Show.
+    status.textContent = (modeName() === 'pois' ? 'Show the points of interest first'
+                                                : 'Search first')
+                       + ', then download GPX/GeoJSON.';
+    return;
+  }
   window.location = '/api/' + fmt + '?' + lastParams;
 }
 document.getElementById('search').onclick = search;

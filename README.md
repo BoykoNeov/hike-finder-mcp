@@ -117,8 +117,11 @@ hike-finder --area ceskyraj --show-pois --poi viewpoint      # offline, zero net
 ```
 
 The same eighteen kinds as `--poi` select what to list; **omit `--poi` to show every
-kind**. Results are grouped by kind, counted in the header, and ordered the same way every
-run.
+kind** — at real density that can be a lot (the box above returns **887 objects**
+unfiltered), so the count-by-kind header comes first and nothing is capped. Results are
+grouped by kind and ordered the same way every run. Walk-shaped flags (`--min-gain`,
+`--circular`, `--poi-radius`, …) have nothing to act on here; the run names any it ignored
+on stderr rather than looking like it filtered.
 
 Two sources, one output: the live `--bbox`, or a downloaded `--area` — the "only in the
 area I already have" half, which needs **no network whatsoever**. Either way nothing is

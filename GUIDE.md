@@ -650,8 +650,16 @@ easiest mistake to make here:
 
 **Read it**
 
-- **No `--poi` means every kind.** Selecting nothing is a browse ("show me what's here"),
-  not an empty question. With `--poi` it narrows to those kinds, OR-ed as usual.
+- **No `--poi` means every kind** — and at real density that is a *lot*. The Český ráj box
+  above returns **887 objects** with nothing selected (501 of them summits, this being
+  sandstone-tower country). Nothing is capped, on purpose: a silently truncated list would
+  read as "that's all there is". The count-by-kind header is the first line precisely so you
+  can see the mix before scrolling, then narrow with `--poi`, or send the whole thing to
+  `--json` / `--gpx` where 887 is nothing at all.
+- **Walk-shaped flags don't apply.** `--min-gain`, `--max-distance`, `--circular`,
+  `--poi-radius` and friends describe routes, and there are none here. Passing them isn't an
+  error (they're often left over from the previous command) but the run says on stderr which
+  ones it ignored, rather than looking like it filtered.
 - **There is no distance column, on purpose.** A distance would have to be measured *from*
   something, and in this mode there is no route to measure from. A "0 m" would read as
   "sits on the trail", which nobody claimed.

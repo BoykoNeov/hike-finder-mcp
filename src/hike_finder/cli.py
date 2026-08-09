@@ -441,6 +441,28 @@ def _show_pois(args: argparse.Namespace, cfg) -> int:
     the same export, so what you browse is exactly what you get in the file.
     """
     kinds = normalise_kinds(_split_kinds(getattr(args, "poi", None)))
+    # Flags that describe a WALK have nothing to act on here, and a filter that silently
+    # does nothing is the one outcome this project's conventions forbid. Not an error —
+    # they are plausibly left over from the previous command — but never silent either.
+    ignored = [
+        flag
+        for flag, value in (
+            ("--min-gain", args.min_gain), ("--max-gain", args.max_gain),
+            ("--min-distance", args.min_distance), ("--max-distance", args.max_distance),
+            ("--circular", args.circular), ("--car-access", args.car_access),
+            ("--chairlift-access", args.chairlift_access),
+            ("--poi-radius", getattr(args, "poi_radius", None)),
+            ("--near-misses", args.near_misses),
+            ("--name-places", args.name_places),
+        )
+        if value is not None
+    ]
+    if ignored:
+        print(
+            f"note: --show-pois lists objects, not walks — {', '.join(ignored)} "
+            f"do not apply and were ignored.",
+            file=sys.stderr,
+        )
     empty_msg = _SHOW_POI_EMPTY
     if args.area:
         snap, err = _resolve_area(args.area)

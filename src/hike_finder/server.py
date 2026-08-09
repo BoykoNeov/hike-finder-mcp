@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from dataclasses import replace
 
 from mcp.server import Server
@@ -46,7 +47,7 @@ from .search import (
     search_hikes,
     search_snapshot,
 )
-from .snapshot import list_snapshots, load_snapshot, save_snapshot
+from .snapshot import list_snapshots, load_snapshot, save_snapshot, snapshot_path
 
 app = Server("hike-finder")
 CFG = _config.load()
@@ -395,9 +396,10 @@ async def list_tools() -> list[Tool]:
                     "east": {"type": "number"},
                     "area": {
                         "type": "string",
-                        "description": "Path to a snapshot saved by download_area — list what "
-                        "is in an already-downloaded area, with zero network. Takes the place "
-                        "of the bounding box.",
+                        "description": "An already-downloaded area to list, with zero network — "
+                        "takes the place of the bounding box. Accepts either a path written by "
+                        "download_area OR the bare `name` shown by list_areas (note that "
+                        "find_hikes(area=…) takes a path only).",
                     },
                     "kinds": {
                         "type": "array",
@@ -710,7 +712,20 @@ async def _call_list_pois(arguments: dict) -> list[TextContent]:
     area_path = arguments.get("area")
     stale = False
     if area_path:
-        snap = await asyncio.to_thread(load_snapshot, area_path)
+        # A path wins; otherwise fall back to the NAMED snapshot directory, so the name an
+        # LLM just read out of list_areas works here verbatim instead of raising a bare
+        # FileNotFoundError from deep inside load_snapshot.
+        if not os.path.isfile(area_path):
+            named = snapshot_path(area_path)
+            if named is not None and named.is_file():
+                area_path = str(named)
+        try:
+            snap = await asyncio.to_thread(load_snapshot, area_path)
+        except (OSError, ValueError) as e:
+            return [TextContent(type="text", text=(
+                f"Could not read the area {arguments['area']!r}: {e}. Pass a path written by "
+                f"download_area, or the bare name of an area shown by list_areas."
+            ))]
         # Read BEFORE the listing: an empty result from a pre-POI snapshot is not an
         # answer about the landscape, and an LLM client will report it as one unless the
         # difference is spelled out in the text it gets back.

@@ -759,3 +759,24 @@ def test_list_pois_separates_empty_from_cannot_know(tmp_path):
     _browse_snapshot(old, [])
     stale = _call("list_pois", {"area": str(old)})
     assert "saved before the feature existed" in stale.content[0].text
+
+
+def test_list_pois_accepts_a_bare_area_name(tmp_path, monkeypatch):
+    """An LLM reads a `name` out of list_areas; it must work here verbatim.
+
+    Without the named-directory fallback this raised a bare FileNotFoundError from deep
+    inside load_snapshot — an error about a path the caller never typed.
+    """
+    monkeypatch.setenv("HIKE_SNAPSHOT_DIR", str(tmp_path))
+    from hike_finder.snapshot import snapshot_path
+
+    _browse_snapshot(snapshot_path("ceskyraj"), _BROWSE_POIS)
+    result = _call("list_pois", {"area": "ceskyraj"})
+    assert not result.isError
+    assert "Sv. Petr" in result.content[0].text
+
+
+def test_list_pois_unreadable_area_is_a_message_not_a_traceback(tmp_path):
+    result = _call("list_pois", {"area": str(tmp_path / "nope.json")})
+    assert "Could not read the area" in result.content[0].text
+    assert "shown by list_areas" in result.content[0].text
