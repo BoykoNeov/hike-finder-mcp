@@ -199,3 +199,69 @@ def test_routes_between_off_network_point_returns_empty(monkeypatch):
     far = (50.60, 15.40)   # ~13 km from the nearest trail — well beyond the 2 km snap limit
     hikes = S.routes_between(start, far, Criteria(), k=3)
     assert hikes == []
+
+
+# --------------------------------------------------------------------- --from / --to-poi
+
+
+def _with_pois(pois):
+    """The fixture's real trails, plus hand-placed points of interest.
+
+    The fixture predates the POI query (it carries none), so the objects are placed here —
+    but the TOPOLOGY under the test is the real Krkonoše trail network, which is the part
+    that makes "nearest on foot" differ from "nearest in a straight line".
+    """
+    area = _area()
+    area.pois = list(pois)
+    return area
+
+
+def test_routes_to_poi_draws_a_route_to_an_object_on_the_real_network(monkeypatch):
+    # A ruin placed a stone's throw off a vertex of the known loop: a route is drawn to it,
+    # it is not a loop, it starts where you picked, and it says how far its end lands from
+    # the ruin (the route ends on the TRAIL, not at the ruin).
+    loop = _known_loop()
+    start = loop.coords[0]
+    near_vertex = loop.coords[len(loop.coords) // 2]
+    ruin = (near_vertex[0] + 0.0003, near_vertex[1])   # ~33 m off the trail
+    _stub(monkeypatch, _with_pois([{"coord": ruin, "kind": "ruins", "name": "Zřícenina"}]))
+
+    hikes = S.routes_to_poi(start, ("ruins",), Criteria(), n=1)
+    assert len(hikes) == 1
+    h = hikes[0]
+    assert h.composed is True and h.circular is False
+    assert h.name == "Route to ruin “Zřícenina”"
+    assert h.destination is not None and h.destination.distance_m <= 60.0
+    assert haversine_m(h.start, start) <= 50.0
+    assert h.gain_m is not None
+
+
+def test_routes_to_poi_prefers_the_one_that_is_nearest_on_foot(monkeypatch):
+    # Two ruins on the real network. Whichever is nearer ON FOOT must come first — and the
+    # reported km must agree with that order, since the order is claimed on the walk.
+    loop = _known_loop()
+    start = loop.coords[0]
+    a = loop.coords[len(loop.coords) // 4]
+    b = loop.coords[len(loop.coords) // 2]
+    _stub(monkeypatch, _with_pois([
+        {"coord": (a[0] + 0.0003, a[1]), "kind": "ruins", "name": "A"},
+        {"coord": (b[0] + 0.0003, b[1]), "kind": "ruins", "name": "B"},
+    ]))
+
+    hikes = S.routes_to_poi(start, ("ruins",), Criteria(max_distance_km=20), n=2)
+    assert len(hikes) == 2
+    assert [round(h.distance_km, 6) for h in hikes] == sorted(
+        round(h.distance_km, 6) for h in hikes
+    )
+    assert {h.destination.name for h in hikes} == {"A", "B"}
+
+
+def test_routes_to_poi_off_network_object_returns_empty(monkeypatch):
+    # A ruin in empty space 13 km from any trail must not be "routed to" via a distant
+    # trailhead — the same max-snap guard routes_between applies to a picked point.
+    loop = _known_loop()
+    start = loop.coords[0]
+    _stub(monkeypatch, _with_pois([
+        {"coord": (50.60, 15.40), "kind": "ruins", "name": "nowhere"},
+    ]))
+    assert S.routes_to_poi(start, ("ruins",), Criteria(), n=1, search_radius_m=20000) == []

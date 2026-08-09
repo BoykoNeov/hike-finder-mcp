@@ -89,7 +89,7 @@ def test_hike_to_dict_shape():
         "osm_id", "name", "ref", "distance_km", "gain_m", "loss_m",
         "circular", "car_access", "chairlift_access", "lift_type", "start",
         "near_miss", "notes", "composed", "composed_of", "unnamed", "place_name",
-        "pois",
+        "pois", "destination",
     }
     # A plain match serialises as not-a-near-miss with no notes, and not composed.
     assert d["near_miss"] is False and d["notes"] == []
@@ -261,3 +261,86 @@ def test_area_accepts_a_bare_name_from_list_areas(tmp_path, monkeypatch, capsys)
     )
     assert run(_parse("--area", "krkonose", "--json")) == 0
     assert json.loads(capsys.readouterr().out)[0]["name"] == "WebNorth"
+
+
+# ------------------------------------------------------- --to-poi (route to an object)
+
+
+def test_to_poi_reaches_the_engine_with_start_kinds_and_knobs(monkeypatch, capsys):
+    """--from + --to-poi dispatches to routes_to_poi, not to routes_between."""
+    from hike_finder import cli as C
+
+    captured = {}
+
+    def _stub(start, kinds, criteria, cfg=None, *, n=None, search_radius_m=None, **kw):
+        captured.update(start=start, kinds=kinds, n=n, radius=search_radius_m,
+                        poi_filter=criteria.poi_kinds)
+        return []
+
+    def _fail(*a, **k):
+        raise AssertionError("--to-poi must not fall through to another mode")
+
+    monkeypatch.setattr(C, "routes_to_poi", _stub)
+    monkeypatch.setattr(C, "routes_between", _fail)
+    monkeypatch.setattr(C, "search_hikes", _fail)
+    code = run(_parse(
+        "--from", "50.73", "15.60", "--to-poi", "ruins,castle",
+        "--routes", "2", "--to-poi-radius", "4500",
+    ))
+    assert code == 0
+    assert captured["start"] == (50.73, 15.60)
+    assert captured["kinds"] == ("ruins", "castle")   # comma list, order preserved
+    assert captured["n"] == 2 and captured["radius"] == 4500
+    # --poi was not given, so the "must pass" filter stays empty — the destination kinds
+    # are NOT smuggled into it (that would let poi_radius_m drop a route whose destination
+    # snapped farther off the trail than the filter allows).
+    assert captured["poi_filter"] == ()
+    # The empty-result message is destination-shaped, never the area-filter wording.
+    out = capsys.readouterr().out
+    assert "No route could be drawn to an object of that kind" in out
+    assert "widen --poi-radius" not in out
+
+
+def test_to_poi_and_poi_are_separate_questions(monkeypatch):
+    """--poi keeps filtering what the drawn route must pass — the two coexist."""
+    from hike_finder import cli as C
+
+    captured = {}
+    monkeypatch.setattr(
+        C, "routes_to_poi",
+        lambda start, kinds, criteria, cfg=None, **kw: captured.update(
+            kinds=kinds, poi_filter=criteria.poi_kinds
+        ) or [],
+    )
+    assert run(_parse(
+        "--from", "50.73", "15.60", "--to-poi", "ruins", "--poi", "refreshment",
+    )) == 0
+    assert captured["kinds"] == ("ruins",) and captured["poi_filter"] == ("refreshment",)
+
+
+def test_to_poi_validation_rejects_the_wrong_combinations(capsys):
+    # A destination with no start.
+    assert run(_parse("--to-poi", "ruins")) == 2
+    assert "need a --from start point" in capsys.readouterr().err
+    # A start with no destination at all.
+    assert run(_parse("--from", "50.73", "15.60")) == 2
+    assert "--from needs a destination" in capsys.readouterr().err
+    # Two different destinations at once.
+    assert run(_parse("--from", "50.73", "15.60", "--to", "50.74", "15.61",
+                      "--to-poi", "ruins")) == 2
+    assert "two different destinations" in capsys.readouterr().err
+    # A different point-based mode at the same time.
+    assert run(_parse("--from", "50.73", "15.60", "--to-poi", "ruins",
+                      "--around", "50.73", "15.60")) == 2
+    assert "use one, not several" in capsys.readouterr().err
+    # A typo'd kind is loud, not an empty result set.
+    assert run(_parse("--from", "50.73", "15.60", "--to-poi", "dragon")) == 2
+    assert "unknown point-of-interest kind" in capsys.readouterr().err
+    # The mode derives its own area, so a bbox is a contradiction.
+    assert run(_parse("--from", "50.73", "15.60", "--to-poi", "ruins",
+                      "--bbox", "50.7", "15.5", "50.8", "15.7")) == 2
+    assert "omit --bbox" in capsys.readouterr().err
+    # It is a live search — a snapshot cannot answer it (see HANDOFF: deliberately so).
+    assert run(_parse("--from", "50.73", "15.60", "--to-poi", "ruins",
+                      "--area", "krkonose")) == 2
+    assert "can't be combined with --area" in capsys.readouterr().err

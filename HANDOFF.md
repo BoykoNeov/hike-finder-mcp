@@ -182,6 +182,18 @@ thing is validated live against real OSM. Highlights:
   shared elevation sampling, sliver filter), **reverse-geocode naming** of unnamed routes, and
   **GPX/GeoJSON export** (per-point elevation on a single clean track) — all live across all three
   frontends. See `CHANGELOG.md` for the per-release breakdown.
+- **Route to a point of interest** (`--from` + `--to-poi`, MCP `routes_to_poi`, web "Route to
+  the nearest…") — the fourth point-based mode, and the inverse of the `--poi` filter: pick a
+  start and a KIND, get routes to the N nearest objects of it, ranked by **trail** distance
+  (one `_dijkstra` per candidate, after a crow-flies cheap pass). Unit-tested offline on a
+  hand-built graph whose crow-flies-nearest and on-foot-nearest destinations differ
+  (`test_routes_to_poi.py`), plus three cases on the real Špindl trail topology
+  (`test_routing_live.py`). The superlative is *checked*: crow-flies distance lower-bounds the
+  walk, so when the longest route returned exceeds the search radius (or the nearest candidate
+  the cheap pass dropped), the mode says the answer is "not provably the nearest" instead of
+  leaving the claim standing — pinned by a test where it demonstrably returns the wrong one and
+  admits it. **Not yet verified live** over real Overpass (the only piece of this release that
+  isn't).
 - **Point-based route drawing** (`--around` / `--from`/`--to` / `--via`) — the pure engine
   (mid-segment snapping + Yen on the junction multigraph, plus chained-Dijkstra `route_via` with
   its non-retracing loop closure) is unit-tested on hand-built graphs (`test_routing.py`,
@@ -268,11 +280,32 @@ skip without the `mcp` extra).
   query text is the cache key), which is the price of the single-query-shape design. Weigh a
   new kind's density before adding it: `amenity=restaurant` in a city bbox is hundreds of
   elements, though still trivial next to relation geometry.
-- **`--poi` is not a routing destination.** It filters routes that already exist; it does not
-  draw a route *to* the nearest ruin. A `routes_to_poi` mode (pick a point, get routes to the
-  N nearest objects of a kind) is the obvious follow-on — it would need its own bbox
-  derivation, nearest-N selection, and empty-result messaging, so it was deliberately left out
-  rather than half-built.
+- **`--poi` filters, `--to-poi` navigates.** The two take the same kinds and answer opposite
+  questions, and they compose ("a route to the nearest ruin that also passes a pub"). The
+  destination kinds are deliberately NOT copied into `criteria.poi_kinds`: a route whose
+  destination snapped 400 m off the trail would then be dropped by the 250 m `poi_radius_m`
+  filter — the destination gap and the pass-by radius are different measurements.
+- **`--to-poi` sizes its fetch by the length cap, and that is the point.** A shortest path of
+  length L has every vertex within L of its start, so padding the box by the cap makes a
+  qualifying route unclippable — the `compose_loops_around` tight-pad precedent, chosen over
+  `routes_between`'s accepted-clipping one *because the mode makes a superlative claim*: there,
+  clipping costs you an alternative; here it would silently promote the second-nearest ruin to
+  "the nearest". The price is a heavy query at a high `--max-distance` or `--to-poi-radius`
+  (default 3 km radius → ~9 km pad → an 18 km box, comparable to `--around`'s). A 1 %
+  `_POI_PAD_MARGIN` covers `_bbox_around`'s 111 320 m/deg vs `haversine_m`'s ~111 195 —
+  without it the "provably unclippable" pad is 0.1 % short, and an argument that is 0.1 % false
+  is false.
+- **`--to-poi`'s "nearest" is bounded, not absolute.** Two lower bounds make it checkable
+  (crow-flies ≤ trail distance): objects outside the search radius, and candidates the
+  crow-flies cheap pass dropped (`_POI_CANDIDATE_FACTOR`×N, min 10). When the longest route
+  returned exceeds either bound the mode logs "not provably the nearest" rather than assuming
+  the margin held. It *can* return the wrong one — `test_the_cheap_pass_admits_when_it_may_have
+  _dropped_a_nearer_one` constructs exactly that — but never silently.
+- **`--to-poi` is live-only, deliberately.** A snapshot carries both routes and POIs, so an
+  offline variant is conceivable, but the mode needs a trail graph and the elevation pass, and
+  a snapshot's bbox is fixed while this mode derives its own from the start point and the cap.
+  The CLI and the web both reject the pairing loudly rather than quietly returning a filtered
+  area search that *looks* like an answer.
 - **`--list-areas` can only enumerate the NAMED snapshot directory.** A CLI
   `--download some/path.json` writes wherever you point it and is tracked nowhere; there is no
   registry of arbitrary paths and inventing one would be a second source of truth. Said in the
@@ -297,9 +330,10 @@ skip without the `mcp` extra).
 pip install -e .             # CLI + web UI (no LLM); extras: ".[mcp]" ".[local-dem]" ".[dev]"
 pytest -q                    # full offline suite (3 .sh launcher cases need bash; MCP skips without the extra)
 hike-finder --bbox 50.72 15.58 50.74 15.62 --user-agent you@example.com
-hike-finder --list-pois      # the --poi destination kinds
+hike-finder --list-pois      # the --poi / --to-poi kinds
 hike-finder --list-areas     # what is already downloaded (the NAMED snapshot dir)
 hike-finder --bbox 50.52 15.15 50.60 15.28 --poi ruins,castle --max-distance 25
+hike-finder --from 50.73 15.60 --to-poi ruins --routes 3   # route TO the nearest ruin
 hike-finder --clear-cache    # empty the on-disk cache; --no-cache bypasses it for a run
 hike-finder-web              # local web UI on http://127.0.0.1:8765
 hike-finder-mcp              # MCP server over stdio (needs the `mcp` extra)

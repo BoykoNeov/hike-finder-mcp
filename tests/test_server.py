@@ -39,6 +39,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import get_default_environment, stdio_client
 from mcp.shared.memory import create_connected_server_and_client_session
 
+from dataclasses import replace
+
 from hike_finder import server
 from hike_finder.filters import Criteria, Hike
 from hike_finder.format import format_hike
@@ -73,8 +75,8 @@ def test_list_tools_advertises_find_hikes(monkeypatch):
     result = asyncio.run(_impl())
     tools = {t.name: t for t in result.tools}
     assert set(tools) == {
-        "find_hikes", "circular_routes", "routes_between", "route_via", "download_area",
-        "list_areas",
+        "find_hikes", "circular_routes", "routes_between", "route_via", "routes_to_poi",
+        "download_area", "list_areas",
     }
 
     schema = tools["find_hikes"].inputSchema
@@ -461,8 +463,8 @@ def test_real_stdio_transport_lists_the_tool():
 
     result = asyncio.run(asyncio.wait_for(_impl(), timeout=60))
     assert {t.name for t in result.tools} == {
-        "find_hikes", "circular_routes", "routes_between", "route_via", "download_area",
-        "list_areas",
+        "find_hikes", "circular_routes", "routes_between", "route_via", "routes_to_poi",
+        "download_area", "list_areas",
     }
 
 
@@ -470,8 +472,13 @@ def test_real_stdio_transport_lists_the_tool():
 
 
 def test_every_search_tool_offers_the_same_poi_filter():
-    """"Does it go past a ruin?" is the same question in all four modes, so all four
-    advertise the same two parameters, generated from the ONE registry."""
+    """"Does it go past a ruin?" is the same question in every mode, so they all
+    advertise the same two parameters, generated from the ONE registry.
+
+    ``routes_to_poi`` is in the list too: its `kinds` say where to walk TO, and `poi`
+    still filters what the drawn route must pass — two different questions that stay
+    separately askable.
+    """
     from hike_finder.poi import POI_KINDS
 
     async def _impl():
@@ -479,7 +486,9 @@ def test_every_search_tool_offers_the_same_poi_filter():
             return await session.list_tools()
 
     tools = {t.name: t for t in asyncio.run(_impl()).tools}
-    for name in ("find_hikes", "circular_routes", "routes_between", "route_via"):
+    for name in (
+        "find_hikes", "circular_routes", "routes_between", "route_via", "routes_to_poi",
+    ):
         props = tools[name].inputSchema["properties"]
         assert props["poi"]["type"] == "array"
         # The enum comes from the registry, so the schema can never offer a kind the
@@ -563,3 +572,88 @@ def test_list_areas_reports_the_offline_inventory(tmp_path, monkeypatch):
     assert [a["name"] for a in listed] == ["krkonose"]
     assert listed[0]["bbox"] == [49.9, 13.9, 50.2, 14.2]
     assert listed[0]["routes"] == 1 and listed[0]["pois"] == 1
+
+
+# --------------------------------------------- routes_to_poi (route TO an object)
+
+
+def test_routes_to_poi_reaches_the_engine(monkeypatch):
+    """The tool hands the start, the destination kinds and both knobs to the engine —
+    and keeps `kinds` (where to walk to) apart from `poi` (what the route must pass)."""
+    from hike_finder.poi import PoiHit
+
+    captured = {}
+
+    def _stub(start, kinds, criteria, cfg=None, *, n=None, search_radius_m=None, **kw):
+        captured.update(start=start, kinds=kinds, n=n, radius=search_radius_m,
+                        poi_filter=criteria.poi_kinds)
+        return [
+            replace(
+                SAMPLE_HIKES[0], name="Route to ruin “Rotštejn”",
+                destination=PoiHit(kind="ruins", name="Rotštejn", coord=(50.75, 15.61),
+                                   distance_m=85.0),
+            )
+        ]
+
+    monkeypatch.setattr(server, "routes_to_poi", _stub)
+
+    async def _impl():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.call_tool(
+                "routes_to_poi",
+                {"lat": 50.73, "lon": 15.60, "kinds": ["ruins"], "routes": 2,
+                 "search_radius_m": 4500, "poi": ["refreshment"]},
+            )
+
+    result = asyncio.run(_impl())
+    assert not result.isError
+    assert captured["start"] == (50.73, 15.60)
+    assert captured["kinds"] == ("ruins",) and captured["poi_filter"] == ("refreshment",)
+    assert captured["n"] == 2 and captured["radius"] == 4500
+    # The rendered line says what it was drawn to AND that it stops short of it.
+    text = result.content[0].text
+    assert "Route to ruin “Rotštejn”" in text and "ends 85 m from the ruin" in text
+
+
+def test_routes_to_poi_without_kinds_asks_for_them(monkeypatch):
+    """No destination kind is refused, never answered with an unasked-for search.
+
+    The schema marks `kinds` required, so the protocol's own validation catches it first
+    and names the missing field. The handler keeps its own guard for a client that skips
+    validation (or sends an empty list) — checked directly, since the protocol never lets
+    that reach it here.
+    """
+    def _fail(*a, **k):
+        raise AssertionError("the engine must not run without a destination kind")
+
+    monkeypatch.setattr(server, "routes_to_poi", _fail)
+
+    async def _impl():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.call_tool("routes_to_poi", {"lat": 50.73, "lon": 15.60})
+
+    result = asyncio.run(_impl())
+    assert result.isError and "kinds" in result.content[0].text
+
+    text = asyncio.run(
+        server._call_routes_to_poi({"lat": 50.73, "lon": 15.60, "kinds": []})
+    )[0].text
+    assert "what to walk to" in text
+
+
+def test_routes_to_poi_empty_result_is_destination_shaped(monkeypatch):
+    """The three causes are named, and the wording never reads as a filtered area search."""
+    monkeypatch.setattr(server, "routes_to_poi", lambda *a, **k: [])
+
+    async def _impl():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.call_tool(
+                "routes_to_poi", {"lat": 50.73, "lon": 15.60, "kinds": ["ruins"]}
+            )
+
+    text = asyncio.run(_impl()).content[0].text
+    assert "No route could be drawn" in text
+    assert "search_radius_m" in text and "off the trail network" in text
+    assert "max_distance_km" in text
+    assert "MAPPED" in text          # a miss is about the map, not the world
+    assert "in the selected area" not in text

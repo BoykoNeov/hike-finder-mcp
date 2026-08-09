@@ -80,8 +80,11 @@
 
   HIKE_POI_RADIUS_M     --poi mode: how close a route must pass to a church / ruin /
                         peak to count as reaching it, metres (default 250). Measured to
-                        the route's mapped vertices, so keep it comfortably above the
-                        typical node spacing on a straight member way.
+                        the route's LINE (each candidate is projected onto the member
+                        way), so node spacing does not inflate it.
+  HIKE_POI_SEARCH_RADIUS_M  --to-poi mode: how far from the start point to look for
+                        candidate destinations, metres (default 3000). It also bounds
+                        the fetched area, so raising it makes the Overpass query heavier.
 """
 from __future__ import annotations
 
@@ -203,12 +206,21 @@ class Config:
     routes_max_snap_km: float = _f("HIKE_ROUTES_MAX_SNAP_KM", "2.0")
 
     # Points-of-interest destination filter (poi.py): how close a route must come to a
-    # registered object to count as reaching it. 250 m is deliberately generous —
-    # proximity is measured to the route's mapped VERTICES, and a straight member way
-    # can run a couple of hundred metres between nodes, so a tighter radius would start
-    # missing objects the walk genuinely passes. Raise it for "somewhere on this hike",
-    # lower it for "right on the trail".
+    # registered object to count as reaching it. 250 m is deliberately generous — a POI
+    # is rarely mapped exactly on the trail (a church sits behind its wall, a peak marker
+    # a few metres off the ridge path), so a tighter radius would start missing objects
+    # the walk genuinely passes. Raise it for "somewhere on this hike", lower it for
+    # "right on the trail".
     poi_radius_m: float = _f("HIKE_POI_RADIUS_M", "250")
+
+    # Route-to-a-point-of-interest mode (`--to-poi`, search.routes_to_poi): how far from
+    # the picked start to look for candidate destinations. Unlike poi_radius_m — which
+    # asks "does this route pass a ruin?" — this one bounds "which ruins are even
+    # candidates", and with it the fetched area (the box is padded by the route length
+    # cap, which is derived from this radius when no --max-distance is given). 3 km keeps
+    # the query comparable to --around's; raising it is the lever when the mode reports
+    # that nothing of the kind is mapped nearby, at a real cost in query weight.
+    poi_search_radius_m: float = _f("HIKE_POI_SEARCH_RADIUS_M", "3000")
 
 
 def load() -> Config:

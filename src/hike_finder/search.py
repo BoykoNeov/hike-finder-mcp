@@ -24,6 +24,7 @@ from dataclasses import replace
 
 from . import cache as _cache
 from . import config as _config
+from . import poi as _poi
 from .compose import (
     _assemble,
     _dijkstra,
@@ -293,6 +294,14 @@ def _measure_composed(
                 # point nearest your parking/lift), not the geometric head. Label only — the
                 # coords stay unrotated, so gain/loss is byte-identical to an unanchored run.
                 h.start = route.anchor
+            # A route drawn TO an object (``routes_to_poi``) carries its destination on the
+            # assembled route — set from outside, like ``anchor``, so the compose layer stays
+            # unaware of POIs. Handing it over here rather than re-deriving it in the caller
+            # keeps the synthetic-id scheme above the ONLY place that knows how a Hike maps
+            # back to its route.
+            dest = getattr(route, "destination", None)
+            if dest is not None:
+                h.destination = dest
     return hikes
 
 
@@ -715,6 +724,288 @@ def route_via(
         near_miss=False, roundtrip="yes" if loop else "no",
         name="Circular route via points" if loop else "Route via points",
     )
+
+
+# Cheap-pass width for --to-poi: how many candidate destinations survive the crow-flies
+# sort, as a multiple of the routes asked for (never fewer than the floor). Each survivor
+# costs a projection against every segment in ``snap_points`` plus one Dijkstra, so this is
+# what keeps "--to-poi peak" in a summit-dense range from paying for fifty of them. The
+# multiple exists because crow-flies rank is NOT trail rank — the nearest ruin as the crow
+# flies can sit across a gorge with no trail to it — so a straight top-n would confidently
+# hand back the wrong n. Whether the margin was wide enough is never assumed: it is checked
+# against the first EXCLUDED candidate's crow-flies distance (see the certificate in
+# ``routes_to_poi``), which is a lower bound on its trail distance.
+_POI_CANDIDATE_FACTOR = 4
+_POI_CANDIDATE_FLOOR = 10
+
+# The fetched box is padded this much beyond the length cap. ``_bbox_around`` converts
+# metres to degrees with 111 320 m/deg, while ``haversine_m`` — the metric every distance
+# in this mode is actually measured with — puts a degree of latitude at ~111 195 m, so a
+# box asked for "5 km" is ~4994 m by the ruler that matters. Nowhere near enough to matter
+# in practice, but the pad here is carrying a COMPLETENESS argument ("no qualifying route
+# can be clipped"), and an argument that is 0.1 % false is false. A 1 % margin buries the
+# projection mismatch and float slop alike, for a fetched area 2 % larger. Same reasoning,
+# same shape, as ``poi._CELL_MARGIN``.
+_POI_PAD_MARGIN = 1.01
+
+
+def _poi_route_cap_m(crow_m: float, criteria: Criteria, cfg: Config) -> float:
+    """How long a route to a destination ``crow_m`` away in a straight line may run.
+
+    ``--max-distance`` wins outright when given. Otherwise it is ``routes_max_factor`` x the
+    straight-line distance (the ``routes_between`` rule, applied PER destination so a ruin
+    400 m away can't justify a 15 km wander), with a ``routes_pad_km`` floor above that
+    distance — without it an object 100 m off the trail would get a 300 m cap and read as
+    unreachable, when the trail to it simply starts by heading the other way.
+
+    Monotone non-decreasing in ``crow_m``, which is what lets the *search radius* stand in
+    for the worst case: ``_poi_route_cap_m(search_radius, …)`` bounds the cap of every
+    candidate, and so bounds every returned route's length. That is the whole basis of the
+    fetched-bbox completeness argument in :func:`routes_to_poi`.
+    """
+    if criteria.max_distance_km is not None:
+        return criteria.max_distance_km * 1000.0
+    return max(cfg.routes_max_factor * crow_m, crow_m + cfg.routes_pad_km * 1000.0)
+
+
+def routes_to_poi(
+    start: Coord,
+    kinds,
+    criteria: Criteria,
+    cfg: Config | None = None,
+    *,
+    n: int | None = None,
+    search_radius_m: float | None = None,
+    user_agent: str | None = None,
+    overpass_url: str | None = None,
+    elevation_mode: str | None = None,
+    dem_dir: str | None = None,
+) -> list[Hike]:
+    """Routes from a picked ``start`` to the ``n`` nearest objects of ``kinds`` — "draw me
+    a route to the nearest ruin".
+
+    The inverse of ``criteria.poi_kinds``, which FILTERS routes that already exist by what
+    they happen to pass. Here the object is the *destination*: candidates are found first,
+    then a route is drawn to each. Nearest means nearest **along the trails**, not as the
+    crow flies — one Dijkstra per candidate over the same graph the other point-based modes
+    use — because "the nearest ruin" that needs a 9 km detour around a gorge is not the one
+    you want to walk to.
+
+    Like the other point-based modes it derives its own area, snaps everything onto the
+    network, and measures the result through the *unchanged* ``find_hikes``, so offline ==
+    online holds. Two properties are worth stating precisely, because "nearest" is a
+    superlative and a superlative can be quietly wrong:
+
+    * **The fetched box cannot clip a qualifying route.** A shortest path of length ``L``
+      has every vertex within ``L`` of its start, so padding the box by the length cap
+      (:func:`_poi_route_cap_m` at the search radius, the worst case) makes any route within
+      that cap unclippable. This deliberately follows ``compose_loops_around``'s
+      *provably-tight-pad* precedent rather than ``routes_between``'s accepted-clipping one:
+      there, clipping loses an alternative and the user sees fewer routes; here it would
+      silently promote the second-nearest ruin to "the nearest". The price is that
+      ``--max-distance`` sizes the FETCH as well as capping the results — a heavy query
+      when it is set high, exactly as ``--around``'s max-loop does.
+    * **"Nearest" is checked, not asserted.** Straight-line distance is a lower bound on
+      trail distance, so any object beyond the search radius has a trail distance beyond it
+      too — and likewise for any candidate dropped by the cheap pass. When the last route
+      returned is longer than both of those bounds, a nearer object *could* be hiding
+      outside them, and that is said out loud rather than assumed away.
+
+    Returns the routes sorted nearest-first by trail distance, each carrying its
+    ``Hike.destination`` (with the measured distance from the route's end to the object —
+    the route ends at the nearest point ON THE NETWORK, which is not the object itself).
+    An empty result is never silent: the three causes — nothing of that kind mapped nearby,
+    everything found sitting off-network, and nothing reachable within the cap — are
+    distinguished in the log, because they need three different fixes.
+    """
+    cfg = cfg or _config.load()
+    kinds = _poi.normalise_kinds(kinds)
+    if not kinds:
+        raise ValueError(
+            "routes_to_poi needs at least one destination kind — pick from: "
+            + ", ".join(sorted(_poi.POI_KINDS))
+        )
+    n = max(1, n if n is not None else cfg.routes_k)
+    radius_m = (
+        search_radius_m if search_radius_m is not None else cfg.poi_search_radius_m
+    )
+    # A drawn route is synthesised, not a mapped relation, so a stray `circular` shape filter
+    # would drop it to nothing — neutralise it exactly as routes_between/route_via do, so all
+    # three frontends behave identically. Distance/gain/access filters still apply.
+    if criteria.circular is not None:
+        criteria = replace(criteria, circular=None)
+
+    # The pad IS the worst-case length cap — see the docstring: a route within the cap has
+    # every vertex within the cap of the start, so it cannot be clipped out of this box.
+    pad_m = _poi_route_cap_m(radius_m, criteria, cfg) * _POI_PAD_MARGIN
+    bbox = _bbox_around(start, pad_m)
+    cache = _cache.from_config(cfg)
+    area = _fetch_area(
+        bbox, cfg, cache, user_agent=user_agent, overpass_url=overpass_url, read_cache=True
+    )
+
+    # Candidates: registered objects of the asked-for kinds within the search radius. The
+    # radius is measured crow-flies, which is a LOWER bound on the walk, so nothing inside
+    # the true "nearest by trail" set can be excluded here without also being farther than
+    # the radius on foot.
+    labels = ", ".join(_poi.POI_KINDS[k].plural for k in kinds)
+    scored = [
+        (haversine_m(start, p["coord"]), p)
+        for p in area.pois
+        if p.get("kind") in kinds
+    ]
+    scored = [(d, p) for d, p in scored if d <= radius_m]
+    if not scored:
+        _log.warning(
+            "route to POI: nothing of that kind (%s) is mapped within %.1f km of your point "
+            "— raise the search radius (HIKE_POI_SEARCH_RADIUS_M / --to-poi-radius), or pick "
+            "another kind. A miss means nothing of that kind is *mapped* in OSM here, not "
+            "that nothing is there.",
+            labels, radius_m / 1000.0,
+        )
+        return []
+    # Deterministic cheap-pass order: distance, then coordinate/name, so an area with two
+    # equidistant churches ranks them the same way every run.
+    scored.sort(key=lambda dp: (dp[0], dp[1]["coord"], dp[1].get("name") or ""))
+    keep = max(_POI_CANDIDATE_FACTOR * n, _POI_CANDIDATE_FLOOR)
+    # The nearest candidate the cheap pass DROPPED, as a crow-flies (lower-bound) distance.
+    # Nothing dropped can beat this on foot, which is what makes the certificate below sound.
+    excluded_crow_m = scored[keep][0] if len(scored) > keep else math.inf
+    candidates = scored[:keep]
+
+    graph = build_trail_graph(clip_routes_to_bbox(area.routes, bbox))
+    if not graph.segments:
+        _log.warning("route to POI: no trails found in the area around your point")
+        return []
+    # Snap the start AND every candidate in ONE call, so points landing on the same segment
+    # split it at every position at once (see compose.snap_points).
+    graph, snapped = snap_points(graph, [start] + [p["coord"] for _d, p in candidates])
+    (src, src_d), poi_snaps = snapped[0], snapped[1:]
+    if src < 0:
+        _log.warning("route to POI: no trails found in the area around your point")
+        return []
+    max_snap_m = cfg.routes_max_snap_km * 1000.0
+    if src_d > max_snap_m:
+        _log.warning(
+            "route to POI: your start point is %.1f km from the nearest trail (limit %.1f km) "
+            "— no routes drawn; move it closer to a marked trail or raise "
+            "HIKE_ROUTES_MAX_SNAP_KM",
+            src_d / 1000.0, cfg.routes_max_snap_km,
+        )
+        return []
+
+    # One shortest path per candidate. `_dijkstra` is reused untouched (it is load-bearing for
+    # Yen and route_via) and hands back the ordered segment ids `_assemble` needs, so a
+    # per-candidate call is both the lower-risk and the smaller option next to a shortest-path
+    # tree with its own path reconstruction.
+    found: list[tuple[float, float, dict, list[int]]] = []  # (trail_m, snap_m, poi, segs)
+    off_network = unreachable = too_far = at_start = 0
+    for (crow_m, p), (node, snap_d) in zip(candidates, poi_snaps):
+        if node < 0 or snap_d > max_snap_m:
+            off_network += 1
+            continue
+        if node == src:
+            at_start += 1  # you are already standing at it — there is no route to draw
+            continue
+        res = _dijkstra(graph, src, node)
+        if res is None:
+            unreachable += 1  # a gap in the network, or a different connected component
+            continue
+        segs, _nodes, length_m = res
+        if not segs:
+            at_start += 1
+            continue
+        if length_m > _poi_route_cap_m(crow_m, criteria, cfg):
+            too_far += 1
+            continue
+        found.append((length_m, snap_d, p, segs))
+    if not found:
+        _log.warning(
+            "route to POI: found %d %s within %.1f km, but none could be routed to "
+            "(%d off-network, %d not connected to your start by any trail, %d only via a "
+            "route longer than the cap, %d at your start point) — move the start onto a "
+            "marked trail, raise --max-distance, or widen the search radius.",
+            len(candidates), labels, radius_m / 1000.0,
+            off_network, unreachable, too_far, at_start,
+        )
+        return []
+    # Nearest ON FOOT first; coordinate/name break ties so the order is stable run to run.
+    found.sort(key=lambda f: (f[0], f[2]["coord"], f[2].get("name") or ""))
+    chosen = found[:n]
+
+    # The certificate. Straight-line distance bounds trail distance from below, so the answer
+    # is provably the true nearest-n only while the longest route returned stays inside BOTH
+    # the search radius and the nearest dropped candidate. Past either, a nearer object may
+    # be hiding outside what was looked at — which is said, not assumed away.
+    worst_m = chosen[-1][0]
+    bound_m = min(radius_m, excluded_crow_m)
+    if worst_m > bound_m:
+        _log.warning(
+            "route to POI: the farthest route returned is %.1f km on foot, past the %.1f km "
+            "%s — an object closer on foot may lie outside it, so these are the nearest "
+            "*found*, not provably the nearest. Widen the search radius to be sure.",
+            worst_m / 1000.0, bound_m / 1000.0,
+            "search radius" if bound_m == radius_m else "nearest candidate not examined",
+        )
+    _log.warning(
+        "route to POI: %d route(s) to the nearest %s (start snapped %.0f m to the network); "
+        "trail distances %s",
+        len(chosen), labels, src_d,
+        ", ".join(f"{m / 1000.0:.1f} km" for m, _s, _p, _g in chosen),
+    )
+    # A SHORT answer is as quiet a failure as an empty one, and the mode exists to not be
+    # quiet: the counters that explain an empty result explain a partial one too, so they
+    # are reported whenever they are non-zero — not only when everything failed.
+    reasons = ", ".join(
+        f"{count} {why}"
+        for count, why in (
+            (off_network, "off-network"),
+            (unreachable, "not connected to your start by any trail"),
+            (too_far, "only via a route past the length cap"),
+            (at_start, "at your start point already"),
+        )
+        if count
+    )
+    if reasons:
+        _log.warning("route to POI: %s candidate(s) were skipped along the way.", reasons)
+    if len(chosen) < n:
+        _log.warning(
+            "route to POI: %d route(s), not the %d you asked for — nothing else of that "
+            "kind within %.1f km could be routed to; widen the search radius or raise "
+            "--max-distance.",
+            len(chosen), n, radius_m / 1000.0,
+        )
+
+    start_coord = graph.coords[src]
+    routes = []
+    for length_m, snap_d, p, segs in chosen:
+        route = _assemble(graph, src, segs)
+        # Render the route from where you picked, not from the assembled line's head.
+        route.anchor = start_coord
+        # Set from outside, like `anchor` — see the note in `_measure_composed`. The distance
+        # is the object's own snap distance: the route ends at that snapped point on the
+        # network, so this is exactly how far its end lands from the object.
+        route.destination = _poi.PoiHit(
+            kind=p["kind"], name=p.get("name"), coord=p["coord"], distance_m=snap_d
+        )
+        routes.append(route)
+
+    provider = _provider(cfg, elevation_mode, dem_dir, cache)
+    hikes = _measure_composed(
+        graph, routes, area, criteria, cfg, provider, bbox,
+        near_miss=False, roundtrip="no", name="Route to a point of interest",
+    )
+    for h in hikes:
+        if h.destination is not None:
+            # Name each route for what it was drawn to, so a list of them reads as a list of
+            # destinations. The "how far the end lands from it" caveat rides on `destination`
+            # and is rendered separately (format.format_hike) — never folded into the name.
+            named = f' “{h.destination.name}”' if h.destination.name else ""
+            h.name = f"Route to {h.destination.label}{named}"
+    # Nearest-first on the FINAL measured distance, so the reported km is what the order
+    # claims (graph length and measured length differ slightly — see routes_between).
+    hikes.sort(key=lambda h: h.distance_km)
+    return hikes
 
 
 def download_area(

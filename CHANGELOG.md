@@ -8,6 +8,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Draw a route *to* the nearest ruin** (`--from LAT LON --to-poi KIND`, MCP `routes_to_poi`,
+  web "Route to the nearest church / ruin / peak…"). The fourth point-based mode, and the
+  inverse of `--poi`: that one *filters* routes by what they happen to pass, this one *draws*
+  the route to the object. Same eighteen kinds, several OR-ed; `--routes N` (default 3) says
+  how many destinations and `--to-poi-radius` / `HIKE_POI_SEARCH_RADIUS_M` (default 3000 m)
+  how far to look for them. The two flags combine — "a route to the nearest ruin that also
+  passes a pub".
+  - **Nearest means nearest along the trails**, not as the crow flies: every candidate gets
+    its own shortest path over the real trail graph, so a ruin across a gorge with no path to
+    it doesn't win on straight-line distance.
+  - **The route ends at the nearest point on a trail, not at the object**, and that gap is
+    measured and always reported — `ends 85 m from the ruin`, never "arrives at".
+  - **"Nearest" is checked, not asserted.** Straight-line distance lower-bounds the walk, so
+    anything outside the search radius is provably farther on foot. When the longest route
+    returned exceeds that radius (or the nearest candidate the cheap pass dropped), the mode
+    says the answer is *not provably the nearest* instead of leaving the superlative standing.
+  - **The fetched area is padded by the route length cap**, which makes clipping a qualifying
+    route impossible — so `--max-distance` sizes the *fetch* as well as the results, and a
+    high one makes a heavy query. Per destination the cap defaults to 3× the straight-line
+    distance to it.
+  - **An empty result names which of three things happened** — nothing of that kind mapped
+    within the radius, objects found but off the trail network, or reachable only past the
+    length cap — because they need three different fixes. Live-only: pairing it with `--area`
+    is a loud error, not a silently-filtered offline search.
 - **Hike to something — filter routes by the objects they pass** (`--poi KIND`, MCP `poi`,
   web "Must pass"). Distance and gain were already queryable; this adds the *destination*
   dimension: "a 12 km hike, 400 m of climbing, that goes to a ruin." Eighteen kinds

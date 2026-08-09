@@ -91,6 +91,10 @@ route, not of how it was found. It runs in the cheap pass, so a `--poi` search c
 in OSM near a route, not that nothing is there. A misspelled kind is a loud error, never a
 silent empty result.
 
+> `--poi` **filters** existing routes by what they pass. To have a route **drawn to** the
+> nearest ruin instead, see [`--to-poi`](#point-based-route-drawing-pick-points-on-a-map-get-routes)
+> below — the same kinds, the opposite question. They combine.
+
 ### Near-miss results (close-but-not-matching)
 
 When a query returns little or nothing, the search can also list routes that
@@ -229,8 +233,8 @@ trailhead). The loop geometry — and its gain/loss — is unchanged; only the s
 
 ### Point-based route drawing (pick point(s) on a map, get routes)
 
-Two modes that take **points instead of a bounding box** — you don't draw a box, you drop
-a pin (or two). Both derive their own search area from the point(s), so **omit `--bbox`**.
+Four modes that take **points instead of a bounding box** — you don't draw a box, you drop
+a pin (or two). All derive their own search area from the point(s), so **omit `--bbox`**.
 
 **Circular routes near a point** (`--around LAT LON`) — "draw me a ~10 km loop starting
 *here*":
@@ -305,12 +309,66 @@ largely out-and-back rather than passed off as a loop.
 > corridor can be clipped — raise those knobs if an expected detour is missing. `--min`/
 > `--max-distance` still filter the linked route by its total length.
 
-All three modes are **live-map only** and exposed on every frontend: the web UI has a
-**Mode** selector (pick "Circular routes near a point", "Routes between two points", or
-"Route linking several points" — then click the map to drop your pin(s), with an *Undo last
-point* button and a *Close into a circular route* checkbox for `--via`); MCP has the
-`circular_routes`, `routes_between`, and `route_via` tools. Results carry full computed stats
-and export to GPX/GeoJSON like any other route.
+**A route to the nearest ruin** (`--from LAT LON --to-poi KIND`) — "I'm *here*; draw me a
+route to the nearest ruin":
+
+```bash
+# The three nearest ruins or castles you can walk to from this spot:
+hike-finder --from 50.73 15.60 --to-poi ruins,castle --routes 3 \
+            --user-agent you@example.com
+
+# Just the nearest pub, looking further afield for it:
+hike-finder --from 50.73 15.60 --to-poi refreshment --routes 1 --to-poi-radius 6000 \
+            --user-agent you@example.com
+```
+
+Same eighteen kinds as `--poi` (`--list-pois`), but they mean something different here.
+**`--poi` filters** routes you already found by what they happen to pass; **`--to-poi`
+draws** the route to the object. You can use both at once — "a route to the nearest ruin
+that also passes a pub" — because they answer different questions.
+
+**Nearest means nearest *along the trails*, not as the crow flies.** A ruin 1 km away
+across a gorge with no path to it loses to one 1.4 km away on a marked trail: each
+candidate gets its own shortest path over the real trail graph, and the results come back
+ordered by the walk. `--routes N` (default 3) says how many destinations; `--to-poi-radius`
+(default 3000 m, `HIKE_POI_SEARCH_RADIUS_M`) says how far to look for them.
+
+Each result names what it was drawn to and how far its end lands from it:
+
+```
+Route to ruin “Rotštejn” — 4.2 km, +180 m / -95 m [one-way] (start 50.7300,15.6000,
+composed of KČT red + KČT blue)  [ends 85 m from the ruin]
+```
+
+> **The route ends at the nearest point on a *trail*, not at the object.** That gap is
+> measured and always reported — "ends 85 m from the ruin", never "arrives at". The same
+> honesty rule as car/lift access applies: no result means nothing of that kind is
+> *mapped* in OSM near you, not that nothing is there.
+>
+> **"Nearest" is checked, not asserted.** Straight-line distance is a lower bound on the
+> walk, so anything outside the search radius is provably farther on foot too. When the
+> longest route returned is *longer* than that radius, a nearer object could be hiding just
+> outside it — and the tool says so rather than leaving the superlative standing. Widen
+> `--to-poi-radius` to settle it.
+>
+> **`--max-distance` sizes the fetch, not just the results.** The area fetched is padded by
+> the route length cap, which makes clipping a qualifying route impossible — that is what
+> lets "nearest" mean nearest. The cost is that a high `--max-distance` (or a wide
+> `--to-poi-radius`) makes a heavy Overpass query. Per destination the default cap is
+> 3× the straight-line distance to it, so a ruin you can see does not license an arbitrarily
+> long walk unless you ask for one.
+>
+> **Empty results say which of three things happened** — nothing of that kind mapped within
+> the radius, objects found but sitting off the trail network, or reachable only past the
+> length cap — because they need three different fixes.
+
+All four modes are **live-map only** and exposed on every frontend: the web UI has a
+**Mode** selector (pick "Circular routes near a point", "Routes between two points",
+"Route linking several points", or "Route to the nearest church / ruin / peak…" — then
+click the map to drop your pin(s), with an *Undo last point* button and a *Close into a
+circular route* checkbox for `--via`); MCP has the `circular_routes`, `routes_between`,
+`route_via`, and `routes_to_poi` tools. Results carry full computed stats and export to
+GPX/GeoJSON like any other route.
 
 ### Export — GPX / GeoJSON (load into your phone or GPS)
 
@@ -621,6 +679,7 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 | `HIKE_COMPOSE_MAX_LOOPS` | Compose mode: max loops returned, ranked by compactness (roundest first); bounds the per-loop elevation cost | `15` |
 | `HIKE_COMPOSE_MIN_COMPACTNESS` | Compose mode: drop a loop below this Polsby–Popper compactness (4πA/P²) — a degenerate thin sliver, not a real loop; `0` disables | `0.05` |
 | `HIKE_POI_RADIUS_M` | How close a route must pass to a `--poi` object (church, ruin, peak…) to count as reaching it, metres. Measured to the trail line | `250` |
+| `HIKE_POI_SEARCH_RADIUS_M` | `--to-poi` mode: how far from the start to look for destinations, metres. Also sizes the fetched area, so raising it makes the query heavier | `3000` |
 
 > **Snapshot caveat:** `--area` locks the snapshot's sample interval (the saved
 > elevation points were taken at it), so `HIKE_SAMPLE_INTERVAL` can't break an

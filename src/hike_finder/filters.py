@@ -111,6 +111,14 @@ class Hike:
     # POI filter is active — so the ordinary search costs nothing extra — and it is what
     # `Criteria.poi_kinds` filters on. Empty on every non-POI search.
     pois: tuple[PoiHit, ...] = ()
+    # The object this route was DRAWN TO (see search.routes_to_poi), as opposed to the
+    # objects in `pois`, which it merely passes. Kept in its own field precisely because
+    # the two are different claims: `pois` is a filter's evidence, this is the route's
+    # reason for existing. Its `distance_m` is how far the route's end sits from the
+    # object — the route ends at the nearest point ON THE TRAIL NETWORK, which is not
+    # the object itself, and the renderer says "ends N m from" rather than "arrives at"
+    # so that gap is never papered over. None on every other kind of search.
+    destination: PoiHit | None = None
 
 
 @dataclass

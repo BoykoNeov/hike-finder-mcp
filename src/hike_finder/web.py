@@ -29,6 +29,7 @@ from .search import (
     download_area,
     route_via,
     routes_between,
+    routes_to_poi,
     search_hikes,
     search_snapshot,
 )
@@ -108,6 +109,7 @@ INDEX_HTML = """<!doctype html>
       <option value="around">Circular routes near a point</option>
       <option value="between">Routes between two points</option>
       <option value="via">Route linking several points</option>
+      <option value="topoi">Route to the nearest church / ruin / peak…</option>
     </select>
     <div id="around_ctl" style="display:none;">
       <p class="muted">Click the map to drop your point. Loops passing within the radius of it (using the min/max distance below, default 3–15 km) are drawn, each starting there. Live map only.</p>
@@ -124,6 +126,17 @@ INDEX_HTML = """<!doctype html>
       <label><input type="checkbox" id="via_loop" style="width:auto; vertical-align:middle;"> Close into a circular route</label>
       <p class="muted">Return to the first point by a different way where the trail network allows, so the loop avoids retracing itself.</p>
       <button id="via_undo" style="margin-top:0;" title="Remove the last waypoint you dropped">Undo last point</button>
+    </div>
+    <div id="topoi_ctl" style="display:none;">
+      <p class="muted">Click the map to drop your <b>start</b>, pick what to walk to, and the routes to the nearest ones are drawn — nearest <b>along the trails</b>, not as the crow flies. Each route ends at the closest point on a trail, and how far that lands from the object is shown. Live map only.</p>
+      <label>Walk to</label>
+      <select id="to_poi" multiple size="7"></select>
+      <p class="muted">Ctrl/&#8984;-click for several — the nearest of <b>any</b> of them. This is the opposite of “Must pass” below: that one filters routes you already found, this one draws the route to the object.</p>
+      <div class="row">
+        <div><label>How many</label><input id="to_poi_n" type="number" step="1" min="1" value="3"></div>
+        <div><label>Look within (m)</label><input id="to_poi_radius_m" type="number" step="500" placeholder="3000"></div>
+      </div>
+      <p class="muted">“Look within” also sizes the area fetched, so raising it makes the query heavier — but it is the lever when nothing of the kind is found nearby.</p>
     </div>
 
     <label>Shape</label>
@@ -192,6 +205,7 @@ const areaBoxes = L.layerGroup().addTo(map);    // outlines of the already-downl
 let lastParams = null;                           // params of the last search, for GPX/GeoJSON download
 let aroundPt = null, fromPt = null, toPt = null; // picked points for the point-based modes
 let viaPts = [];                                 // ordered waypoints for the 'via' mode
+let toPoiPt = null;                              // start point for the 'route to the nearest…' mode
 
 function modeName(){ return document.getElementById('mode').value; }
 
@@ -300,6 +314,7 @@ function drawPicks(){
     // Number the waypoints so their visiting order is visible on the map.
     viaPts.forEach((pt, i) => dot(pt, String(i + 1), '#1967d2'));
   }
+  if (modeName() === 'topoi' && toPoiPt) dot(toPoiPt, 'start', '#188038');
 }
 
 function onMapClick(e){
@@ -312,6 +327,7 @@ function onMapClick(e){
     if (!fromPt || (fromPt && toPt)){ fromPt = e.latlng; toPt = null; }
     else { toPt = e.latlng; }
   } else if (m === 'via'){ viaPts.push(e.latlng); }
+  else if (m === 'topoi'){ toPoiPt = e.latlng; }
   else { return; }
   drawPicks();
   updateHint();
@@ -327,6 +343,9 @@ function updateHint(){
   else if (m === 'via') s.textContent = viaPts.length < 2
       ? ('Click the map to drop waypoints (' + viaPts.length + ' so far, need 2+).')
       : (viaPts.length + ' waypoints set — press Search (or keep adding).');
+  else if (m === 'topoi') s.textContent = !toPoiPt
+      ? 'Click the map to drop your start.'
+      : (selectedToPois().length ? 'Start set — press Search.' : 'Now pick what to walk to.');
   else s.textContent = '';
 }
 
@@ -335,6 +354,7 @@ function updateMode(){
   document.getElementById('around_ctl').style.display = (m === 'around') ? 'block' : 'none';
   document.getElementById('between_ctl').style.display = (m === 'between') ? 'block' : 'none';
   document.getElementById('via_ctl').style.display = (m === 'via') ? 'block' : 'none';
+  document.getElementById('topoi_ctl').style.display = (m === 'topoi') ? 'block' : 'none';
   // Composing/naming/area only make sense in the plain area mode.
   const areaOnly = (m === 'area');
   document.getElementById('compose_loops').disabled = !areaOnly;
@@ -343,8 +363,9 @@ function updateMode(){
   btn.textContent = m === 'around' ? 'Search loops near the point'
                   : m === 'between' ? 'Search routes between the points'
                   : m === 'via' ? 'Draw the route through the points'
+                  : m === 'topoi' ? 'Draw routes to the nearest'
                   : 'Search this map area';
-  picks.clearLayers(); aroundPt = fromPt = toPt = null; viaPts = [];
+  picks.clearLayers(); aroundPt = fromPt = toPt = toPoiPt = null; viaPts = [];
   markers.clearLayers(); routeLines.clearLayers(); poiMarkers.clearLayers();
   updateHint();
 }
@@ -441,17 +462,25 @@ async function loadPois(){
   // offer something the engine would reject.
   try {
     const kinds = await (await fetch('/api/pois')).json();
-    const sel = document.getElementById('poi');
-    for (const k of kinds){
-      const o = document.createElement('option');
-      o.value = k.kind; o.textContent = k.label;
-      sel.appendChild(o);
+    // The SAME registry feeds both lists: what a route may be filtered by ("must pass")
+    // and what it may be drawn to ("walk to"). One fetch, so the two can never disagree.
+    for (const id of ['poi', 'to_poi']){
+      const sel = document.getElementById(id);
+      for (const k of kinds){
+        const o = document.createElement('option');
+        o.value = k.kind; o.textContent = k.label;
+        sel.appendChild(o);
+      }
     }
   } catch (e){ /* best-effort */ }
 }
 
 function selectedPois(){
   return Array.from(document.getElementById('poi').selectedOptions).map(o => o.value);
+}
+
+function selectedToPois(){
+  return Array.from(document.getElementById('to_poi').selectedOptions).map(o => o.value);
 }
 
 async function search(){
@@ -472,6 +501,14 @@ async function search(){
     if (viaPts.length < 2){ status.textContent = 'Drop at least two waypoints on the map first.'; return; }
     for (const p of viaPts) params.append('via', p.lat + ',' + p.lng);  // repeated, order preserved
     if (document.getElementById('via_loop').checked) params.set('via_loop', 'true');
+  } else if (mode === 'topoi'){
+    if (!toPoiPt){ status.textContent = 'Click the map to drop your start first.'; return; }
+    const kinds = selectedToPois();
+    if (!kinds.length){ status.textContent = 'Pick what to walk to (a church, a ruin, a peak…).'; return; }
+    params.set('to_poi_lat', toPoiPt.lat); params.set('to_poi_lon', toPoiPt.lng);
+    for (const k of kinds) params.append('to_poi', k);
+    const n = val('to_poi_n'); if (n !== null) params.set('to_poi_n', n);
+    const rr = val('to_poi_radius_m'); if (rr !== null) params.set('to_poi_radius_m', rr);
   } else if (area){
     params.set('area', area);                 // offline: bbox comes from the snapshot
   } else {
@@ -511,10 +548,18 @@ async function search(){
     const near = data.filter(h => h.near_miss).length;
     const composing = mode === 'area' && !area && document.getElementById('compose_loops').checked;
     const viaLoop = mode === 'via' && document.getElementById('via_loop').checked;
-    const noun = (mode === 'between') ? ' route(s)'
+    const noun = (mode === 'between' || mode === 'topoi') ? ' route(s)'
                : (mode === 'via') ? (viaLoop ? ' circular route' : ' route')
                : (mode === 'around' || composing) ? ' loop(s)' : ' match(es)';
-    if (data.length === 0 && pois.length){
+    if (data.length === 0 && mode === 'topoi'){
+      // Destination-shaped, and checked BEFORE the "must pass" wording below: nothing was
+      // filtered out of an area here, a route to an object could not be drawn. The three
+      // causes need three different fixes, so name all three rather than guess.
+      status.textContent = 'No route could be drawn to a ' + selectedToPois().join(' or a ')
+        + ' — either nothing of that kind is mapped within “look within”, the ones found sit '
+        + 'off the trail network, or every route to them runs past the max distance. '
+        + '(A miss means nothing of that kind is mapped in OSM near your start.)';
+    } else if (data.length === 0 && pois.length){
       // With a destination filter on, the usual culprit is the radius or the kind —
       // not the distance/gain band — so point at the right lever.
       status.textContent = 'Nothing here passes a ' + pois.join(' or a ')
@@ -619,6 +664,20 @@ function render(hikes){
                      + '<br>' + Math.round(p.distance_m) + ' m from ' + esc(dispName));
       }
     }
+    // What the route was drawn TO, as opposed to what it passes. Pinned in its own colour
+    // and worded "ends N m from" — the route stops at the nearest point on a trail, which
+    // is not the object, and the map must not imply you can walk onto its doorstep.
+    let goesTo = '';
+    if (h.destination){
+      const d = h.destination;
+      const dname = d.label + (d.name ? ' “' + d.name + '”' : '');
+      goesTo = '<div class="passes">ends ' + Math.round(d.distance_m) + ' m from the '
+             + esc(dname) + '</div>';
+      L.circleMarker([d.lat, d.lon], { radius:8, color:'#c5221f', weight:3,
+          fillColor:'#ffd7d5', fillOpacity:0.95 }).addTo(poiMarkers)
+        .bindPopup('<b>' + esc(d.name || d.label) + '</b><br>' + esc(d.label)
+                   + '<br>route ends ' + Math.round(d.distance_m) + ' m away');
+    }
     // A composed loop has no single relation id — name its constituent trails. An
     // unnamed route given a place label is marked "unnamed OSM relation" so the
     // geocoded label is never mistaken for the route's signed trail name.
@@ -630,6 +689,7 @@ function render(hikes){
     el.innerHTML = '<div class="name">' + esc(dispName) + '</div>'
       + '<div class="meta">' + h.distance_km + ' km &middot; ' + gain + '</div>'
       + '<div class="flags">' + flags.map(f => '<span>' + f + '</span>').join('') + '</div>'
+      + goesTo
       + passes
       + note
       + '<div class="muted">' + ident + '</div>';
@@ -700,14 +760,16 @@ def _str(qs: dict, key: str) -> str | None:
     return v or None
 
 
-def _poi_kinds(qs: dict) -> tuple[str, ...]:
-    """The requested POI kinds, from repeated ``poi=`` and/or comma-separated values.
+def _poi_kinds(qs: dict, key: str = "poi") -> tuple[str, ...]:
+    """The requested POI kinds, from repeated ``key=`` and/or comma-separated values.
 
-    Raises ``ValueError`` (surfaced as a 400) on an unknown kind, so a stale bookmark or
-    a hand-typed query fails visibly instead of quietly matching nothing.
+    Serves both ``poi`` (the "must pass" filter) and ``to_poi`` (the destination to draw a
+    route to) — same spelling rules, same validation, one implementation so the two can't
+    drift. Raises ``ValueError`` (surfaced as a 400) on an unknown kind, so a stale bookmark
+    or a hand-typed query fails visibly instead of quietly matching nothing.
     """
     raw: list[str] = []
-    for item in qs.get("poi", []):
+    for item in qs.get(key, []):
         raw.extend(part for part in str(item).split(",") if part.strip())
     return normalise_kinds(raw)
 
@@ -833,6 +895,7 @@ class Handler(BaseHTTPRequestHandler):
         """
         try:
             poi_kinds = _poi_kinds(qs)
+            to_poi_kinds = _poi_kinds(qs, "to_poi")
         except ValueError as e:
             return None, (400, {"error": str(e)})
         cfg = _cfg_for(qs)
@@ -853,6 +916,15 @@ class Handler(BaseHTTPRequestHandler):
         name_places = _tri(qs, "name_places")
 
         area_name = _str(qs, "area")
+        if area_name and to_poi_kinds:
+            # Routing to an object is a live search (it needs a trail graph and the
+            # elevation pass), and a snapshot search is not one. Saying so beats silently
+            # dropping the destination and returning a filtered area search that LOOKS
+            # like an answer — the CLI rejects the same pair for the same reason.
+            return None, (
+                400,
+                {"error": "to_poi draws a live route; it can't be combined with a saved area"},
+            )
         if area_name:
             # Offline: search a saved snapshot — no network, no API calls.
             path = snapshot_path(area_name)
@@ -879,6 +951,24 @@ class Handler(BaseHTTPRequestHandler):
                 ), None
             except Exception as e:  # noqa: BLE001 — surface any fetch/HTTP failure to the UI
                 return None, _fetch_error(e)
+
+        # Routes to the nearest church / ruin / peak from a picked point (derives its own
+        # area). Distinct from `poi_kinds` above, which only FILTERS whatever routes a
+        # search already produced — here the object is what the route is drawn to.
+        tp_lat, tp_lon = _num(qs, "to_poi_lat"), _num(qs, "to_poi_lon")
+        if to_poi_kinds and tp_lat is not None and tp_lon is not None:
+            n = _num(qs, "to_poi_n")
+            try:
+                return routes_to_poi(
+                    (tp_lat, tp_lon), to_poi_kinds, criteria, cfg=cfg,
+                    n=int(n) if n else None,
+                    search_radius_m=_num(qs, "to_poi_radius_m"),
+                    user_agent=ua,
+                ), None
+            except Exception as e:  # noqa: BLE001
+                return None, _fetch_error(e)
+        if to_poi_kinds and (tp_lat is None) != (tp_lon is None):
+            return None, (400, {"error": "to_poi needs both to_poi_lat and to_poi_lon"})
 
         # N shortest routes between two picked points (derives its own area).
         f_lat, f_lon = _num(qs, "from_lat"), _num(qs, "from_lon")

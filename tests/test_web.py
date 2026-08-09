@@ -291,3 +291,110 @@ def test_hikes_between_two_points_routes_to_routes_between(server, monkeypatch):
     assert captured["start"] == (50.72, 15.58) and captured["finish"] == (50.74, 15.62)
     assert captured["k"] == 4
     assert hikes[0]["composed"] is True and hikes[0]["circular"] is False
+
+
+# ----------------------------------------------- route to the nearest object (--to-poi)
+
+
+def test_hikes_to_poi_routes_to_the_destination_engine(server, monkeypatch):
+    """to_poi_* params reach routes_to_poi with the start, kinds and both knobs — and the
+    destination survives into the JSON so the map can pin it."""
+    from hike_finder.filters import Hike
+    from hike_finder.poi import PoiHit
+
+    captured = {}
+
+    def _fail(*a, **k):
+        raise AssertionError("an area/bbox search must not run in the to-poi mode")
+
+    def _stub(start, kinds, criteria, *, n=None, search_radius_m=None, cfg=None, **kw):
+        captured.update(start=start, kinds=kinds, n=n, radius=search_radius_m,
+                        poi_filter=criteria.poi_kinds)
+        return [
+            Hike(osm_id=-1, name="Route to ruin “Rotštejn”", distance_km=4.2, circular=False,
+                 car_access=False, chairlift_access=False, start=start, gain_m=180, loss_m=95,
+                 composed=True, composed_of=("0402",),
+                 destination=PoiHit(kind="ruins", name="Rotštejn", coord=(50.75, 15.61),
+                                    distance_m=85.0)),
+        ]
+
+    monkeypatch.setattr(web, "search_hikes", _fail)
+    monkeypatch.setattr(web, "routes_between", _fail)
+    monkeypatch.setattr(web, "routes_to_poi", _stub)
+    status, hikes = _get(
+        server + "/api/hikes?to_poi_lat=50.73&to_poi_lon=15.60&to_poi=ruins&to_poi=castle"
+        "&to_poi_n=2&to_poi_radius_m=4500"
+    )
+    assert status == 200 and len(hikes) == 1
+    assert captured["start"] == (50.73, 15.60)
+    assert captured["kinds"] == ("ruins", "castle")
+    assert captured["n"] == 2 and captured["radius"] == 4500
+    # The destination kinds are NOT copied into the "must pass" filter — two questions.
+    assert captured["poi_filter"] == ()
+    d = hikes[0]["destination"]
+    assert d["kind"] == "ruins" and d["name"] == "Rotštejn" and d["distance_m"] == 85.0
+    assert d["lat"] == 50.75 and d["lon"] == 15.61
+
+
+def test_a_search_without_to_poi_reports_no_destination(server):
+    """Every other search serialises `destination: null` — never a stale or invented one."""
+    status, hikes = _get(server + "/api/hikes?area=webtest")
+    assert status == 200 and hikes
+    assert all(h["destination"] is None for h in hikes)
+
+
+def test_unknown_to_poi_kind_is_a_loud_400(server):
+    with pytest.raises(urllib.error.HTTPError) as e:
+        _get(server + "/api/hikes?to_poi_lat=50.73&to_poi_lon=15.60&to_poi=dragon")
+    assert e.value.code == 400
+
+
+def test_to_poi_with_half_a_point_is_a_400_not_a_silent_area_search(server, monkeypatch):
+    # A lat with no lon must not fall through to the bbox branch and answer a different
+    # question than the one asked.
+    monkeypatch.setattr(
+        web, "search_hikes", lambda *a, **k: (_ for _ in ()).throw(AssertionError("fell through"))
+    )
+    with pytest.raises(urllib.error.HTTPError) as e:
+        _get(server + "/api/hikes?to_poi_lat=50.73&to_poi=ruins&south=50.7&west=15.5&north=50.8&east=15.7")
+    assert e.value.code == 400
+
+
+def test_to_poi_against_a_saved_area_is_rejected(server):
+    # Drawing a route is a live search; a snapshot cannot answer it, and quietly returning
+    # a filtered offline search instead would look like an answer to a question not asked.
+    with pytest.raises(urllib.error.HTTPError) as e:
+        _get(server + "/api/hikes?area=webtest&to_poi_lat=50.0&to_poi_lon=14.0&to_poi=ruins")
+    assert e.value.code == 400
+
+
+def test_gpx_download_replays_a_to_poi_search(server, monkeypatch):
+    """The download button replays the last query through the SAME resolver, so a route
+    drawn to an object must come out as a track — not fall through to a bbox search."""
+    import xml.etree.ElementTree as ET
+
+    from hike_finder.filters import Hike
+    from hike_finder.poi import PoiHit
+
+    def _fail(*a, **k):
+        raise AssertionError("the download must not re-run a different search")
+
+    monkeypatch.setattr(web, "search_hikes", _fail)
+    monkeypatch.setattr(
+        web, "routes_to_poi",
+        lambda start, kinds, criteria, **kw: [
+            Hike(osm_id=-1, name="Route to ruin “Zřícenina”", distance_km=4.2, circular=False,
+                 car_access=False, chairlift_access=False, start=start, gain_m=180, loss_m=95,
+                 composed=True, composed_of=("0402",),
+                 ways=(((50.73, 15.60), (50.75, 15.61)),),
+                 destination=PoiHit(kind="ruins", name="Zřícenina", coord=(50.75, 15.61),
+                                    distance_m=85.0)),
+        ],
+    )
+    status, headers, body = _get_raw(
+        server + "/api/gpx?to_poi_lat=50.73&to_poi_lon=15.60&to_poi=ruins"
+    )
+    assert status == 200 and "attachment" in headers["Content-Disposition"]
+    assert ET.fromstring(body).tag.endswith("gpx")
+    # The destination-derived (non-ASCII) name survives into the XML.
+    assert "Zřícenina" in body

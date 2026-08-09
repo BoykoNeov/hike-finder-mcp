@@ -30,6 +30,7 @@ from .search import (
     download_area,
     route_via,
     routes_between,
+    routes_to_poi,
     search_hikes,
     search_snapshot,
 )
@@ -158,11 +159,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Finish point for --from. Each point is snapped onto the nearest trail.",
     )
     r.add_argument(
+        "--to-poi",
+        action="append",
+        metavar="KIND",
+        dest="to_poi",
+        help="Destination KIND for --from: draw routes to the nearest church / ruin / peak "
+        "instead of to a --to point ('a route to the nearest ruin'). Repeat the flag or give "
+        "a comma-separated list; several kinds are OR-ed. Nearest means nearest ALONG THE "
+        "TRAILS, and --routes says how many. Run --list-pois for the kinds. Unlike --poi, "
+        "which filters routes by what they pass, this one draws the route to the object.",
+    )
+    r.add_argument(
+        "--to-poi-radius",
+        type=float,
+        metavar="M",
+        help="How far from --from to look for --to-poi destinations, in metres (default "
+        "HIKE_POI_SEARCH_RADIUS_M = 3000). It also sizes the fetched area, so raising it "
+        "makes the query heavier.",
+    )
+    r.add_argument(
         "--routes",
         type=int,
         metavar="N",
-        help="How many distinct routes to draw between --from and --to, shortest first "
-        "(default HIKE_ROUTES_K = 3). --max-distance caps a route's length.",
+        help="How many routes to draw: distinct routes between --from and --to, or routes "
+        "to the nearest --to-poi destinations. Shortest first (default HIKE_ROUTES_K = 3). "
+        "--max-distance caps a route's length.",
     )
     r.add_argument(
         "--via",
@@ -208,7 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--list-pois",
         action="store_true",
-        help="List the point-of-interest kinds --poi accepts, then exit.",
+        help="List the point-of-interest kinds --poi and --to-poi accept, then exit.",
     )
 
     o = p.add_argument_group("data sources (override env / config defaults)")
@@ -265,13 +286,22 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _split_kinds(values) -> list[str]:
+    """Flatten a repeatable, comma-splittable kind flag (``--poi`` / ``--to-poi``).
+
+    Both spellings are supported because both are natural at a shell prompt:
+    ``--poi church --poi ruins`` and ``--poi church,ruins``.
+    """
+    out: list[str] = []
+    for item in values or ():
+        out.extend(part for part in str(item).split(",") if part.strip())
+    return out
+
+
 def build_criteria(args: argparse.Namespace) -> Criteria:
-    # --poi is repeatable AND accepts a comma-separated list, because both spellings are
-    # natural at a shell prompt. normalise_kinds validates against the registry, so a
-    # typo raises here (caught in run()) instead of quietly matching nothing.
-    raw_poi: list[str] = []
-    for item in getattr(args, "poi", None) or ():
-        raw_poi.extend(part for part in str(item).split(",") if part.strip())
+    # normalise_kinds validates against the registry, so a typo raises here (caught in
+    # run()) instead of quietly matching nothing.
+    raw_poi = _split_kinds(getattr(args, "poi", None))
     return Criteria(
         min_gain_m=args.min_gain,
         max_gain_m=args.max_gain,
@@ -388,21 +418,25 @@ def run(args: argparse.Namespace) -> int:
 
     # Standalone informational actions: print and exit, no network, no bbox needed.
     if getattr(args, "list_pois", False):
-        print("Point-of-interest kinds for --poi (several are OR-ed):")
+        print("Point-of-interest kinds for --poi and --to-poi (several are OR-ed):")
         for kind, plural in kind_labels():
             print(f"  {kind:<14} {plural}")
         print(
+            "\n--poi FILTERS routes by what they pass; --to-poi DRAWS a route to the "
+            "nearest one.\n"
             "\ne.g.  hike-finder --bbox 50.72 15.58 50.78 15.68 --poi ruins,church "
             "--max-distance 12"
+            "\n      hike-finder --from 50.7312 15.6044 --to-poi ruins --routes 2"
         )
         return 0
     if getattr(args, "list_areas", False):
         return _print_areas(args.json)
 
-    # Validate --poi once, up front: an unknown kind is a typo, and the whole point of
-    # raising is that it must not read as "nothing of that kind is out there".
+    # Validate --poi / --to-poi once, up front: an unknown kind is a typo, and the whole
+    # point of raising is that it must not read as "nothing of that kind is out there".
     try:
         build_criteria(args)
+        to_poi = normalise_kinds(_split_kinds(getattr(args, "to_poi", None)))
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -441,31 +475,53 @@ def run(args: argparse.Namespace) -> int:
         return 2
 
     # Point-based route drawing: --around (circular routes near a point), --from/--to (N
-    # shortest routes between two points), and --via (one route linking several points, closed
-    # into a circular route with --via-loop). Each derives its own area, so none takes --bbox
-    # or combines with --compose-loops / --area / --download.
+    # shortest routes between two points), --from/--to-poi (routes to the nearest church /
+    # ruin / peak), and --via (one route linking several points, closed into a circular route
+    # with --via-loop). Each derives its own area, so none takes --bbox or combines with
+    # --compose-loops / --area / --download.
     around = getattr(args, "around", None)
     from_pt = getattr(args, "from_pt", None)
     to_pt = getattr(args, "to_pt", None)
     via = getattr(args, "via", None)
     via_loop = getattr(args, "via_loop", False)
-    if around is not None or from_pt is not None or to_pt is not None or via is not None or via_loop:
-        if (from_pt is None) != (to_pt is None):
-            print("error: --from and --to must be given together.", file=sys.stderr)
+    if (
+        around is not None or from_pt is not None or to_pt is not None
+        or to_poi or via is not None or via_loop
+    ):
+        # --from takes exactly one destination: a place (--to) or a kind of object
+        # (--to-poi). Each half is checked separately so the error names the actual mistake.
+        if to_pt is not None and to_poi:
+            print(
+                "error: --to and --to-poi are two different destinations (a point vs the "
+                "nearest object of a kind) — use one, not both.",
+                file=sys.stderr,
+            )
+            return 2
+        if (to_pt is not None or to_poi) and from_pt is None:
+            print(
+                "error: --to / --to-poi need a --from start point.", file=sys.stderr
+            )
+            return 2
+        if from_pt is not None and to_pt is None and not to_poi:
+            print(
+                "error: --from needs a destination — give --to LAT LON, or --to-poi KIND "
+                "to route to the nearest object of that kind.",
+                file=sys.stderr,
+            )
             return 2
         active = sum(
             1
             for on in (
                 around is not None,
-                from_pt is not None or to_pt is not None,
+                from_pt is not None or to_pt is not None or bool(to_poi),
                 via is not None,
             )
             if on
         )
         if active > 1:
             print(
-                "error: --around, --from/--to and --via are different point-based modes — "
-                "use one, not several.",
+                "error: --around, --from/--to(-poi) and --via are different point-based "
+                "modes — use one, not several.",
                 file=sys.stderr,
             )
             return 2
@@ -535,6 +591,28 @@ def run(args: argparse.Namespace) -> int:
                     else "No route could be drawn through your points — a point may be "
                     "off-network (>~2 km from any trail), a leg crosses a gap in the trail "
                     "network, or the linked route falls outside --min/--max-distance."
+                )
+            elif to_poi:
+                hikes = routes_to_poi(
+                    (from_pt[0], from_pt[1]),
+                    to_poi,
+                    build_criteria(args),
+                    cfg,
+                    n=args.routes,
+                    search_radius_m=args.to_poi_radius,
+                    **common,
+                )
+                # Destination-shaped, NOT the area-filter wording of --poi: nothing here was
+                # "filtered out of an area", a route to an object could not be drawn. The
+                # three causes need three different fixes, and the mode logs which one it hit
+                # — this line points at that.
+                empty_msg = (
+                    "No route could be drawn to an object of that kind — either nothing of "
+                    "it is mapped within the search radius (widen --to-poi-radius), the ones "
+                    "found sit off the trail network, or every route to them runs past the "
+                    "length cap (raise --max-distance). The line logged above says which. "
+                    "(A miss means nothing of that kind is *mapped* in OSM near your point, "
+                    "not that nothing is there.)"
                 )
             else:
                 hikes = routes_between(

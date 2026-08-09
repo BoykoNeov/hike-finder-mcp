@@ -601,6 +601,10 @@ ring on the map. **Over MCP** every search tool takes a `poi` array and a `poi_r
 > loudly rather than letting you read it as "no ruins here" — re-download the area
 > (`--list-areas` flags which ones need it).
 
+> **This filters; it doesn't navigate.** `--poi` keeps routes that happen to pass a ruin.
+> If what you want is "draw me a route *to* the nearest ruin from here", that's `--to-poi`
+> — see [Point-based routes](#point-based-routes--pick-a-spot-instead-of-drawing-a-box).
+
 ---
 
 ## Composing loops from connected trails
@@ -688,7 +692,7 @@ way, for fast, unlimited elevation on *every* composed loop, set up a
 
 ## Point-based routes — pick a spot instead of drawing a box
 
-Two modes take **points, not a bounding box** — you don't frame an area, you drop a pin (or
+Four modes take **points, not a bounding box** — you don't frame an area, you drop a pin (or
 two). Leave `--bbox` off; the tool works out its own area from the point(s).
 
 **"Give me a ~10 km loop starting near here."** Point at a spot and get circular day-hikes
@@ -738,11 +742,46 @@ real loop rather than an out-and-back. When there's no separate way back (a dead
 it says so and shows the there-and-back anyway. Same "no trail within ~2 km → nothing back"
 rule as `--from`/`--to`, and `--min`/`--max-distance` filter the linked route by its length.
 
+**"Draw me a route to the nearest ruin."** Give a start and say *what* you want to reach —
+not where it is. The tool finds the churches, ruins or peaks around you and draws a route to
+the nearest ones:
+
+```bash
+hike-finder --from 50.73 15.60 --to-poi ruins --routes 3 \
+            --user-agent you@example.com
+```
+
+```text
+Route to ruin “Rotštejn” — 4.2 km, +180 m / -95 m [one-way]
+    (start 50.7300,15.6000, composed of KČT red + KČT blue)  [ends 85 m from the ruin]
+```
+
+The kinds are the same list as `--poi` (run `--list-pois`), but they mean the opposite
+thing: `--poi` **filters** the routes you found by what they pass, `--to-poi` **draws** the
+route to the object. Use both together for "a route to the nearest ruin that also passes a
+pub."
+
+Three things worth knowing:
+
+- **Nearest means nearest on foot**, not on the map. A ruin a kilometre away across a gorge
+  with no path loses to one 1.4 km away along a marked trail.
+- **The route ends at the nearest point on a trail, not at the ruin.** That last gap is
+  always shown ("ends 85 m from the ruin") rather than glossed over.
+- **If it can't find anything it tells you which of three things went wrong** — nothing of
+  that kind is mapped near you, what it found isn't on the trail network, or everything is
+  further than the length cap. Each has a different fix: widen `--to-poi-radius`, move your
+  start, or raise `--max-distance`.
+
+If the tool warns that the answer is *"not provably the nearest"*, it means the walk it
+found is longer than the radius it searched, so something closer could sit just outside —
+widen `--to-poi-radius` if you want certainty.
+
 In the **Web UI** these are the **Mode** dropdown ("Circular routes near a point" / "Routes
-between two points" / "Route linking several points") — pick one, then click the map to drop
-your pin(s) and press Search; the `--via` mode adds an *Undo last point* button and a *Close
-into a circular route* checkbox. Over **MCP** they're the `circular_routes`, `routes_between`,
-and `route_via` tools. All are live-map only.
+between two points" / "Route linking several points" / "Route to the nearest church / ruin /
+peak…") — pick one, then click the map to drop your pin(s) and press Search; the `--via` mode
+adds an *Undo last point* button and a *Close into a circular route* checkbox, and the
+to-the-nearest mode adds a **Walk to** list. Over **MCP** they're the `circular_routes`,
+`routes_between`, `route_via`, and `routes_to_poi` tools. All are live-map only.
 
 ---
 

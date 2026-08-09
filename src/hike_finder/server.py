@@ -37,6 +37,7 @@ from .search import (
     download_area,
     route_via,
     routes_between,
+    routes_to_poi,
     search_hikes,
     search_snapshot,
 )
@@ -297,6 +298,71 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="routes_to_poi",
+            description=(
+                "Draw walking routes FROM a picked point TO the nearest churches / ruins / "
+                "peaks / viewpoints — 'draw me a route to the nearest ruin'. Give a start "
+                "(lat/lon) and one or more destination `kinds`; the tool finds the objects of "
+                "those kinds around the start and returns up to `routes` routes, one per "
+                "destination, nearest first.\n\n"
+                "Nearest means nearest ALONG THE TRAILS, not as the crow flies — a ruin just "
+                "across a gorge with no path to it does not win. Each result names what it "
+                "was drawn to and how far its end lands from it: the route ends at the "
+                "nearest point ON A TRAIL, which is not the object itself.\n\n"
+                "This is the OPPOSITE of the `poi` filter offered by the other tools. `poi` "
+                "keeps routes that happen to pass an object; this one draws the route to it. "
+                "The area is derived from the start point — no bounding box needed. If "
+                "nothing is found the reply says which of the three causes it was (nothing "
+                "of that kind mapped nearby / found but off-network / too far to route to), "
+                "because they need different fixes."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "lat": {"type": "number", "description": "Latitude of the start point."},
+                    "lon": {"type": "number", "description": "Longitude of the start point."},
+                    "kinds": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {"type": "string", "enum": sorted(POI_KINDS)},
+                        "description": (
+                            "What to walk to; several kinds are OR-ed (\"the nearest ruin OR "
+                            "castle\"). Available: "
+                            + "; ".join(f"{k} ({lbl})" for k, lbl in kind_labels())
+                        ),
+                    },
+                    "routes": {
+                        "type": "integer",
+                        "description": "How many destinations to route to, nearest first (default 3).",
+                    },
+                    "search_radius_m": {
+                        "type": "number",
+                        "description": "How far from the start to look for destinations, metres "
+                        "(default 3000). It also sizes the fetched area, so raising it makes the "
+                        "query heavier — but it is the lever when nothing of the kind is found.",
+                    },
+                    "max_distance_km": {
+                        "type": "number",
+                        "description": "Cap a route's length, km (default: 3x the straight-line "
+                        "distance to that destination). It also sizes the fetched area.",
+                    },
+                    "min_gain_m": {"type": "number"},
+                    "max_gain_m": {"type": "number"},
+                    "car_access": {
+                        "type": "boolean",
+                        "description": "true = require parking mapped near the route's ends.",
+                    },
+                    **_POI_SCHEMA,
+                    "format": {
+                        "type": "string",
+                        "enum": ["text", "gpx", "geojson"],
+                        "description": "Output format (default 'text').",
+                    },
+                },
+                "required": ["lat", "lon", "kinds"],
+            },
+        ),
+        Tool(
             name="download_area",
             description=(
                 "Fetch a bounding box once — its hiking routes plus computed elevation for "
@@ -396,6 +462,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return await _call_routes_between(arguments)
     if name == "route_via":
         return await _call_route_via(arguments)
+    if name == "routes_to_poi":
+        return await _call_routes_to_poi(arguments)
     if name == "download_area":
         return await _call_download_area(arguments)
     if name == "list_areas":
@@ -476,6 +544,40 @@ async def _call_route_via(arguments: dict) -> list[TextContent]:
         "min/max_distance_km band."
     )
     return _serialize(hikes, arguments.get("format") or "text", empty)
+
+
+async def _call_routes_to_poi(arguments: dict) -> list[TextContent]:
+    missing = [k for k in ("lat", "lon") if k not in arguments]
+    if missing or not arguments.get("kinds"):
+        return [
+            TextContent(
+                type="text",
+                text="provide lat and lon for the start point, and `kinds` — what to walk to "
+                "(e.g. [\"ruins\"]).",
+            )
+        ]
+    hikes = await asyncio.to_thread(
+        routes_to_poi,
+        (arguments["lat"], arguments["lon"]),
+        # Validated against the registry, so an unknown kind raises (surfaced by call_tool)
+        # rather than reading to the client as "there are no ruins in this valley".
+        normalise_kinds(arguments["kinds"]),
+        _criteria(arguments),
+        _cfg(arguments),
+        n=arguments.get("routes"),
+        search_radius_m=arguments.get("search_radius_m"),
+    )
+    # Destination-shaped, never the `poi`-filter wording: nothing was filtered out of an
+    # area here, a route to an object could not be drawn.
+    return _serialize(
+        hikes,
+        arguments.get("format") or "text",
+        "No route could be drawn to an object of that kind — either nothing of it is mapped "
+        "within search_radius_m of your point (widen it), the ones found sit off the trail "
+        "network, or every route to them runs past the length cap (raise max_distance_km). "
+        "A miss means nothing of that kind is MAPPED in OSM near your point, not that "
+        "nothing is there.",
+    )
 
 
 async def _call_find_hikes(arguments: dict) -> list[TextContent]:

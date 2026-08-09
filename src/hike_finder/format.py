@@ -31,6 +31,13 @@ def format_hike(h: Hike) -> str:
     # one-line summary is byte-for-byte unchanged.
     if h.pois:
         suffix += "  [passes " + "; ".join(p.describe() for p in h.pois) + "]"
+    # A route DRAWN TO an object (--to-poi) ends at the nearest point on the trail
+    # network, which is not the object itself — say "ends N m from" and never "arrives
+    # at", the same register access.py uses for "nothing of that kind is *mapped* here".
+    if h.destination is not None:
+        suffix += (
+            f"  [ends {round(h.destination.distance_m)} m from the {h.destination.label}]"
+        )
     # A composed loop has no single OSM relation — name its constituent trails instead
     # of a (dishonest) relation id, so it always reads as a stitched-together suggestion.
     # An UNNAMED route given a reverse-geocoded place label shows that label as its
@@ -86,6 +93,10 @@ def hike_to_dict(h: Hike, *, geometry: bool = False) -> dict:
         # Reached points of interest (empty unless a POI filter was set). Each carries
         # its own coordinate so a client can pin it without a second lookup.
         "pois": [p.to_dict() for p in h.pois],
+        # The object this route was drawn TO (--to-poi), distinct from the ones it merely
+        # passes; `distance_m` is how far its end sits from the object. None otherwise, so
+        # every other search's JSON gains one null key and changes in no other way.
+        "destination": h.destination.to_dict() if h.destination else None,
     }
     if geometry:
         d["geometry"] = [[[lat, lon] for lat, lon in way] for way in h.ways]

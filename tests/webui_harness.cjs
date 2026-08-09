@@ -44,6 +44,7 @@ const map = {
     return Math.hypot(dx, dy);
   },
 };
+const circleMarkers = [];
 const shapeProto = { addTo(g){ if (g && g._layers) g._layers.push(this); return this; },
                      bindTooltip(){ return this; }, bindPopup(){ return this; },
                      openPopup(){}, on(){ return this; }, remove(){}, setBounds(b){ this._b = b; },
@@ -57,7 +58,9 @@ global.L = {
   // object (the live drag rectangle).
   rectangle: (b) => mk({ _b: Array.isArray(b)
       ? mkBounds({ lat: b[0][0], lng: b[0][1] }, { lat: b[1][0], lng: b[1][1] }) : b }),
-  circleMarker: () => mk({}),
+  // Recorded, not just stubbed: "the ruin is pinned where the ruin is" is a claim worth
+  // checking, and a plain layer-count would pass on any marker at all.
+  circleMarker: (pt) => { circleMarkers.push(pt); return mk({}); },
   marker: () => mk({}),
   polyline: () => mk({}),
   featureGroup: () => mk({ getBounds: () => map._bounds }),
@@ -101,11 +104,25 @@ const AREAS = [
 const POI_KINDS = [{ kind: 'church', label: 'churches & chapels' },
                    { kind: 'ruins', label: 'ruins' },
                    { kind: 'castle', label: 'castles & forts' }];
+// One canned result for the "route to the nearest object" mode, so the destination
+// rendering (the "ends N m from" wording and its map pin) is exercised, not just the
+// query building. Every other search still answers with an empty list.
+const TO_POI_HIKES = [
+  { osm_id: null, name: 'Route to ruin “Rotštejn”', ref: null,
+    unnamed: false, place_name: null, distance_km: 4.2, gain_m: 180, loss_m: 95,
+    circular: false, car_access: false, chairlift_access: false, lift_type: null,
+    start: { lat: 50.73, lon: 15.60 }, near_miss: false, notes: [],
+    composed: true, composed_of: ['0402'], pois: [],
+    destination: { kind: 'ruins', label: 'ruin', name: 'Rotštejn',
+                   lat: 50.75, lon: 15.61, distance_m: 85.0 },
+    geometry: [[[50.73, 15.60], [50.75, 15.61]]] },
+];
 global.fetch = async (url) => {
   fetched.push(url);
   const body = url.startsWith('/api/areas') ? AREAS
              : url.startsWith('/api/pois') ? POI_KINDS
              : url.startsWith('/api/quota') ? { enabled: false }
+             : /[?&]to_poi=/.test(url) ? TO_POI_HIKES
              : [];
   return { ok: true, status: 200, json: async () => body };
 };
@@ -234,6 +251,60 @@ const fire = (ev, latlng) => (handlers[ev] || []).forEach(f => f({ latlng }));
   fire('click', { lat: 50.72, lng: 15.59 });
   check('no stale suppression after a click-less drag',
         /Point set/.test(el('status').textContent), el('status').textContent);
+
+  // 10. The "route to the nearest church / ruin / peak" mode: its own start point, its
+  //     own kind picker, and a destination that must read as "ends N m from", never as
+  //     an arrival.
+  el('mode').value = 'topoi';
+  updateMode();
+  check('to-poi mode shows its own controls',
+        el('topoi_ctl').style.display === 'block', el('topoi_ctl').style.display);
+  check('to-poi mode starts unpicked',
+        /Click the map to drop your start/.test(el('status').textContent),
+        el('status').textContent);
+  check('walk-to list populated from the same registry',
+        el('to_poi')._children.length === 3, el('to_poi')._children.length);
+
+  fire('click', { lat: 50.73, lng: 15.60 });
+  check('a start with no kind chosen asks for the kind, not for the start',
+        /Now pick what to walk to/.test(el('status').textContent), el('status').textContent);
+  const before = fetched.length;
+  await search();
+  check('searching with no kind chosen sends no request', fetched.length === before,
+        fetched.slice(before));
+  check('and says which half is missing',
+        /Pick what to walk to/.test(el('status').textContent), el('status').textContent);
+
+  el('to_poi').selectedOptions = [{ value: 'ruins' }, { value: 'castle' }];
+  el('to_poi_n').value = '2';
+  el('to_poi_radius_m').value = '4500';
+  await search();
+  url = lastHikes();
+  check('to-poi start sent', url.includes('to_poi_lat=50.73') && url.includes('to_poi_lon=15.6'), url);
+  check('to-poi kinds sent repeated', /to_poi=ruins/.test(url) && /to_poi=castle/.test(url), url);
+  check('to-poi count + radius sent',
+        /to_poi_n=2/.test(url) && /to_poi_radius_m=4500/.test(url), url);
+  check('the must-pass filter stays a separate parameter', /[?&]poi=ruins/.test(url), url);
+  check('no bbox is sent — the mode derives its own area', !/south=/.test(url), url);
+
+  const card = el('results')._children[el('results')._children.length - 1];
+  check('the destination is rendered as a gap, not an arrival',
+        /ends 85 m from the ruin/.test(card.innerHTML) && !/arrives/.test(card.innerHTML),
+        card.innerHTML);
+  check('the destination is pinned where the object actually is',
+        circleMarkers.some(p => Array.isArray(p) && p[0] === 50.75 && p[1] === 15.61),
+        circleMarkers);
+  check('the result line counts routes, not matches',
+        /route\(s\)/.test(el('status').textContent), el('status').textContent);
+
+  // Switching away clears the picked start, so it can't leak into the next mode.
+  el('mode').value = 'around';
+  updateMode();
+  el('mode').value = 'topoi';
+  updateMode();
+  check('changing mode clears the picked start',
+        /Click the map to drop your start/.test(el('status').textContent),
+        el('status').textContent);
 
   console.log('PASS ' + ok.length + ' / FAIL ' + fail.length);
   fail.forEach(f => console.log('  FAIL: ' + f));
