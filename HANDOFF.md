@@ -223,16 +223,32 @@ thing is validated live against real OSM. Highlights:
     exceeded the bound and the mode logged "the nearest *found*, not provably the nearest";
     re-run at `--to-poi-radius 6000` with the same single route now inside the bound, the hedge
     **disappeared**. A warning that never turns off is just noise — this one is load-bearing in
-    both directions. (With `--routes 3` at 6 km it fires again, correctly: the *third* route is
-    12.6 km, so third-nearest is unprovable even though nearest isn't.)
-  - **Widening did not displace the answer.** Radeč stayed #1 from 3 km → 6 km, with Kozlov
-    (Chlum) 6.66 km and Rotštejn 12.63 km behind it — so the 3 km hedge was conservative, not a
-    miss. Both bounds held: every crow-flies distance came in under its trail distance.
-  - **The modes agree on the landscape.** `--show-pois --poi ruins,castle` over the box lists
-    exactly two ruins, Radeč and Rotštejn — precisely the in-box objects `--to-poi ruins` routed
-    to. Valdštejn, which the `--poi` verification recorded, is classified **castle**, so its
-    absence from a `ruins` search is the registry working, not a dropped object. Rotštejn's
-    "20 m" here matches the figure the `--poi` run recorded for it.
+    both directions. Note the log hedges the **whole result set** off the farthest route; it
+    makes no per-rank distinction, so a far Nth route re-arms the warning for the 1st as well.
+  - **The hedge caught a REAL miss — it is not merely conservative.** Rank 1 is stable: Radeč
+    stayed #1 at 3, 6 and 7 km. Rank 3 was not. At 6 km the three were Radeč 3.46 / Kozlov
+    (Chlum) 6.66 / **Rotštejn 12.63** km — and the mode warned. At `--to-poi-radius 7000` the
+    third became **Nebákov at 10.36 km**, genuinely nearer than Rotštejn. So the warning was
+    pointing at an object that really did beat the answer being shown. Nebákov sits 6.28 km
+    crow-flies — just outside the 6 km radius, which is precisely the case the bound exists to
+    catch. (At 7 km it still fires, still correctly: 10.36 km > 7 km, so a 5th ruin outside the
+    radius could in principle beat it. The recursion is honest, not a bug.) All four bounds
+    held: crow-flies 1.36 / 4.10 / 4.97 / 6.28 km each came in under its trail distance.
+  - **The modes agree on the landscape.** `--show-pois --poi ruins,castle` over the original box
+    lists exactly two ruins, Radeč and Rotštejn — the two in-box objects `--to-poi ruins` routed
+    to. Widening the *listing* to cover the 6 km radius (`--bbox 50.50 15.09 50.62 15.28`)
+    returns four ruins, adding Kozlov (Chlum) at lon 15.126 and Nebákov at lat 50.502 — both
+    outside the original box on one axis, and both classified `ruins` by the listing exactly as
+    the router classified them. Valdštejn, which the `--poi` verification recorded, is classified
+    **castle**, so its absence from a `ruins` search is the registry working, not a dropped
+    object. Rotštejn's "20 m" here matches the figure the `--poi` run recorded for it.
+
+  **What did NOT get exercised live:** the certificate has two bounds, and only one of them
+  fired. Every run here was bounded by the *search radius*; the **cheap-pass-drop** bound
+  (`_POI_CANDIDATE_FACTOR`×N, floor 10) never triggered, because Český ráj offers far fewer
+  candidate ruins than the floor. That branch remains offline-only, pinned by
+  `test_the_cheap_pass_admits_when_it_may_have_dropped_a_nearer_one`. A dense-POI kind
+  (`peak`, `viewpoint`) in a high-density box would be the way to reach it live.
 
   Export round-tripped: 1 track / 143 trkpt / **143 `<ele>`** (the faithfulness gate passed) plus
   a single start `<wpt>`, diacritics intact; the GeoJSON carries a `destination` property and its
