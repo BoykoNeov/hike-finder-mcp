@@ -66,7 +66,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   chimneys — and `amenity=shelter` includes the shelter at a bus stop, so both kinds were
   listing objects nobody plans a walk around. `tower` is now labelled plainly **"towers"**
   (the old plural promised a viewing platform the tag never checked for) and both kinds skip
-  the types OSM has *positively* marked as something else. Anything OSM leaves untyped is
+  the types OSM has *positively* marked as something else — including a shelter node
+  co-tagged `highway=bus_stop`. Anything OSM leaves untyped is
   still included — most real lookout towers carry no `tower:type`, so dropping the untyped
   to look precise would lose them.
   This changes no Overpass query text, so **your cached areas stay valid**. An

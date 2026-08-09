@@ -97,6 +97,10 @@ def test_a_secondary_tag_can_disqualify_a_primary_match():
     assert classify({"man_made": "tower", "tower:type": "communication"}) is None
     assert classify({"man_made": "tower", "tower:type": "water_tower"}) is None
     assert classify({"amenity": "shelter", "shelter_type": "public_transport"}) is None
+    # Co-tagged on one node — the case `shelter_type` alone misses.
+    assert classify({"amenity": "shelter", "highway": "bus_stop"}) is None
+    # …while the commoner mapping never builds an `amenity=shelter` element to begin with.
+    assert classify({"highway": "bus_stop", "shelter": "yes"}) is None
 
 
 def test_a_missing_secondary_tag_never_disqualifies():
@@ -128,16 +132,22 @@ def test_exclusions_never_reach_the_query():
 
     The query text is the Overpass cache key, so a deny-list applied in the query would
     invalidate every cached area — the price `POI_KINDS` pays for a new KIND. Filtering
-    in the classifier instead keeps that cost at zero, and this pins the property: the
-    primary selectors are still fetched wholesale, and no secondary tag appears.
+    in the classifier instead keeps that cost at zero.
+
+    Pinned as: every POI clause is EXACTLY its primary selector, with no second bracket
+    filter appended. Asserting the secondary tag's name is absent from the whole query
+    would be wrong — `highway` is already in it as a transit clause, which is a different
+    statement entirely.
     """
     selectors = selectors_by_key()
-    assert "tower" in selectors["man_made"]
+    assert "tower" in selectors["man_made"]  # fetched wholesale, narrowed downstream
     assert "shelter" in selectors["amenity"]
     q = build_query(50.7, 15.5, 50.8, 15.7)
-    for spec in POI_KINDS.values():
-        for secondary, _values in spec.exclude:
-            assert secondary not in q
+    for key, values in selectors.items():
+        assert f'nwr["{key}"~"^({"|".join(values)})$"](' in q
+    # No selector anywhere carries a SECOND bracket filter — the shape a deny-list
+    # pushed into the query would take (`…$"]["tower:type"!~…`).
+    assert '$"]["' not in q
 
 
 def test_kind_labels_covers_the_registry():

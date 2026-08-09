@@ -157,7 +157,14 @@ POI_KINDS: dict[str, PoiKind] = {
         ("shelter",),
         "shelter",
         "shelters",
-        exclude=(("shelter_type", ("public_transport",)),),
+        exclude=(
+            ("shelter_type", ("public_transport",)),
+            # Co-tagged on ONE node, which `shelter_type` alone misses. Safe to deny
+            # outright: no trail refuge is ever tagged `highway=bus_stop`. (The commoner
+            # mapping — `highway=bus_stop` with a plain `shelter=yes` — creates no
+            # `amenity=shelter` element at all, so it never reaches this table.)
+            ("highway", ("bus_stop",)),
+        ),
     ),
     "picnic": PoiKind("tourism", ("picnic_site",), "picnic site", "picnic sites"),
     "refreshment": PoiKind(
