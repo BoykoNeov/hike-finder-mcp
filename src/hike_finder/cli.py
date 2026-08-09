@@ -20,14 +20,16 @@ import sys
 from . import cache
 from . import config as _config
 from .elevation import api_quota_snapshot
-from .export import hikes_to_geojson, hikes_to_gpx
+from .export import hikes_to_geojson, hikes_to_gpx, pois_to_geojson, pois_to_gpx
 from .filters import Criteria
-from .format import format_hike, hike_to_dict
+from .format import format_hike, format_poi, format_poi_summary, hike_to_dict
 from .poi import kind_labels, normalise_kinds
 from .search import (
     compose_loops,
     compose_loops_around,
     download_area,
+    list_area_pois,
+    list_snapshot_pois,
     route_via,
     routes_between,
     routes_to_poi,
@@ -111,8 +113,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Keep only routes that pass a point of interest of this KIND — e.g. "
         "--poi church --poi ruins ('a 10 km hike that goes to a ruin'). Repeat the flag "
         "or give a comma-separated list; several kinds are OR-ed. Each match is reported "
-        "with the measured distance. Run --list-pois for the kinds. Works with a live, "
-        "--compose-loops, point-based, or offline --area search.",
+        "with the measured distance. Run --list-poi-kinds for the kinds. Works with a "
+        "live, --compose-loops, point-based, or offline --area search. With --show-pois "
+        "it selects which kinds to LIST instead of which routes to keep.",
     )
     g.add_argument(
         "--poi-radius",
@@ -166,7 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Destination KIND for --from: draw routes to the nearest church / ruin / peak "
         "instead of to a --to point ('a route to the nearest ruin'). Repeat the flag or give "
         "a comma-separated list; several kinds are OR-ed. Nearest means nearest ALONG THE "
-        "TRAILS, and --routes says how many. Run --list-pois for the kinds. Unlike --poi, "
+        "TRAILS, and --routes says how many. Run --list-poi-kinds for the kinds. Unlike --poi, "
         "which filters routes by what they pass, this one draws the route to the object.",
     )
     r.add_argument(
@@ -227,9 +230,27 @@ def build_parser() -> argparse.ArgumentParser:
         "is not tracked, search it with --area PATH.",
     )
     s.add_argument(
+        # dest is pinned explicitly: argparse would otherwise derive it from the FIRST
+        # long option, renaming args.list_pois out from under run() and the tests.
+        "--list-poi-kinds",
         "--list-pois",
+        dest="list_pois",
         action="store_true",
-        help="List the point-of-interest kinds --poi and --to-poi accept, then exit.",
+        help="List the point-of-interest KINDS --poi / --to-poi / --show-pois accept, "
+        "then exit. (To list the actual objects in an area, use --show-pois.)",
+    )
+
+    i = p.add_argument_group(
+        "browse points of interest (the objects themselves — no routes drawn)"
+    )
+    i.add_argument(
+        "--show-pois",
+        action="store_true",
+        help="List every point of interest in the area instead of searching for hikes — "
+        "e.g. --show-pois --poi ruins,church shows all the ruins and churches in the "
+        "--bbox (or in the downloaded --area). No routes are drawn to them and no "
+        "elevation is looked up. Omit --poi to show every kind. Combine with --gpx / "
+        "--geojson to export them as waypoints for your GPS / phone.",
     )
 
     o = p.add_argument_group("data sources (override env / config defaults)")
@@ -326,26 +347,37 @@ def _emit(hikes: list, as_json: bool, empty_msg: str = "No matching hikes found 
         print(format_hike(h))
 
 
-def _write_exports(hikes: list, args: argparse.Namespace) -> None:
+def _write_exports(
+    items: list,
+    args: argparse.Namespace,
+    *,
+    gpx=hikes_to_gpx,
+    geojson=hikes_to_geojson,
+    noun: str = "route(s)",
+) -> None:
     """Write the result set to GPX / GeoJSON if --gpx / --geojson were given.
 
     A side effect alongside the normal stdout rendering (text or --json): the
     confirmation goes to stderr so it never pollutes a --json pipe. An empty result
     still writes a valid (empty) document, so a downstream script always gets a file.
+
+    The serialiser pair is injectable so ``--show-pois`` exports its objects as waypoints
+    through this same function — one place that owns "which flag, which file, what to say
+    on failure", rather than a near-copy that drifts on the stderr/empty-file contract.
     """
     for path, fn, label in (
-        (getattr(args, "gpx", None), hikes_to_gpx, "GPX"),
-        (getattr(args, "geojson", None), hikes_to_geojson, "GeoJSON"),
+        (getattr(args, "gpx", None), gpx, "GPX"),
+        (getattr(args, "geojson", None), geojson, "GeoJSON"),
     ):
         if not path:
             continue
         try:
             with open(path, "w", encoding="utf-8") as f:
-                f.write(fn(hikes))
+                f.write(fn(items))
         except OSError as e:
             print(f"error: could not write {label} to {path!r}: {e}", file=sys.stderr)
             continue
-        print(f"Wrote {len(hikes)} route(s) to {path} ({label}).", file=sys.stderr)
+        print(f"Wrote {len(items)} {noun} to {path} ({label}).", file=sys.stderr)
 
 
 def _quota_line(cfg, used_before: int) -> None:
@@ -375,6 +407,92 @@ _POI_EMPTY = (
     "another --poi kind, or search a wider area. (A miss means nothing of that kind is "
     "*mapped* in OSM near a route, not that nothing is there.)"
 )
+
+
+_SHOW_POI_EMPTY = (
+    "No points of interest of that kind are mapped here — pick other --poi kinds (or "
+    "drop --poi to show every kind), or look at a wider area. (A miss means nothing of "
+    "that kind is *mapped* in OSM here, not that nothing is there.)"
+)
+
+
+def _resolve_area(name: str):
+    """Load a saved snapshot by path or by the bare NAME ``--list-areas`` shows.
+
+    Shared by the offline hike search and the offline ``--show-pois`` browse so both
+    accept the same spellings. Returns ``(snapshot, None)`` or ``(None, message)``.
+    """
+    target = name
+    if not os.path.isfile(target):
+        named = snapshot_path(name)
+        if named is not None and named.is_file():
+            target = str(named)
+    try:
+        return load_snapshot(target), None
+    except (OSError, ValueError) as e:
+        return None, f"error: could not read snapshot {name!r}: {e}"
+
+
+def _show_pois(args: argparse.Namespace, cfg) -> int:
+    """``--show-pois``: list the objects in an area, live or offline, and export them.
+
+    No hikes, no routes, no elevation — see ``search.list_area_pois``. The two sources are
+    the live ``--bbox`` and the downloaded ``--area``; both end in the same rendering and
+    the same export, so what you browse is exactly what you get in the file.
+    """
+    kinds = normalise_kinds(_split_kinds(getattr(args, "poi", None)))
+    empty_msg = _SHOW_POI_EMPTY
+    if args.area:
+        snap, err = _resolve_area(args.area)
+        if snap is None:
+            print(err, file=sys.stderr)
+            return 1
+        places = list_snapshot_pois(snap, kinds)
+        if not snap.area.pois:
+            # "This area has no ruins" and "this file predates the feature and cannot
+            # say" are different answers with different fixes, and only one of them is
+            # about the landscape. --list-areas already flags such a snapshot; this is
+            # the same distinction at the point where it would otherwise be lost.
+            empty_msg = (
+                f"This downloaded area carries no points of interest — it was saved "
+                f"before the feature existed. Re-download it to browse and export them "
+                f"offline (hike-finder --bbox … --download {args.area})."
+            )
+    else:
+        if not args.bbox:
+            print(
+                "error: --show-pois needs --bbox (or --area FILE to browse a downloaded "
+                "area).",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            places = list_area_pois(
+                tuple(args.bbox),
+                kinds,
+                cfg,
+                user_agent=args.user_agent,
+                overpass_url=args.overpass_url,
+            )
+        except Exception as e:  # network/HTTP errors surface here
+            _fetch_hint(e)
+            return 1
+
+    if args.json:
+        print(json.dumps([p.to_dict() for p in places], ensure_ascii=False, indent=2))
+    elif not places:
+        print(empty_msg)
+    else:
+        # Say what the mix is before ninety lines of it — the first question about a long
+        # list is always its composition, and the summary answers it in one line.
+        print(format_poi_summary(places))
+        for p in places:
+            print(f"  {format_poi(p)}")
+    _write_exports(
+        list(places), args, gpx=pois_to_gpx, geojson=pois_to_geojson,
+        noun="point(s) of interest",
+    )
+    return 0
 
 
 def _print_areas(as_json: bool) -> int:
@@ -418,15 +536,18 @@ def run(args: argparse.Namespace) -> int:
 
     # Standalone informational actions: print and exit, no network, no bbox needed.
     if getattr(args, "list_pois", False):
-        print("Point-of-interest kinds for --poi and --to-poi (several are OR-ed):")
+        print("Point-of-interest kinds for --poi, --to-poi and --show-pois (OR-ed):")
         for kind, plural in kind_labels():
             print(f"  {kind:<14} {plural}")
         print(
             "\n--poi FILTERS routes by what they pass; --to-poi DRAWS a route to the "
-            "nearest one.\n"
+            "nearest one;\n--show-pois LISTS the objects themselves, with no routes at "
+            "all.\n"
             "\ne.g.  hike-finder --bbox 50.72 15.58 50.78 15.68 --poi ruins,church "
             "--max-distance 12"
             "\n      hike-finder --from 50.7312 15.6044 --to-poi ruins --routes 2"
+            "\n      hike-finder --bbox 50.72 15.58 50.78 15.68 --show-pois --poi ruins "
+            "--gpx ruins.gpx"
         )
         return 0
     if getattr(args, "list_areas", False):
@@ -457,6 +578,42 @@ def run(args: argparse.Namespace) -> int:
     if args.area and args.download:
         print("error: --area and --download are mutually exclusive.", file=sys.stderr)
         return 2
+
+    # --show-pois is a different question ("what objects are here?"), not a hike search
+    # with a filter on it, so it is answered here — before every mode below, each of
+    # which would otherwise silently ignore it. The incompatible combinations are named
+    # one by one rather than lumped together, because each is a different mistake.
+    if getattr(args, "show_pois", False):
+        if args.download:
+            print(
+                "error: --show-pois lists an area's objects; --download saves a snapshot. "
+                "Download first, then browse it with --show-pois --area FILE.",
+                file=sys.stderr,
+            )
+            return 2
+        if getattr(args, "compose_loops", False):
+            print(
+                "error: --show-pois draws no routes at all, so there is nothing for "
+                "--compose-loops to compose.",
+                file=sys.stderr,
+            )
+            return 2
+        if (
+            getattr(args, "around", None) is not None
+            or getattr(args, "from_pt", None) is not None
+            or getattr(args, "to_pt", None) is not None
+            or to_poi
+            or getattr(args, "via", None) is not None
+            or getattr(args, "via_loop", False)
+        ):
+            print(
+                "error: --show-pois lists objects without routing to them — drop the "
+                "point-based flags, or use --from … --to-poi KIND to draw a route to the "
+                "nearest one instead.",
+                file=sys.stderr,
+            )
+            return 2
+        return _show_pois(args, cfg)
 
     if getattr(args, "compose_loops", False) and (args.area or args.download):
         print(
@@ -640,15 +797,9 @@ def run(args: argparse.Namespace) -> int:
     if args.area:
         # A path wins; otherwise fall back to the NAMED snapshot directory, so the names
         # --list-areas (and the web UI) show are usable here verbatim.
-        target = args.area
-        if not os.path.isfile(target):
-            named = snapshot_path(args.area)
-            if named is not None and named.is_file():
-                target = str(named)
-        try:
-            snap = load_snapshot(target)
-        except (OSError, ValueError) as e:
-            print(f"error: could not read snapshot {args.area!r}: {e}", file=sys.stderr)
+        snap, err = _resolve_area(args.area)
+        if snap is None:
+            print(err, file=sys.stderr)
             return 1
         criteria = build_criteria(args)
         hikes = search_snapshot(

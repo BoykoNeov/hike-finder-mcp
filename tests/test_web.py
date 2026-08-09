@@ -398,3 +398,89 @@ def test_gpx_download_replays_a_to_poi_search(server, monkeypatch):
     assert ET.fromstring(body).tag.endswith("gpx")
     # The destination-derived (non-ASCII) name survives into the XML.
     assert "Zřícenina" in body
+
+
+# ------------------------------------------- browsing points of interest (no routes drawn)
+
+
+def test_poi_list_reads_a_downloaded_area(server):
+    """The "or only in the downloaded area" half of the browse — zero network."""
+    status, body = _get(server + "/api/poi-list?area=webpoi")
+    assert status == 200
+    assert [p["kind"] for p in body["pois"]] == ["church", "ruins"]   # registry order
+    assert body["summary"] == "2 objects: 1 church, 1 ruin"
+    assert body["stale_area"] is False
+    # A listed object carries no distance: there is no route to measure it from.
+    assert "distance_m" not in body["pois"][0]
+
+
+def test_poi_list_filters_by_kind(server):
+    _, body = _get(server + "/api/poi-list?area=webpoi&show_poi=ruins")
+    assert [p["name"] for p in body["pois"]] == ["Zřícenina"]
+
+
+def test_poi_list_with_no_kinds_shows_everything(server):
+    """Empty selection is a browse ("what's here?"), not an empty question."""
+    _, all_kinds = _get(server + "/api/poi-list?area=webpoi")
+    _, explicit = _get(server + "/api/poi-list?area=webpoi&show_poi=church&show_poi=ruins")
+    assert all_kinds["pois"] == explicit["pois"]
+
+
+def test_poi_list_flags_a_pre_poi_area(server):
+    """`webtest` was saved with no POIs — the UI must be able to say "can't know"."""
+    _, body = _get(server + "/api/poi-list?area=webtest")
+    assert body["pois"] == [] and body["stale_area"] is True
+
+
+def test_poi_list_pairs_with_a_saved_area_where_routing_may_not(server):
+    """The reason the browse gets its own resolver.
+
+    `/api/hikes` rejects area + to_poi (routing needs a live graph); the browse REQUIRES
+    that pairing. Pinned together so a future refactor can't merge the two rules.
+    """
+    _, browsed = _get(server + "/api/poi-list?area=webpoi")
+    assert browsed["pois"]
+    with pytest.raises(urllib.error.HTTPError) as e:
+        _get(server + "/api/hikes?area=webpoi&to_poi=ruins&to_poi_lat=50&to_poi_lon=14")
+    assert e.value.code == 400
+
+
+def test_poi_list_rejects_an_unknown_kind(server):
+    with pytest.raises(urllib.error.HTTPError) as e:
+        _get(server + "/api/poi-list?area=webpoi&show_poi=castel")
+    assert e.value.code == 400
+    assert "unknown point-of-interest kind" in e.value.read().decode("utf-8")
+
+
+def test_poi_list_needs_a_box_or_an_area(server):
+    with pytest.raises(urllib.error.HTTPError) as e:
+        _get(server + "/api/poi-list")
+    assert e.value.code == 400
+
+
+def test_poi_kinds_registry_is_still_its_own_endpoint(server):
+    """/api/pois is the MENU of kinds; /api/poi-list is the objects. Distinct on purpose."""
+    _, kinds = _get(server + "/api/pois")
+    assert {"kind", "label"} <= set(kinds[0])
+    assert "ruins" in {k["kind"] for k in kinds}
+
+
+def test_poi_export_streams_waypoints_not_tracks(server):
+    """`pois=true` is part of the params the page stores, so the download matches the list."""
+    status, headers, body = _get_raw(server + "/api/gpx?pois=true&area=webpoi&show_poi=ruins")
+    assert status == 200
+    assert headers["Content-Disposition"] == 'attachment; filename="pois.gpx"'
+    assert "<wpt" in body and "<trk>" not in body
+    assert "Zřícenina" in body
+
+    status, headers, body = _get_raw(server + "/api/geojson?pois=true&area=webpoi")
+    assert headers["Content-Disposition"] == 'attachment; filename="pois.geojson"'
+    fc = json.loads(body)
+    assert {f["geometry"]["type"] for f in fc["features"]} == {"Point"}
+
+
+def test_hike_export_is_unaffected_by_the_new_branch(server):
+    """Without `pois`, the export is the route export it always was."""
+    status, headers, body = _get_raw(server + "/api/gpx?area=webtest")
+    assert headers["Content-Disposition"] == 'attachment; filename="hikes.gpx"'
+    assert "<trk>" in body

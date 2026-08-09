@@ -19,6 +19,9 @@ Three pieces, all pure and network-free (the project's trust-anchor convention):
     for every route.
   * :func:`route_pois` — the predicate itself: which registered POIs lie within
     ``radius_m`` of any point of a route's geometry, and how far away.
+  * :func:`select_pois` — the *inventory*: every registered object of the chosen kinds in
+    an area, with no route in the picture at all ("show me the ruins around here"). Same
+    registry, same labels, so the browse and the filter can never name a kind differently.
 
 Proximity, not termination: a route "reaches" a POI when it passes within the radius,
 which is measured and reported. Requiring the route to *end* at the POI was considered
@@ -108,9 +111,30 @@ POI_KINDS: dict[str, PoiKind] = {
 }
 
 
+# Registry position per kind. The ONE deterministic order every listing sorts by, so a
+# printed inventory comes out in the same order as the `--list-poi-kinds` menu the user
+# just read. Derived from the table, never written out, like everything else here.
+_KIND_ORDER: dict[str, int] = {kind: i for i, kind in enumerate(POI_KINDS)}
+
+
 def kind_labels() -> list[tuple[str, str]]:
     """``(kind, plural label)`` for every registered kind, for the CLI/web/MCP lists."""
     return [(k, v.plural) for k, v in POI_KINDS.items()]
+
+
+def kind_label(kind: str, *, plural: bool = False) -> str:
+    """The human label for a registered kind, falling back to the raw kind.
+
+    The SINGLE lookup both :class:`PoiHit` and :class:`PoiPlace` render through. Two
+    types each doing their own ``POI_KINDS.get(...)`` is the same drift hazard the
+    query/classifier pair is built to avoid — a kind relabelled in the table has to
+    change everywhere it is shown, or the same object reads two different ways in two
+    frontends.
+    """
+    spec = POI_KINDS.get(kind)
+    if spec is None:
+        return kind
+    return spec.plural if plural else spec.label
 
 
 def selectors_by_key() -> dict[str, tuple[str, ...]]:
@@ -175,8 +199,7 @@ class PoiHit:
 
     @property
     def label(self) -> str:
-        spec = POI_KINDS.get(self.kind)
-        return spec.label if spec else self.kind
+        return kind_label(self.kind)
 
     def describe(self) -> str:
         """``church “St. Peter” (120 m)`` — the shared one-line rendering."""
@@ -192,6 +215,102 @@ class PoiHit:
             "lon": self.coord[1],
             "distance_m": round(self.distance_m, 1),
         }
+
+
+@dataclass(frozen=True)
+class PoiPlace:
+    """One registered object in an area, on its own — no route, no distance.
+
+    Deliberately NOT a :class:`PoiHit` with ``distance_m=0``. Every distance in this
+    module answers "how close does a route come?", and this mode has no route to measure
+    against; a zero would render as ``ruin “Zřícenina” (0 m)`` and read as *touching the
+    trail*, which is a claim nobody made. Two small types beat one type that lies. They
+    share :func:`kind_label`, so the two can't disagree about what a kind is called.
+    """
+
+    kind: str
+    name: str | None
+    coord: Coord
+
+    @property
+    def label(self) -> str:
+        return kind_label(self.kind)
+
+    def describe(self) -> str:
+        """``ruin “Nístějka” — 50.6821, 15.5533`` — the shared one-line rendering."""
+        named = f' “{self.name}”' if self.name else ""
+        return f"{self.label}{named} — {self.coord[0]:.5f}, {self.coord[1]:.5f}"
+
+    def to_dict(self) -> dict:
+        return {
+            "kind": self.kind,
+            "label": self.label,
+            "name": self.name,
+            "lat": self.coord[0],
+            "lon": self.coord[1],
+        }
+
+
+def select_pois(pois: list[dict], kinds=()) -> tuple[PoiPlace, ...]:
+    """Every object of ``kinds`` in an area's POI list — the inventory, not a filter.
+
+    ``pois`` is ``AreaData.pois`` (live or from a snapshot, identically shaped, which is
+    what makes offline == online here free rather than argued). ``kinds`` is validated
+    through :func:`normalise_kinds`, so a typo raises instead of quietly listing nothing.
+
+    **An empty ``kinds`` means every registered kind**, expanded here and never passed on
+    as a bare ``()``. That expansion is explicit because the opposite convention already
+    exists three functions down: :func:`route_pois` treats ``()`` as *match nothing*, and
+    the two readings differ by an entire result set. "Show me what's here" with nothing
+    selected is a browse, not an empty question.
+
+    NOT clipped to any bounding box. The list is what Overpass returned for the fetched
+    area, and a large object straddling the edge (a monastery way, an archaeological area)
+    has its ``out center`` representative point wherever its centroid lands — possibly just
+    outside the box it genuinely intersects. Over-showing by a few metres is visible and
+    self-explanatory on a map; dropping a real object because of a centroid is the silent
+    failure this project's conventions forbid. ``routes_to_poi`` reads ``area.pois`` the
+    same unclipped way.
+
+    Ordered by registry position, then name, then coordinate — so an inventory comes out
+    grouped the way the kind menu lists them, and identically on every run. Each real-world
+    object appears once (``parse_area`` already de-dupes by element identity; the coord/kind
+    key here also covers a snapshot hand-assembled from two sources).
+    """
+    wanted = normalise_kinds(kinds) or tuple(POI_KINDS)
+    allowed = frozenset(wanted)
+    seen: set[tuple[Coord, str]] = set()
+    out: list[PoiPlace] = []
+    for p in pois or ():
+        kind = p.get("kind")
+        if kind not in allowed:
+            continue
+        coord = p.get("coord")
+        if coord is None:
+            continue
+        coord = (coord[0], coord[1])
+        key = (coord, kind)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(PoiPlace(kind=kind, name=p.get("name"), coord=coord))
+    out.sort(key=lambda q: (_KIND_ORDER.get(q.kind, len(_KIND_ORDER)), q.name or "", q.coord))
+    return tuple(out)
+
+
+def count_by_kind(places) -> list[tuple[str, int]]:
+    """``(kind, count)`` for a selection, in registry order — the inventory's summary.
+
+    Kinds with no objects are omitted: "0 caves" in a list of what IS here is noise, and
+    the honest "nothing of that kind is mapped" line belongs to the empty-result path,
+    where it can also say what to do about it.
+    """
+    counts: dict[str, int] = {}
+    for p in places:
+        counts[p.kind] = counts.get(p.kind, 0) + 1
+    return sorted(
+        counts.items(), key=lambda kv: (_KIND_ORDER.get(kv[0], len(_KIND_ORDER)), kv[0])
+    )
 
 
 class PoiIndex:

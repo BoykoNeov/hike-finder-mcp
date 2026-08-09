@@ -59,7 +59,7 @@ Distance and gain say how hard a walk is; they don't say whether it's worth doin
 ruin."**
 
 ```bash
-hike-finder --list-pois                                     # the kinds you can ask for
+hike-finder --list-poi-kinds                                # the kinds you can ask for
 hike-finder --bbox 50.52 15.15 50.60 15.28 --poi ruins,castle --max-distance 25
 ```
 
@@ -93,7 +93,52 @@ silent empty result.
 
 > `--poi` **filters** existing routes by what they pass. To have a route **drawn to** the
 > nearest ruin instead, see [`--to-poi`](#point-based-route-drawing-pick-points-on-a-map-get-routes)
-> below — the same kinds, the opposite question. They combine.
+> below — the same kinds, the opposite question. They combine. To just **see what is
+> there**, with no route at all, see [`--show-pois`](#just-show-me-whats-there-show-pois).
+
+### Just show me what's there (`--show-pois`)
+
+Sometimes the question isn't about a walk at all: **"what ruins are around here?"**
+`--show-pois` lists the objects themselves — pinned, counted, and exportable — and draws
+no routes to any of them.
+
+```bash
+hike-finder --bbox 50.52 15.15 50.60 15.28 --show-pois --poi ruins,castle
+hike-finder --bbox 50.52 15.15 50.60 15.28 --show-pois --gpx cesky-raj-pois.gpx
+hike-finder --area ceskyraj --show-pois --poi viewpoint      # offline, zero network
+```
+
+```
+7 objects: 3 castles & forts, 4 ruins
+  castle "zámek Hrubá Skála" — 50.54930, 15.19710
+  castle "Kost" — 50.53390, 15.22860
+  ruin "Rotštejn" — 50.57630, 15.24460
+  ...
+```
+
+The same eighteen kinds as `--poi` select what to list; **omit `--poi` to show every
+kind**. Results are grouped by kind, counted in the header, and ordered the same way every
+run.
+
+Two sources, one output: the live `--bbox`, or a downloaded `--area` — the "only in the
+area I already have" half, which needs **no network whatsoever**. Either way nothing is
+measured, because nothing is walked: it makes **one Overpass call, builds no elevation
+provider, and spends nothing from the daily API quota**.
+
+`--gpx` / `--geojson` export the listing as **waypoints** (a GPX `<wpt>` per object, a
+GeoJSON `Point` per object) rather than tracks — load them into OsmAnd / Komoot / mapy.cz /
+a Garmin and navigate to them yourself. An unnamed object exports under its kind
+("viewpoint"), never as a blank pin. `--json` gives the same list as structured data.
+
+> Three POI questions, three flags: **`--poi`** filters routes by what they pass,
+> **`--to-poi`** draws a route to the nearest one, **`--show-pois`** just lists them.
+> `--list-poi-kinds` (formerly `--list-pois`, still accepted) prints the kinds.
+
+**Honesty note:** an empty listing means nothing of that kind is *mapped* in OSM there. A
+snapshot downloaded before this feature existed says so explicitly rather than reporting an
+empty area, and the objects are **not clipped** to the box — a large object straddling the
+edge keeps its representative point wherever it falls, because dropping a real thing is
+worse than showing one just outside.
 
 ### Near-miss results (close-but-not-matching)
 
@@ -322,7 +367,7 @@ hike-finder --from 50.73 15.60 --to-poi refreshment --routes 1 --to-poi-radius 6
             --user-agent you@example.com
 ```
 
-Same eighteen kinds as `--poi` (`--list-pois`), but they mean something different here.
+Same eighteen kinds as `--poi` (`--list-poi-kinds`), but they mean something different here.
 **`--poi` filters** routes you already found by what they happen to pass; **`--to-poi`
 draws** the route to the object. You can use both at once — "a route to the nearest ruin
 that also passes a pub" — because they answer different questions.
@@ -370,6 +415,11 @@ circular route* checkbox for `--via`); MCP has the `circular_routes`, `routes_be
 `route_via`, and `routes_to_poi` tools. Results carry full computed stats and export to
 GPX/GeoJSON like any other route.
 
+The same **Mode** selector also carries "Show points of interest (no routes)" — the
+[`--show-pois`](#just-show-me-whats-there-show-pois) browse. Unlike the four routing modes
+it works on a **downloaded area** as well as the live map, and MCP exposes it as the
+`list_pois` tool.
+
 ### Export — GPX / GeoJSON (load into your phone or GPS)
 
 Once a search (live, offline `--area`, or `--compose-loops`) gives you routes you like,
@@ -387,6 +437,10 @@ hike-finder --bbox 50.72 15.58 50.74 15.62 --compose-loops --gpx day.gpx   # com
   drive/ride to). Loads into Komoot, OsmAnd, Gaia GPS, Garmin, **mapy.cz**, …
 - **GeoJSON** (RFC 7946) — a `FeatureCollection` of route lines carrying the full computed
   stats in `properties` (gain/loss, distance, shape, access, provenance).
+
+The same two flags export the [`--show-pois`](#just-show-me-whats-there-show-pois) listing
+instead, as **waypoints** rather than tracks — a GPX `<wpt>` / GeoJSON `Point` per object —
+which is the honest shape when the answer is a set of places, not a walk.
 
 When a route's elevation was computed, the exported track carries the **full per-point
 profile** — GPX puts an `<ele>` on every point of one clean walking-order track; GeoJSON
@@ -584,7 +638,9 @@ claude mcp add hike-finder --env HIKE_OVERPASS_UA=you@example.com -- hike-finder
 Then ask in plain language ("find loop hikes near Špindlerův Mlýn reachable by
 chairlift") and the client calls `find_hikes(south, west, north, east, …)` with
 the same filters as the CLI — plus `compose_loops` (stitch connected trails into
-loops) and `area` (search a snapshot offline).
+loops) and `area` (search a snapshot offline). `list_pois` answers the other kind of
+question — "what churches/ruins are in this area?" — without drawing a route to any of
+them, live or against a downloaded area.
 
 > The server is **validated live**: with `mcp` 1.28 it was driven over real OS
 > stdio (`python -m hike_finder.server`) — `list_tools` advertises `find_hikes`,

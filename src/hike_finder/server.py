@@ -5,6 +5,9 @@ Tools:
              min_distance_km, max_distance_km,
              circular, car_access, chairlift_access,
              near_misses, area, compose_loops, name_places, format)
+  list_pois(south, west, north, east | area, kinds, format)  — list the churches /
+             ruins / peaks in an area WITHOUT routing to them. One Overpass call, no
+             elevation, no quota; `area` makes it fully offline.
   download_area(south, west, north, east, path)  — fetch an area once and save it
              so find_hikes(area=path) can search it offline with no further API calls.
 
@@ -27,14 +30,16 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from . import config as _config
-from .export import hikes_to_geojson, hikes_to_gpx
+from .export import hikes_to_geojson, hikes_to_gpx, pois_to_geojson, pois_to_gpx
 from .filters import Criteria
-from .format import format_hike
+from .format import format_hike, format_poi, format_poi_summary
 from .poi import POI_KINDS, kind_labels, normalise_kinds
 from .search import (
     compose_loops,
     compose_loops_around,
     download_area,
+    list_area_pois,
+    list_snapshot_pois,
     route_via,
     routes_between,
     routes_to_poi,
@@ -363,6 +368,58 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="list_pois",
+            description=(
+                "List the churches / ruins / peaks / viewpoints / huts themselves in an "
+                "area — 'what ruins are there around here?' — WITHOUT drawing any route to "
+                "them. Give a bounding box for a live look, or `area` to read a downloaded "
+                "snapshot with no network at all.\n\n"
+                "This is the third and simplest of the three POI questions this server "
+                "answers. `poi` on the search tools FILTERS routes by what they pass; "
+                "routes_to_poi DRAWS a route to the nearest one; this one just LISTS the "
+                "objects. Nothing is measured, because nothing is walked: it makes ONE "
+                "Overpass call, spends nothing from the elevation API budget, and needs no "
+                "DEM.\n\n"
+                "Omit `kinds` to list every registered kind. Results are grouped by kind and "
+                "carry each object's name and coordinate, so they can be pinned or handed "
+                "onward directly; `format` can also emit them as GPX waypoints or GeoJSON "
+                "points to load into a GPS. An empty result means nothing of that kind is "
+                "MAPPED in OSM there, not that nothing is there."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "south": {"type": "number"},
+                    "west": {"type": "number"},
+                    "north": {"type": "number"},
+                    "east": {"type": "number"},
+                    "area": {
+                        "type": "string",
+                        "description": "Path to a snapshot saved by download_area — list what "
+                        "is in an already-downloaded area, with zero network. Takes the place "
+                        "of the bounding box.",
+                    },
+                    "kinds": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": sorted(POI_KINDS)},
+                        "description": (
+                            "Which kinds to list; several are OR-ed. Omit for ALL of them. "
+                            "Available: "
+                            + "; ".join(f"{k} ({lbl})" for k, lbl in kind_labels())
+                        ),
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["text", "json", "gpx", "geojson"],
+                        "description": "Output format (default 'text'). 'gpx' emits waypoints, "
+                        "'geojson' a FeatureCollection of points — both loadable into a GPS "
+                        "or phone.",
+                    },
+                },
+                "required": [],
+            },
+        ),
+        Tool(
             name="download_area",
             description=(
                 "Fetch a bounding box once — its hiking routes plus computed elevation for "
@@ -464,6 +521,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return await _call_route_via(arguments)
     if name == "routes_to_poi":
         return await _call_routes_to_poi(arguments)
+    if name == "list_pois":
+        return await _call_list_pois(arguments)
     if name == "download_area":
         return await _call_download_area(arguments)
     if name == "list_areas":
@@ -643,6 +702,58 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
     if fmt == "geojson":
         return [TextContent(type="text", text=hikes_to_geojson(hikes))]
     return [TextContent(type="text", text="\n".join(format_hike(h) for h in hikes))]
+
+
+async def _call_list_pois(arguments: dict) -> list[TextContent]:
+    """The browse mode: what objects are in this area, with no route to any of them."""
+    kinds = normalise_kinds(arguments.get("kinds"))  # empty = every registered kind
+    area_path = arguments.get("area")
+    stale = False
+    if area_path:
+        snap = await asyncio.to_thread(load_snapshot, area_path)
+        # Read BEFORE the listing: an empty result from a pre-POI snapshot is not an
+        # answer about the landscape, and an LLM client will report it as one unless the
+        # difference is spelled out in the text it gets back.
+        stale = not snap.area.pois
+        places = await asyncio.to_thread(list_snapshot_pois, snap, kinds)
+    else:
+        missing = [k for k in ("south", "west", "north", "east") if k not in arguments]
+        if missing:
+            return [
+                TextContent(
+                    type="text",
+                    text="provide south/west/north/east for a live listing, or `area` for a "
+                    "downloaded snapshot.",
+                )
+            ]
+        bbox = (arguments["south"], arguments["west"], arguments["north"], arguments["east"])
+        places = await asyncio.to_thread(list_area_pois, bbox, kinds, CFG)
+
+    if not places:
+        if stale:
+            return [TextContent(type="text", text=(
+                f"That downloaded area carries no points of interest — it was saved before "
+                f"the feature existed. Re-download it with download_area to browse and "
+                f"export them offline."
+            ))]
+        listed = ", ".join(kinds) if kinds else "any registered kind"
+        return [TextContent(type="text", text=(
+            f"Nothing of that kind ({listed}) is mapped in that area — try other kinds, omit "
+            f"`kinds` for all of them, or look at a wider area. (A miss means nothing of that "
+            f"kind is MAPPED in OSM there, not that nothing is there.)"
+        ))]
+
+    fmt = arguments.get("format") or "text"
+    if fmt == "gpx":
+        return [TextContent(type="text", text=pois_to_gpx(places))]
+    if fmt == "geojson":
+        return [TextContent(type="text", text=pois_to_geojson(places))]
+    if fmt == "json":
+        return [TextContent(type="text", text=json.dumps(
+            [p.to_dict() for p in places], ensure_ascii=False, indent=2
+        ))]
+    body = "\n".join(format_poi(p) for p in places)
+    return [TextContent(type="text", text=f"{format_poi_summary(places)}\n{body}")]
 
 
 async def _call_list_areas(arguments: dict) -> list[TextContent]:

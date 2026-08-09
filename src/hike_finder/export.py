@@ -11,6 +11,11 @@ and flagged — into the two interchange formats every mapping app reads:
   * **GeoJSON** (RFC 7946) — a ``FeatureCollection`` of ``MultiLineString`` features,
     one per hike, with the full measured stats in ``properties``.
 
+The same two formats also carry the *inventory* mode's output — every church / ruin /
+viewpoint in an area, with no route drawn to any of them (:func:`pois_to_gpx`,
+:func:`pois_to_geojson`). Those are waypoints and ``Point`` features rather than tracks
+and lines, which is the honest shape: the mode found objects, not walks.
+
 The track geometry comes from one of two sources, in order:
 
   * **``Hike.track``** when present — the resampled walking-order line with per-point
@@ -39,6 +44,7 @@ from xml.sax.saxutils import escape, quoteattr
 
 from .filters import Hike
 from .format import format_hike, hike_to_dict
+from .poi import PoiPlace
 
 GPX_CREATOR = "hike-finder-mcp"
 
@@ -151,5 +157,67 @@ def hikes_to_geojson(hikes: list[Hike]) -> str:
     fc = {
         "type": "FeatureCollection",
         "features": [hike_to_feature(h) for h in hikes],
+    }
+    return json.dumps(fc, ensure_ascii=False, indent=2)
+
+
+def _poi_name(p: PoiPlace) -> str:
+    """A non-empty display name for a POI waypoint.
+
+    GPS units and map layers show the ``<name>`` and nothing else, so an unnamed object
+    exported with an empty one becomes an anonymous pin you can't tell from its
+    neighbours. Fall back to the kind's label ("ruin", "viewpoint") — the same fallback
+    ``PoiPlace.describe`` uses, so the file and the terminal agree.
+    """
+    return p.name or p.label
+
+
+def pois_to_gpx(places, *, creator: str = GPX_CREATOR) -> str:
+    """Serialise an area's points of interest as GPX 1.1 waypoints — one ``<wpt>`` each.
+
+    The counterpart of :func:`hikes_to_gpx` for the inventory mode: no tracks, because
+    there are no routes in this mode — just the objects, as pins you can load into
+    OsmAnd / Garmin / Komoot / mapy.cz and navigate to yourself. A waypoint-only document
+    is valid GPX 1.1 (the schema's order is ``wpt*`` then ``rte*`` then ``trk*``; zero of
+    the latter two is fine), and an empty list yields a valid empty ``<gpx>`` rather than
+    a crash or zero bytes — the same contract the hike exports keep.
+
+    ``<type>`` carries the registry kind (the machine-readable ``ruins``), ``<desc>`` the
+    human label, so a file round-trips back to a kind without re-parsing prose.
+    """
+    out: list[str] = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        f'<gpx version="1.1" creator={quoteattr(creator)} '
+        'xmlns="http://www.topografix.com/GPX/1/1">',
+    ]
+    for p in places:
+        lat, lon = p.coord
+        out.append(f'  <wpt lat="{_coord(lat)}" lon="{_coord(lon)}">')
+        out.append(f"    <name>{escape(_poi_name(p))}</name>")
+        out.append(f"    <desc>{escape(p.label)}</desc>")
+        out.append(f"    <type>{escape(p.kind)}</type>")
+        out.append("  </wpt>")
+    out.append("</gpx>")
+    return "\n".join(out) + "\n"
+
+
+def pois_to_geojson(places) -> str:
+    """Serialise an area's points of interest as a GeoJSON ``FeatureCollection`` of
+    ``Point`` features — one per object, with ``kind``/``label``/``name`` in properties.
+
+    Coordinates are GeoJSON order, ``[lon, lat]`` (RFC 7946) — the same axis swap this
+    module owns for the route exports, kept in the same place for the same reason. An
+    empty list yields an empty but valid FeatureCollection.
+    """
+    fc = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [p.coord[1], p.coord[0]]},
+                "properties": p.to_dict(),
+            }
+            for p in places
+        ],
     }
     return json.dumps(fc, ensure_ascii=False, indent=2)

@@ -76,7 +76,7 @@ def test_list_tools_advertises_find_hikes(monkeypatch):
     tools = {t.name: t for t in result.tools}
     assert set(tools) == {
         "find_hikes", "circular_routes", "routes_between", "route_via", "routes_to_poi",
-        "download_area", "list_areas",
+        "list_pois", "download_area", "list_areas",
     }
 
     schema = tools["find_hikes"].inputSchema
@@ -464,7 +464,7 @@ def test_real_stdio_transport_lists_the_tool():
     result = asyncio.run(asyncio.wait_for(_impl(), timeout=60))
     assert {t.name for t in result.tools} == {
         "find_hikes", "circular_routes", "routes_between", "route_via", "routes_to_poi",
-        "download_area", "list_areas",
+        "list_pois", "download_area", "list_areas",
     }
 
 
@@ -657,3 +657,105 @@ def test_routes_to_poi_empty_result_is_destination_shaped(monkeypatch):
     assert "max_distance_km" in text
     assert "MAPPED" in text          # a miss is about the map, not the world
     assert "in the selected area" not in text
+
+
+# ------------------------------------------- list_pois (browse the objects, no routing)
+
+
+def _call(tool, args):
+    async def _impl():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.call_tool(tool, args)
+
+    return asyncio.run(_impl())
+
+
+_BROWSE_POIS = [
+    {"coord": (50.7301, 15.6001), "kind": "ruins", "name": "Nistejka"},
+    {"coord": (50.7211, 15.5902), "kind": "church", "name": "Sv. Petr"},
+]
+
+
+def _browse_snapshot(path, pois):
+    from hike_finder.overpass import AreaData
+    from hike_finder.snapshot import AreaSnapshot, save_snapshot
+
+    save_snapshot(
+        AreaSnapshot(
+            bbox=(50.72, 15.58, 50.78, 15.68),
+            area=AreaData(pois=list(pois)),
+            elevations={},
+            sample_interval_m=25.0,
+        ),
+        path,
+    )
+
+
+def test_list_pois_advertises_the_browse():
+    async def _impl():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.list_tools()
+
+    tool = {t.name: t for t in asyncio.run(_impl()).tools}["list_pois"]
+    schema = tool.inputSchema
+    # Nothing is required: a live listing needs the corners, an offline one needs `area`
+    # — validated in call_tool, like find_hikes.
+    assert schema["required"] == []
+    assert set(schema["properties"]) >= {"south", "west", "north", "east", "area", "kinds", "format"}
+    assert "ruins" in schema["properties"]["kinds"]["items"]["enum"]
+    # The description has to keep the three POI questions apart, or an LLM client will
+    # reach for the wrong one.
+    assert "WITHOUT drawing any route" in tool.description
+
+
+def test_list_pois_reads_a_snapshot_offline(tmp_path):
+    path = tmp_path / "browse.json"
+    _browse_snapshot(path, _BROWSE_POIS)
+    result = _call("list_pois", {"area": str(path)})
+    assert not result.isError
+    text = result.content[0].text
+    assert text.startswith("2 objects: 1 church, 1 ruin")
+    assert "Sv. Petr" in text and "Nistejka" in text
+
+
+def test_list_pois_formats(tmp_path):
+    path = tmp_path / "browse.json"
+    _browse_snapshot(path, _BROWSE_POIS)
+    gpx = _call("list_pois", {"area": str(path), "kinds": ["ruins"], "format": "gpx"})
+    assert "<wpt" in gpx.content[0].text and "<trk>" not in gpx.content[0].text
+    geo = _call("list_pois", {"area": str(path), "format": "geojson"})
+    assert json.loads(geo.content[0].text)["features"][0]["geometry"]["type"] == "Point"
+    js = _call("list_pois", {"area": str(path), "format": "json"})
+    assert [d["kind"] for d in json.loads(js.content[0].text)] == ["church", "ruins"]
+
+
+def test_list_pois_live_forwards_bbox_and_kinds(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        server, "list_area_pois",
+        lambda bbox, kinds, cfg=None, **kw: captured.update(bbox=bbox, kinds=kinds) or (),
+    )
+    _call("list_pois", {
+        "south": 50.72, "west": 15.58, "north": 50.78, "east": 15.68, "kinds": ["ruins"],
+    })
+    assert captured["bbox"] == (50.72, 15.58, 50.78, 15.68)
+    assert captured["kinds"] == ("ruins",)
+
+
+def test_list_pois_needs_a_box_or_an_area():
+    result = _call("list_pois", {"kinds": ["ruins"]})
+    assert "provide south/west/north/east" in result.content[0].text
+
+
+def test_list_pois_separates_empty_from_cannot_know(tmp_path):
+    """Two empty results, two different answers — the distinction an LLM must not lose."""
+    current = tmp_path / "current.json"
+    _browse_snapshot(current, _BROWSE_POIS)
+    nothing = _call("list_pois", {"area": str(current), "kinds": ["cave"]})
+    assert "Nothing of that kind (cave) is mapped" in nothing.content[0].text
+    assert "not that nothing is there" in nothing.content[0].text
+
+    old = tmp_path / "old.json"
+    _browse_snapshot(old, [])
+    stale = _call("list_pois", {"area": str(old)})
+    assert "saved before the feature existed" in stale.content[0].text

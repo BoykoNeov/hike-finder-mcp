@@ -3,10 +3,42 @@
 Keeping the one-line summary in one place means the terminal CLI and the MCP
 server print *identically*, and the web UI serialises the same fields. No logic
 here beyond presentation.
+
+The same applies to the *inventory* mode's output (:func:`format_poi`,
+:func:`format_poi_summary`): a listed church reads the same in all three frontends.
 """
 from __future__ import annotations
 
 from .filters import Hike
+from .poi import count_by_kind, kind_label
+
+
+def format_poi(p) -> str:
+    """The canonical one-line summary of a listed point of interest.
+
+    Thin on purpose — :meth:`poi.PoiPlace.describe` owns the wording so the terminal, the
+    web list and the MCP text output can't drift, exactly as ``PoiHit.describe`` does for
+    the objects a route passes.
+    """
+    return p.describe()
+
+
+def format_poi_summary(places) -> str:
+    """``43 objects: 12 churches & chapels, 8 viewpoints, …`` — the inventory's header.
+
+    A count per kind, in registry order, because the first question about a list of
+    ninety pins is what the mix is. Returns the honest empty phrasing for an empty
+    selection; the *why* and the lever to pull belong to the caller's empty message.
+    """
+    total = len(places)
+    if not total:
+        return "no points of interest"
+    # Singular label for a count of one ("1 ruin", not "1 ruins") — the plural label is a
+    # category name and reads wrong against a count.
+    mix = ", ".join(
+        f"{n} {kind_label(kind, plural=n != 1)}" for kind, n in count_by_kind(places)
+    )
+    return f"{total} object{'s' if total != 1 else ''}: {mix}"
 
 
 def format_hike(h: Hike) -> str:

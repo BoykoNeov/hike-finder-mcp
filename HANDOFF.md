@@ -118,6 +118,17 @@ keeping:
 - **It lands in the CHEAP pass**, so a POI-filtered search spends *less* elevation budget than
   the same search without it: routes reaching nothing are dropped before anyone pays for their
   gain profile. Pinned by `test_poi.py`.
+- **Listing (`poi.select_pois`) is a different shape from matching, on purpose.** Three
+  decisions worth not re-litigating: (1) it returns a `PoiPlace`, **not** a `PoiHit` with
+  `distance_m=0` — there is no route to measure from, and a zero renders "(0 m)", which reads
+  as *on the trail*; both types render kinds through the one `poi.kind_label` so they can't
+  drift. (2) An empty `kinds` expands to **every** kind, the opposite of `route_pois` where
+  `()` means match nothing — the expansion is explicit at the top of the function and pinned,
+  because the two readings differ by a whole result set. (3) It is **not clipped to the
+  bbox**: a large object's `out center` representative point can land just outside a box it
+  genuinely intersects, and dropping a real object is the silent failure this project forbids
+  while over-showing one is visible on a map. `routes_to_poi` reads `area.pois` unclipped for
+  the same reason.
 
 The **over-length guard** (`HIKE_MAX_ROUTE_FACTOR` × bbox diagonal) drops routes longer than N×
 the bbox — a through-route (national trail) that merely crosses the area would otherwise report
@@ -158,6 +169,17 @@ Entry points on the shared engine, all rendering identically:
   out-and-back. Reuses the `routes_pad`/`routes_max_snap` guards and `_measure_composed`; a
   segment repeated in `ordered_segs` measures correctly because `assemble_loop_series` walks the
   sequence per-occurrence.
+
+- `search.list_area_pois` / `search.list_snapshot_pois` — **the inventory** (`--show-pois`, MCP
+  `list_pois`, web "Show points of interest (no routes)"): every registered object of the chosen
+  kinds in an area, with **no route drawn to any of them**. The odd one out among the modes and
+  deliberately so — it returns `poi.PoiPlace` objects, not `Hike`s, and touches neither the trail
+  graph nor an elevation provider (one Overpass call, nothing spent from the daily quota). Both
+  entry points funnel into the pure `poi.select_pois`, which is where offline == live comes from
+  here: it is a *shared call*, not two paths that agree. Live and offline are both first-class —
+  unlike the routing modes, this one is happy to read a saved snapshot, which is the whole point
+  of "only in the downloaded area". Exports through `export.pois_to_gpx` / `pois_to_geojson` as
+  **waypoints**, not tracks.
 
 **Near-misses** (`find_hikes(near_miss="auto")`, the frontend default) surface close-but-not-
 matching routes only when there are 0 strict matches, annotated with the literal gap. Shape is
@@ -215,6 +237,19 @@ thing is validated live against real OSM. Highlights:
   Hrubá Skála (90 m), Rotštejn (20 m) and Hrubý Rohozec (28 m); a download baked 280 POIs into
   the snapshot and the same filter re-ran **offline** against it by bare area name, with
   `--poi-radius 30` correctly emptying the result.
+- **POI inventory / browse** (`--show-pois`, MCP `list_pois`, web "Show points of interest") —
+  covered by `tests/test_poi_listing.py` plus frontend cases in `test_cli.py` / `test_web.py` /
+  `test_server.py` and 22 new browser-side checks in `webui_harness.cjs`. The four tests that
+  carry the design: **offline == live** (same `AreaData` → both paths → byte-identical listing
+  *and* exported GPX/GeoJSON, through a real snapshot round-trip); **no elevation provider is
+  ever constructed** (`_provider` monkeypatched to raise — the mode's zero-quota claim is a
+  pinned property, not a docstring); **empty kinds expand to all** (the opposite convention to
+  `route_pois`, where `()` means match nothing); and **a pre-POI snapshot says it cannot know**
+  rather than reporting an empty landscape, with the complement pinned too (a current snapshot
+  with no caves must *not* be flagged stale). **Not yet run against live Overpass** — the two
+  network-touching paths are `list_area_pois`'s single `_fetch_area` call (shared, already
+  live-verified by every other mode) and nothing else, so the exposure is small, but the
+  end-to-end live run is still owed.
 - **Downloaded-area inventory + drawn-box selection** (`--list-areas`, MCP `list_areas`, web
   "Already downloaded" / "Draw a box") — live-verified for the CLI/HTTP paths. The web UI's
   *browser* logic is covered by `tests/test_web_js.py`, which runs the page's real script under

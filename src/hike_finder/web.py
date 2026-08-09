@@ -19,14 +19,23 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from . import config as _config
-from .export import GEOJSON_MIME, GPX_MIME, hikes_to_geojson, hikes_to_gpx
+from .export import (
+    GEOJSON_MIME,
+    GPX_MIME,
+    hikes_to_geojson,
+    hikes_to_gpx,
+    pois_to_geojson,
+    pois_to_gpx,
+)
 from .filters import Criteria
-from .format import hike_to_dict
+from .format import format_poi_summary, hike_to_dict
 from .poi import kind_labels, normalise_kinds
 from .search import (
     compose_loops,
     compose_loops_around,
     download_area,
+    list_area_pois,
+    list_snapshot_pois,
     route_via,
     routes_between,
     routes_to_poi,
@@ -110,6 +119,7 @@ INDEX_HTML = """<!doctype html>
       <option value="between">Routes between two points</option>
       <option value="via">Route linking several points</option>
       <option value="topoi">Route to the nearest church / ruin / peak…</option>
+      <option value="pois">Show points of interest (no routes)</option>
     </select>
     <div id="around_ctl" style="display:none;">
       <p class="muted">Click the map to drop your point. Loops passing within the radius of it (using the min/max distance below, default 3–15 km) are drawn, each starting there. Live map only.</p>
@@ -137,6 +147,12 @@ INDEX_HTML = """<!doctype html>
         <div><label>Look within (m)</label><input id="to_poi_radius_m" type="number" step="500" placeholder="3000"></div>
       </div>
       <p class="muted">“Look within” also sizes the area fetched, so raising it makes the query heavier — but it is the lever when nothing of the kind is found nearby.</p>
+    </div>
+    <div id="pois_ctl" style="display:none;">
+      <p class="muted">Every object of the kinds you pick, pinned and listed — <b>no routes are drawn to them</b>. Works on the live map (your drawn box, else the view) <b>and</b> on a downloaded area, where it costs no network at all. No elevation is looked up either, so this spends nothing from the daily API budget.</p>
+      <label>Show</label>
+      <select id="show_poi" multiple size="7"></select>
+      <p class="muted">Ctrl/&#8984;-click for several. Leave <b>nothing</b> selected to show every kind. Then use the download buttons to export them as GPX waypoints for your GPS / phone.</p>
     </div>
 
     <label>Shape</label>
@@ -184,10 +200,10 @@ INDEX_HTML = """<!doctype html>
 
     <button id="search">Search this map area</button>
     <div class="row" style="margin-top:8px;">
-      <div><button id="dl_gpx" style="margin-top:0;" title="Download the listed routes as a GPX track for your GPS / phone">Download GPX</button></div>
-      <div><button id="dl_geojson" style="margin-top:0;" title="Download the listed routes as GeoJSON">Download GeoJSON</button></div>
+      <div><button id="dl_gpx" style="margin-top:0;" title="Download what is listed — routes as GPX tracks, points of interest as GPX waypoints">Download GPX</button></div>
+      <div><button id="dl_geojson" style="margin-top:0;" title="Download what is listed as GeoJSON">Download GeoJSON</button></div>
     </div>
-    <p class="muted">Download the routes you see — load the GPX into Komoot / OsmAnd / mapy.cz / a Garmin.</p>
+    <p class="muted">Download what you see — routes as GPX tracks, or (in the “Show points of interest” mode) the objects as GPX waypoints. Load either into Komoot / OsmAnd / mapy.cz / a Garmin.</p>
     <div id="status"></div>
     <div id="results"></div>
   </div>
@@ -346,6 +362,9 @@ function updateHint(){
   else if (m === 'topoi') s.textContent = !toPoiPt
       ? 'Click the map to drop your start.'
       : (selectedToPois().length ? 'Start set — press Search.' : 'Now pick what to walk to.');
+  else if (m === 'pois') s.textContent = document.getElementById('area').value
+      ? 'Ready — press Show to list what is in the downloaded area.'
+      : 'Ready — press Show to list what is in this map area.';
   else s.textContent = '';
 }
 
@@ -355,15 +374,18 @@ function updateMode(){
   document.getElementById('between_ctl').style.display = (m === 'between') ? 'block' : 'none';
   document.getElementById('via_ctl').style.display = (m === 'via') ? 'block' : 'none';
   document.getElementById('topoi_ctl').style.display = (m === 'topoi') ? 'block' : 'none';
-  // Composing/naming/area only make sense in the plain area mode.
-  const areaOnly = (m === 'area');
-  document.getElementById('compose_loops').disabled = !areaOnly;
-  document.getElementById('area').disabled = !areaOnly;
+  document.getElementById('pois_ctl').style.display = (m === 'pois') ? 'block' : 'none';
+  // Composing/naming only make sense in the plain area mode. The saved-area selector,
+  // though, stays live for the browse too — "only in the downloaded area" is half of
+  // what that mode is for, and it is the one offline mode that costs nothing at all.
+  document.getElementById('compose_loops').disabled = (m !== 'area');
+  document.getElementById('area').disabled = (m !== 'area' && m !== 'pois');
   const btn = document.getElementById('search');
   btn.textContent = m === 'around' ? 'Search loops near the point'
                   : m === 'between' ? 'Search routes between the points'
                   : m === 'via' ? 'Draw the route through the points'
                   : m === 'topoi' ? 'Draw routes to the nearest'
+                  : m === 'pois' ? 'Show the points of interest'
                   : 'Search this map area';
   picks.clearLayers(); aroundPt = fromPt = toPt = toPoiPt = null; viaPts = [];
   markers.clearLayers(); routeLines.clearLayers(); poiMarkers.clearLayers();
@@ -464,7 +486,10 @@ async function loadPois(){
     const kinds = await (await fetch('/api/pois')).json();
     // The SAME registry feeds both lists: what a route may be filtered by ("must pass")
     // and what it may be drawn to ("walk to"). One fetch, so the two can never disagree.
-    for (const id of ['poi', 'to_poi']){
+    // Three lists, one registry: what a route may be FILTERED by ("must pass"), what it
+    // may be DRAWN to ("walk to"), and what may simply be LISTED ("show"). One fetch, so
+    // none of the three can offer a kind the other two don't know.
+    for (const id of ['poi', 'to_poi', 'show_poi']){
       const sel = document.getElementById(id);
       for (const k of kinds){
         const o = document.createElement('option');
@@ -483,10 +508,76 @@ function selectedToPois(){
   return Array.from(document.getElementById('to_poi').selectedOptions).map(o => o.value);
 }
 
+function selectedShowPois(){
+  // Nothing selected means EVERY kind (the server expands it) — a browse with no
+  // selection is "what's here?", not "nothing".
+  return Array.from(document.getElementById('show_poi').selectedOptions).map(o => o.value);
+}
+
+async function showPois(area, status){
+  // The browse mode: list the objects, pin them, and make them downloadable — no routes,
+  // no elevation, no quota. Its own request/render path because the payload is objects,
+  // not hikes; sharing render() would mean faking a hike around each pin.
+  const params = new URLSearchParams();
+  params.set('pois', 'true');                    // also what makes the GPX/GeoJSON export
+  if (area) params.set('area', area);            // offline: the downloaded rectangle
+  else boundsParams(params);                     // live: your drawn box, else the view
+  for (const k of selectedShowPois()) params.append('show_poi', k);
+  const ua = val('ua'); if (ua !== null) params.set('user_agent', ua);
+  // Distance/gain/shape filters describe walks, and there is no walk here — sending them
+  // would put dead weight in the URL the download replays.
+  lastParams = params.toString();
+
+  const results = document.getElementById('results');
+  status.textContent = area ? ('Reading “' + area + '” offline…') : 'Looking…';
+  results.innerHTML = '';
+  markers.clearLayers(); routeLines.clearLayers(); poiMarkers.clearLayers();
+  try {
+    const resp = await fetch('/api/poi-list?' + params.toString());
+    const data = await resp.json();
+    if (!resp.ok || data.error){ status.textContent = 'Error: ' + (data.error || resp.status); return; }
+    const list = data.pois || [];
+    renderPois(list);
+    if (!list.length && data.stale_area){
+      // "This area has no ruins" and "this file was saved before the feature existed"
+      // are different answers with different fixes — never let the second read as the first.
+      status.textContent = 'This downloaded area carries no points of interest — it was '
+        + 'saved before the feature existed. Download it again to browse and export them offline.';
+    } else if (!list.length){
+      status.textContent = 'Nothing of that kind is mapped here — pick other kinds (or none, '
+        + 'for all of them), or look at a wider area. (A miss means nothing of that kind is '
+        + 'mapped in OSM here, not that nothing is there.)';
+    } else {
+      status.textContent = data.summary + (area ? ' [offline]' : '');
+    }
+  } catch (e){ status.textContent = 'Request failed: ' + e; }
+}
+
+function renderPois(places){
+  // One pin and one list entry per object. Clicking either frames it, so a long list
+  // stays navigable on the map.
+  const results = document.getElementById('results');
+  places.forEach(p => {
+    const title = p.name || p.label;
+    const pin = L.circleMarker([p.lat, p.lon], { radius:7, color:'#0b7d63', weight:2,
+        fillColor:'#8ce0c8', fillOpacity:0.95 }).addTo(poiMarkers)
+      .bindPopup('<b>' + esc(title) + '</b><br>' + esc(p.label)
+                 + '<br>' + p.lat.toFixed(5) + ', ' + p.lon.toFixed(5));
+    const el = document.createElement('div');
+    el.className = 'hike';
+    el.innerHTML = '<div class="name">' + esc(title) + '</div>'
+      + '<div class="meta">' + esc(p.label) + '</div>'
+      + '<div class="muted">' + p.lat.toFixed(5) + ', ' + p.lon.toFixed(5) + '</div>';
+    el.onclick = () => { map.setView([p.lat, p.lon], 16); pin.openPopup(); };
+    results.appendChild(el);
+  });
+}
+
 async function search(){
   const mode = modeName();
   const area = document.getElementById('area').value;
   const status = document.getElementById('status');
+  if (mode === 'pois'){ await showPois(area, status); return; }
   const params = new URLSearchParams();
   if (mode === 'around'){
     if (!aroundPt){ status.textContent = 'Click the map to drop your point first.'; return; }
@@ -720,7 +811,10 @@ updateMode();
 document.getElementById('download').onclick = downloadArea;
 document.getElementById('dl_gpx').onclick = () => download('gpx');
 document.getElementById('dl_geojson').onclick = () => download('geojson');
-document.getElementById('area').onchange = () => renderAreaList(window._hfAreas || []);
+document.getElementById('area').onchange = () => {
+  renderAreaList(window._hfAreas || []);
+  updateHint();   // the browse mode's hint says live-view vs downloaded-area
+};
 updateSel();
 loadAreas();
 loadPois();
@@ -812,6 +906,11 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/areas":
             self._areas()
             return
+        if parsed.path == "/api/poi-list":
+            # The objects in an area. Distinct from /api/pois below, which serves the
+            # KIND registry — the menu, not the things.
+            self._poi_list(parse_qs(parsed.query))
+            return
         if parsed.path == "/api/pois":
             # The selectable destination kinds, served from the ONE registry so the UI
             # list can never offer something the engine doesn't know (see poi.py).
@@ -885,6 +984,74 @@ class Handler(BaseHTTPRequestHandler):
             }
         )
         self._send(200, body, "application/json; charset=utf-8")
+
+    def _bbox(self, qs: dict):
+        """``(bbox, None)`` or ``(None, (400, {...}))`` — the live search rectangle."""
+        try:
+            return (
+                float(qs["south"][0]),
+                float(qs["west"][0]),
+                float(qs["north"][0]),
+                float(qs["east"][0]),
+            ), None
+        except (KeyError, ValueError):
+            return None, (400, {"error": "south/west/north/east are required"})
+
+    def _resolve_pois(self, qs: dict):
+        """List an area's points of interest — the browse mode, no routes drawn.
+
+        Deliberately NOT a branch inside ``_resolve_hikes``: that function returns hikes
+        and, more to the point, *rejects* pairing a saved area with a POI destination
+        (routing needs a live graph). Browsing has the opposite requirement — "everything
+        in the area I downloaded" is half of what the mode is for — so it gets its own
+        resolver rather than an exception carved into the other one's rules.
+
+        Returns ``(places, stale_area, None)`` or ``(None, False, (status, {...}))``.
+        ``stale_area`` marks a snapshot saved before POIs existed, so the UI can say "this
+        file can't know" instead of "there is nothing here".
+        """
+        try:
+            kinds = _poi_kinds(qs, "show_poi")
+        except ValueError as e:
+            return None, False, (400, {"error": str(e)})
+        area_name = _str(qs, "area")
+        if area_name:
+            path = snapshot_path(area_name)
+            if path is None or not path.is_file():
+                return None, False, (404, {"error": f"no saved area named {area_name!r}"})
+            try:
+                snap = load_snapshot(path)
+            except (OSError, ValueError) as e:
+                return None, False, (500, {"error": f"could not read area: {e}"})
+            return list_snapshot_pois(snap, kinds), not snap.area.pois, None
+        bbox, err = self._bbox(qs)
+        if err is not None:
+            return None, False, err
+        try:
+            return list_area_pois(
+                bbox, kinds, _cfg_for(qs), user_agent=_str(qs, "user_agent")
+            ), False, None
+        except Exception as e:  # noqa: BLE001 — surface any fetch/HTTP failure to the UI
+            return None, False, _fetch_error(e)
+
+    def _poi_list(self, qs: dict) -> None:
+        """``/api/poi-list`` — the objects themselves, as JSON.
+
+        An object rather than the bare array ``/api/hikes`` returns, because this mode has
+        two things to say beyond the list: the kind mix (rendered by the SAME
+        ``format_poi_summary`` the CLI prints, so the two frontends can't word it
+        differently) and whether an empty result came from a snapshot that predates the
+        feature.
+        """
+        places, stale, err = self._resolve_pois(qs)
+        if err is not None:
+            self._json(*err)
+            return
+        self._json(200, {
+            "pois": [p.to_dict() for p in places],
+            "summary": format_poi_summary(places),
+            "stale_area": stale,
+        })
 
     def _resolve_hikes(self, qs: dict):
         """Run the search a query describes (offline --area or live bbox/compose).
@@ -1004,15 +1171,9 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001
                 return None, _fetch_error(e)
 
-        try:
-            bbox = (
-                float(qs["south"][0]),
-                float(qs["west"][0]),
-                float(qs["north"][0]),
-                float(qs["east"][0]),
-            )
-        except (KeyError, ValueError):
-            return None, (400, {"error": "south/west/north/east are required"})
+        bbox, bbox_err = self._bbox(qs)
+        if bbox_err is not None:
+            return None, bbox_err
 
         # Loop composition: synthesise loops from connected trails inside the box.
         composing = _tri(qs, "compose_loops")
@@ -1037,7 +1198,26 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, [hike_to_dict(h, geometry=True) for h in hikes])
 
     def _export(self, qs: dict, fmt: str) -> None:
-        """Run the query's search and stream the results as a GPX / GeoJSON download."""
+        """Run the query's search and stream the results as a GPX / GeoJSON download.
+
+        The browse mode branches at the TOP rather than inside ``_resolve_hikes``, which
+        keeps the download plumbing identical for both: the page stores the params of the
+        last search and replays them here, so whichever mode produced what you are looking
+        at, the file matches it. ``pois=true`` is simply part of those stored params.
+        """
+        if _tri(qs, "pois") is True:
+            places, _stale, err = self._resolve_pois(qs)
+            if err is not None:
+                self._json(*err)
+                return
+            if fmt == "gpx":
+                body, mime, filename = pois_to_gpx(places), GPX_MIME, "pois.gpx"
+            else:
+                body, mime, filename = (
+                    pois_to_geojson(places), GEOJSON_MIME, "pois.geojson",
+                )
+            self._stream(body, mime, filename)
+            return
         hikes, err = self._resolve_hikes(qs)
         if err is not None:
             self._json(*err)
@@ -1046,6 +1226,10 @@ class Handler(BaseHTTPRequestHandler):
             body, mime, filename = hikes_to_gpx(hikes), GPX_MIME, "hikes.gpx"
         else:
             body, mime, filename = hikes_to_geojson(hikes), GEOJSON_MIME, "hikes.geojson"
+        self._stream(body, mime, filename)
+
+    def _stream(self, body: str, mime: str, filename: str) -> None:
+        """Send a generated document as a file download."""
         data = body.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", f"{mime}; charset=utf-8")

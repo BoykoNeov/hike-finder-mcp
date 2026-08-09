@@ -344,3 +344,134 @@ def test_to_poi_validation_rejects_the_wrong_combinations(capsys):
     assert run(_parse("--from", "50.73", "15.60", "--to-poi", "ruins",
                       "--area", "krkonose")) == 2
     assert "can't be combined with --area" in capsys.readouterr().err
+
+
+# --------------------------------------------------------- --show-pois (browse, no routes)
+
+
+def _poi_snapshot(path, pois):
+    """A minimal snapshot carrying only POIs — the browse needs no routes at all."""
+    save_snapshot(
+        AreaSnapshot(
+            bbox=(50.72, 15.58, 50.78, 15.68),
+            area=AreaData(pois=list(pois)),
+            elevations={},
+            sample_interval_m=25.0,
+        ),
+        path,
+    )
+
+
+_DEMO_POIS = [
+    {"coord": (50.7301, 15.6001), "kind": "ruins", "name": "Nístějka"},
+    {"coord": (50.7411, 15.6102), "kind": "church", "name": None},
+    {"coord": (50.7211, 15.5902), "kind": "church", "name": "Sv. Petr"},
+]
+
+
+def test_show_pois_lists_a_downloaded_area(tmp_path, capsys):
+    path = tmp_path / "demo.json"
+    _poi_snapshot(path, _DEMO_POIS)
+    assert run(_parse("--show-pois", "--area", str(path))) == 0
+    out = capsys.readouterr().out
+    assert "3 objects: 2 churches & chapels, 1 ruin" in out
+    assert "Nístějka" in out and "Sv. Petr" in out
+    # An unnamed object still gets a line, labelled by its kind rather than blank.
+    assert out.count("church") >= 2
+
+
+def test_show_pois_filters_by_kind_and_exports(tmp_path, capsys):
+    path = tmp_path / "demo.json"
+    _poi_snapshot(path, _DEMO_POIS)
+    gpx, geo = tmp_path / "p.gpx", tmp_path / "p.geojson"
+    assert run(_parse(
+        "--show-pois", "--area", str(path), "--poi", "ruins",
+        "--gpx", str(gpx), "--geojson", str(geo),
+    )) == 0
+    cap = capsys.readouterr()
+    assert "1 object: 1 ruin" in cap.out
+    assert "Sv. Petr" not in cap.out
+    # The confirmation goes to STDERR so a --json pipe stays clean, and counts objects
+    # rather than routes — nothing here is a route.
+    assert "point(s) of interest" in cap.err and "route(s)" not in cap.err
+    # Waypoints, not tracks: a listing has nothing to walk.
+    assert "<wpt" in gpx.read_text(encoding="utf-8")
+    assert "<trk>" not in gpx.read_text(encoding="utf-8")
+    assert json.loads(geo.read_text(encoding="utf-8"))["features"][0]["geometry"]["type"] == "Point"
+
+
+def test_show_pois_json_is_a_bare_array(tmp_path, capsys):
+    path = tmp_path / "demo.json"
+    _poi_snapshot(path, _DEMO_POIS)
+    assert run(_parse("--show-pois", "--area", str(path), "--json")) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert [d["kind"] for d in data] == ["church", "church", "ruins"]
+    assert "distance_m" not in data[0]   # nothing was measured, so nothing is claimed
+
+
+def test_show_pois_empty_names_the_lever(tmp_path, capsys):
+    path = tmp_path / "demo.json"
+    _poi_snapshot(path, _DEMO_POIS)
+    assert run(_parse("--show-pois", "--area", str(path), "--poi", "cave")) == 0
+    out = capsys.readouterr().out
+    assert "pick other --poi kinds" in out
+    assert "not that nothing is there" in out
+
+
+def test_show_pois_distinguishes_a_pre_poi_snapshot(tmp_path, capsys):
+    """An old snapshot cannot answer — that must not read as "no ruins here"."""
+    path = tmp_path / "old.json"
+    _poi_snapshot(path, [])
+    assert run(_parse("--show-pois", "--area", str(path))) == 0
+    out = capsys.readouterr().out
+    assert "saved before the feature existed" in out
+    assert "pick other --poi kinds" not in out
+
+
+def test_show_pois_rejects_the_wrong_combinations(capsys):
+    # It draws no routes, so there is nothing to compose.
+    assert run(_parse("--show-pois", "--bbox", "1", "2", "3", "4", "--compose-loops")) == 2
+    assert "nothing for --compose-loops" in capsys.readouterr().err
+    # It lists, it does not save an area.
+    assert run(_parse("--show-pois", "--bbox", "1", "2", "3", "4", "--download", "x.json")) == 2
+    assert "Download first, then browse" in capsys.readouterr().err
+    # The point-based modes are about routing to things; this one deliberately is not.
+    assert run(_parse("--show-pois", "--from", "50.7", "15.6", "--to-poi", "ruins")) == 2
+    assert "lists objects without routing to them" in capsys.readouterr().err
+    assert run(_parse("--show-pois", "--around", "50.7", "15.6")) == 2
+    assert "lists objects without routing to them" in capsys.readouterr().err
+    # Neither a box nor an area to look in.
+    assert run(_parse("--show-pois")) == 2
+    assert "--show-pois needs --bbox" in capsys.readouterr().err
+    # A typo'd kind is loud, not an empty list.
+    assert run(_parse("--show-pois", "--bbox", "1", "2", "3", "4", "--poi", "dragon")) == 2
+    assert "unknown point-of-interest kind" in capsys.readouterr().err
+
+
+def test_show_pois_live_path_passes_the_kinds_through(monkeypatch):
+    """The live branch forwards bbox + kinds and builds no elevation provider."""
+    from hike_finder import cli as C
+
+    captured = {}
+    monkeypatch.setattr(
+        C, "list_area_pois",
+        lambda bbox, kinds, cfg=None, **kw: captured.update(bbox=bbox, kinds=kinds) or (),
+    )
+    assert run(_parse(
+        "--show-pois", "--bbox", "50.72", "15.58", "50.78", "15.68", "--poi", "ruins,church",
+    )) == 0
+    assert captured["bbox"] == (50.72, 15.58, 50.78, 15.68)
+    assert captured["kinds"] == ("ruins", "church")
+
+
+def test_list_poi_kinds_keeps_its_old_spelling(capsys):
+    """--list-pois is the historical name; --list-poi-kinds is the unambiguous one.
+
+    argparse derives `dest` from the FIRST long option, so this also pins that the
+    explicit dest survived — without it `run()` would silently stop seeing the flag.
+    """
+    assert _parse("--list-pois").list_pois is True
+    assert _parse("--list-poi-kinds").list_pois is True
+    assert run(_parse("--list-poi-kinds")) == 0
+    out = capsys.readouterr().out
+    assert "ruins" in out and "--show-pois LISTS the objects" in out

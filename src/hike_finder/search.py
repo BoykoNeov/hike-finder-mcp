@@ -12,6 +12,11 @@ Three entry points, all returning the same filtered ``Hike`` list:
                           route, returning a snapshot you can search offline forever.
   - ``search_snapshot`` — offline: search a saved snapshot with zero network.
 
+Plus one pair that returns objects rather than hikes — the *inventory* mode, "show me
+every ruin in this area, no routes":
+  - ``list_area_pois``     — live: one Overpass call, no elevation, no quota spent.
+  - ``list_snapshot_pois`` — offline: the same selection over a saved area.
+
 ``near_miss`` (tri-state ``False`` / ``True`` / ``"auto"``) is forwarded to
 ``find_hikes`` unchanged on both the live and offline paths — see filters.py.
 """
@@ -1092,6 +1097,68 @@ def download_area(
         user_agent=user_agent or cfg.overpass_user_agent,
         places=places,
     )
+
+
+_SNAPSHOT_NO_POIS = (
+    "poi: this snapshot carries no points of interest (it predates the feature) — "
+    "re-download the area to browse or export them offline; for now the listing can "
+    "only be empty"
+)
+
+
+def list_area_pois(
+    bbox: Bbox,
+    kinds=(),
+    cfg: Config | None = None,
+    *,
+    user_agent: str | None = None,
+    overpass_url: str | None = None,
+) -> tuple[_poi.PoiPlace, ...]:
+    """Every registered object of ``kinds`` in ``bbox`` — the inventory, live.
+
+    "Show me all the ruins around here", with no route drawn to any of them. The
+    counterpart of ``--poi`` (which filters routes by what they pass) and of
+    ``routes_to_poi`` (which draws a route to one): here the objects ARE the answer.
+
+    Cheap by construction, and worth stating because every other mode in this module is
+    not: ONE Overpass call, transparently cached, and **no elevation provider is ever
+    constructed** — so the mode spends nothing from the daily elevation quota and needs
+    no DEM. Nothing is measured because nothing is walked.
+
+    ``kinds`` empty means every registered kind (see ``poi.select_pois``); an unknown kind
+    raises ``ValueError`` naming it. Results are unclipped, deterministic and de-duplicated
+    — all three properties belong to ``select_pois``, which the offline path below calls
+    identically, so offline == live here is a shared call rather than a claim.
+    """
+    cfg = cfg or _config.load()
+    cache = _cache.from_config(cfg)
+    area = _fetch_area(
+        bbox, cfg, cache, user_agent=user_agent, overpass_url=overpass_url, read_cache=True
+    )
+    places = _poi.select_pois(area.pois, kinds)
+    _log.warning(
+        "points of interest: %d object(s) found in the area", len(places)
+    )
+    return places
+
+
+def list_snapshot_pois(snapshot: AreaSnapshot, kinds=()) -> tuple[_poi.PoiPlace, ...]:
+    """Every registered object of ``kinds`` in a saved area — the inventory, offline.
+
+    Zero network. The snapshot stores ``area.pois`` verbatim (never filtered to whatever
+    the download was interested in), so the same selection runs against the same shape of
+    data as the live path, through the same ``poi.select_pois``.
+
+    A snapshot downloaded before POIs existed carries none, and "this area has no ruins"
+    must never be how that reads. ``search_snapshot`` already draws that distinction for
+    the *filter*; the listing repeats it rather than inheriting it, because a browse never
+    goes through ``search_snapshot`` and would otherwise print a confident empty list for
+    a file that simply cannot know.
+    """
+    if not snapshot.area.pois:
+        _log.warning(_SNAPSHOT_NO_POIS)
+        return ()
+    return _poi.select_pois(snapshot.area.pois, kinds)
 
 
 def search_snapshot(

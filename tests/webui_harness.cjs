@@ -117,9 +117,22 @@ const TO_POI_HIKES = [
                    lat: 50.75, lon: 15.61, distance_m: 85.0 },
     geometry: [[[50.73, 15.60], [50.75, 15.61]]] },
 ];
+// The browse mode's payload: objects, not hikes — an OBJECT rather than a bare array,
+// because it also carries the kind mix and the "this snapshot predates POIs" signal.
+// `oldarea` answers as such a snapshot, so the two empty results can be told apart.
+const POI_LIST = {
+  pois: [
+    { kind: 'church', label: 'church', name: 'Sv. Petr', lat: 50.7211, lon: 15.5902 },
+    { kind: 'ruins', label: 'ruin', name: null, lat: 50.7301, lon: 15.6001 },
+  ],
+  summary: '2 objects: 1 church, 1 ruin',
+  stale_area: false,
+};
+const POI_LIST_STALE = { pois: [], summary: 'no points of interest', stale_area: true };
 global.fetch = async (url) => {
   fetched.push(url);
   const body = url.startsWith('/api/areas') ? AREAS
+             : url.startsWith('/api/poi-list') ? (/area=oldarea/.test(url) ? POI_LIST_STALE : POI_LIST)
              : url.startsWith('/api/pois') ? POI_KINDS
              : url.startsWith('/api/quota') ? { enabled: false }
              : /[?&]to_poi=/.test(url) ? TO_POI_HIKES
@@ -305,6 +318,75 @@ const fire = (ev, latlng) => (handlers[ev] || []).forEach(f => f({ latlng }));
   check('changing mode clears the picked start',
         /Click the map to drop your start/.test(el('status').textContent),
         el('status').textContent);
+
+  // 11. The browse mode: list the objects themselves, with no route drawn to any of them.
+  const lastPoiList = () => fetched.filter(u => u.startsWith('/api/poi-list')).pop();
+  el('mode').value = 'pois';
+  updateMode();
+  check('browse mode shows its own controls',
+        el('pois_ctl').style.display === 'block', el('pois_ctl').style.display);
+  check('browse list populated from the same registry',
+        el('show_poi')._children.length === 3, el('show_poi')._children.length);
+  check('the saved-area selector stays usable in the browse mode',
+        el('area').disabled === false, el('area').disabled);
+  check('compose stays disabled outside the plain area mode',
+        el('compose_loops').disabled === true, el('compose_loops').disabled);
+  check('the button says what it does',
+        el('search').textContent === 'Show the points of interest', el('search').textContent);
+
+  el('results')._children.length = 0;
+  await search();
+  let plu = lastPoiList();
+  check('the browse hits its own endpoint, not /api/hikes', !!plu, fetched.slice(-3));
+  check('the browse marks itself for the export', /[?&]pois=true/.test(plu), plu);
+  check('with nothing ticked it asks for every kind', !/show_poi=/.test(plu), plu);
+  check('the live browse sends the map box', /south=/.test(plu), plu);
+  check('walk/gain filters are left out of a listing',
+        !/min_gain_m=|max_distance_km=|circular=/.test(plu), plu);
+  check('the summary is the status line',
+        el('status').textContent === '2 objects: 1 church, 1 ruin', el('status').textContent);
+  check('one list entry per object', el('results')._children.length === 2,
+        el('results')._children.length);
+  check('an unnamed object is labelled by its kind, never blank',
+        /ruin/.test(el('results')._children[1].innerHTML), el('results')._children[1].innerHTML);
+  check('each object is pinned where it actually is',
+        circleMarkers.some(p => Array.isArray(p) && p[0] === 50.7301 && p[1] === 15.6001),
+        circleMarkers);
+  check('no distance is shown — nothing was measured',
+        !/ m\b/.test(el('results')._children[0].innerHTML),
+        el('results')._children[0].innerHTML);
+
+  // Picking kinds narrows the listing.
+  el('show_poi').selectedOptions = [{ value: 'ruins' }];
+  await search();
+  plu = lastPoiList();
+  check('the chosen kinds reach the query', /show_poi=ruins/.test(plu), plu);
+
+  // The downloaded-area half of the mode: browse offline, no bbox.
+  el('area').value = 'krkonose';
+  await search();
+  plu = lastPoiList();
+  check('browsing a downloaded area sends the area, not a box',
+        /area=krkonose/.test(plu) && !/south=/.test(plu), plu);
+  check('the offline browse is marked as such', / \[offline\]$/.test(el('status').textContent),
+        el('status').textContent);
+
+  // A pre-POI snapshot must not read as "there is nothing here".
+  el('area').value = 'oldarea';
+  await search();
+  check('a pre-POI area says it cannot know, not that the area is empty',
+        /saved before the feature existed/.test(el('status').textContent),
+        el('status').textContent);
+  check('and does not send the user hunting for other kinds',
+        !/pick other kinds/.test(el('status').textContent), el('status').textContent);
+
+  // The GPX/GeoJSON buttons replay the stored params, so the file matches the list.
+  global.window.location = '';
+  download('gpx');
+  check('the export replays the browse params',
+        /^\/api\/gpx\?.*pois=true/.test(global.window.location), global.window.location);
+  check('the export targets the same area', /area=oldarea/.test(global.window.location),
+        global.window.location);
 
   console.log('PASS ' + ok.length + ' / FAIL ' + fail.length);
   fail.forEach(f => console.log('  FAIL: ' + f));

@@ -548,7 +548,7 @@ climbing that goes to a ruin."**
 **Do**
 
 ```bash
-hike-finder --list-pois                       # what you can ask for
+hike-finder --list-poi-kinds                  # what you can ask for
 
 hike-finder --bbox 50.52 15.15 50.60 15.28 \
             --poi ruins,castle --max-distance 25
@@ -604,6 +604,84 @@ ring on the map. **Over MCP** every search tool takes a `poi` array and a `poi_r
 > **This filters; it doesn't navigate.** `--poi` keeps routes that happen to pass a ruin.
 > If what you want is "draw me a route *to* the nearest ruin from here", that's `--to-poi`
 > — see [Point-based routes](#point-based-routes--pick-a-spot-instead-of-drawing-a-box).
+> And if you don't want a route at all, just the list of what's out there, that's
+> `--show-pois` — next.
+
+---
+
+## Just looking — list what's there, no routes (`--show-pois`)
+
+Sometimes the question isn't about a walk. You're planning a weekend, or you want the
+ruins of Český ráj on your phone, and the routing is beside the point. `--show-pois`
+answers **"what is actually here?"** — the objects themselves, listed and exportable, with
+nothing drawn to them.
+
+**Do**
+
+```bash
+# every ruin and castle in the box, listed
+hike-finder --bbox 50.52 15.15 50.60 15.28 --show-pois --poi ruins,castle
+
+# everything of every kind, straight onto your phone as waypoints
+hike-finder --bbox 50.52 15.15 50.60 15.28 --show-pois --gpx cesky-raj-pois.gpx
+
+# the same question against an area you already downloaded — no network at all
+hike-finder --area ceskyraj --show-pois --poi viewpoint
+```
+
+**Expect** — a count-by-kind header, then one line per object:
+
+```text
+7 objects: 3 castles & forts, 4 ruins
+  castle "zámek Hrubá Skála" — 50.54930, 15.19710
+  castle "Kost" — 50.53390, 15.22860
+  ruin "Rotštejn" — 50.57630, 15.24460
+  ...
+```
+
+**Why** — the three POI flags are three different questions, and mixing them up is the
+easiest mistake to make here:
+
+| You want | Flag | What comes back |
+|---|---|---|
+| routes that happen to pass a ruin | `--poi ruins` | hikes, annotated with what they pass |
+| a route drawn *to* the nearest ruin | `--from … --to-poi ruins` | hikes, ending near the object |
+| just the ruins | `--show-pois --poi ruins` | **the objects** — no hikes at all |
+
+**Read it**
+
+- **No `--poi` means every kind.** Selecting nothing is a browse ("show me what's here"),
+  not an empty question. With `--poi` it narrows to those kinds, OR-ed as usual.
+- **There is no distance column, on purpose.** A distance would have to be measured *from*
+  something, and in this mode there is no route to measure from. A "0 m" would read as
+  "sits on the trail", which nobody claimed.
+- **It's the cheapest thing the tool does.** One Overpass call, no elevation lookup at all
+  — so it spends nothing from the daily API budget, and against a downloaded `--area` it
+  touches the network zero times.
+- **The order is stable**: grouped by kind in the same order `--list-poi-kinds` prints, then
+  by name. Two runs give the same list, which matters when you're diffing exports.
+- **`--gpx` / `--geojson` write waypoints, not tracks** — a pin per object. That's the
+  honest shape: the answer is a set of places, not a walk. Load the GPX into OsmAnd /
+  Komoot / mapy.cz / a Garmin and navigate to them however you like. An object with no name
+  in OSM exports as its kind ("viewpoint"), never as a nameless pin you can't identify.
+- **Objects aren't clipped to your box.** A big object mapped as an area (a monastery, a
+  dig site) is represented by its centre point, which can land just outside a box it really
+  does straddle. Showing it a few metres outside your rectangle is visible and obvious;
+  dropping it would be silent, so the tool over-shows.
+
+**In the Web UI** pick **Mode → "Show points of interest (no routes)"**. It's the one
+non-routing mode, so unlike the four route-drawing modes it also works on a **downloaded
+area** — pick one from the list and browse it offline. Objects appear as green rings on the
+map and as list entries you can click to zoom; the existing **Download GPX / GeoJSON**
+buttons then export exactly what you're looking at.
+
+**Over MCP** it's the `list_pois` tool: give it a bounding box or an `area`, optional
+`kinds`, and a `format` of `text` / `json` / `gpx` / `geojson`.
+
+> **Offline caveat, same as the filter.** An area downloaded before points of interest
+> existed carries none. The listing says *"saved before the feature existed — re-download
+> it"* rather than reporting an empty landscape, because "there are no ruins here" and
+> "this file can't tell you" are different answers with different fixes.
 
 ---
 
@@ -756,7 +834,7 @@ Route to ruin “Rotštejn” — 4.2 km, +180 m / -95 m [one-way]
     (start 50.7300,15.6000, composed of KČT red + KČT blue)  [ends 85 m from the ruin]
 ```
 
-The kinds are the same list as `--poi` (run `--list-pois`), but they mean the opposite
+The kinds are the same list as `--poi` (run `--list-poi-kinds`), but they mean the opposite
 thing: `--poi` **filters** the routes you found by what they pass, `--to-poi` **draws** the
 route to the object. Use both together for "a route to the nearest ruin that also passes a
 pub."
@@ -909,7 +987,7 @@ your numbers stay consistent and tunable instead of inherited from a third party
 | A route you know is a loop shows `one-way` | Its ends are farther apart than the loop tolerance | Raise `HIKE_LOOP_TOLERANCE` |
 | `car`/`lift` absent on a trail you can drive to | OSM has no parking/lift mapped near its ends — not a claim it's unreachable | Trust your local knowledge; the flag only reports what OSM maps |
 | `No routes pass a point of interest of that kind here` | Nothing of that kind is *mapped* within the radius of any route there | Widen `--poi-radius`, try a related kind (`castle` vs `ruins`), or search a wider area |
-| `unknown point-of-interest kind 'x'` | A typo — deliberately an error, so it can never read as "none exist" | Pick from `hike-finder --list-pois` |
+| `unknown point-of-interest kind 'x'` | A typo — deliberately an error, so it can never read as "none exist" | Pick from `hike-finder --list-poi-kinds` |
 | `this snapshot carries no points of interest` | The saved area predates the feature | Re-download it; `--list-areas` marks which ones need it |
 
 For anything deeper (what's implemented vs. validated live, and what's next), see

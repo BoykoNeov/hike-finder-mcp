@@ -8,6 +8,39 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Just list what's there** (`--show-pois`, MCP `list_pois`, web "Show points of interest
+  (no routes)"). The third and simplest of the three POI questions: `--poi` *filters* routes
+  by what they pass, `--to-poi` *draws* a route to the nearest one, and this one just
+  **lists the objects** — no routes drawn to any of them. Select kinds with `--poi`, or omit
+  it for every kind.
+  - **Two sources, one answer.** The live `--bbox`, or a downloaded `--area` — the "only in
+    the area I already have" half, with zero network. Both go through one `poi.select_pois`,
+    so offline == live is a shared call rather than a claim (pinned byte-for-byte, listing
+    and exported file alike, through a real snapshot round-trip).
+  - **The cheapest mode in the tool**: one Overpass call, transparently cached, and **no
+    elevation provider is constructed at all** — nothing is measured because nothing is
+    walked, so it spends nothing from the daily API quota. Pinned by a test that fails if a
+    provider is ever built.
+  - **Exports as waypoints, not tracks** (`--gpx` / `--geojson`): a GPX `<wpt>` / GeoJSON
+    `Point` per object, the honest shape when the answer is a set of places. An unnamed
+    object exports under its kind ("viewpoint"), never as a nameless pin. The web UI's
+    existing Download buttons export whatever the browse is showing.
+  - **No distance column, on purpose.** A new `poi.PoiPlace` rather than a `PoiHit` with
+    `distance_m=0`: a zero would render "(0 m)" and read as *sitting on the trail*, a claim
+    nobody made. Both types render kinds through one new `poi.kind_label`, so they cannot
+    disagree about what a kind is called.
+  - **Empty selection means every kind**, expanded explicitly — the opposite convention to
+    `route_pois`, where `()` means match nothing, and the two differ by a whole result set.
+  - **Not clipped to the box.** A large object mapped as an area keeps its `out center`
+    representative point wherever it falls, even just outside the rectangle it straddles:
+    over-showing is visible on a map, dropping a real object would be silent.
+  - **"No ruins here" and "this file can't know" stay distinct** — a snapshot saved before
+    POIs existed says so, in all three frontends, instead of reporting an empty landscape.
+  - Ordering is registry-then-name-then-coordinate, so a listing comes out grouped the way
+    the kind menu prints and identically on every run.
+  - `--list-poi-kinds` is the new, unambiguous spelling of the kind list; **`--list-pois`
+    keeps working** as an alias.
+
 - **Draw a route *to* the nearest ruin** (`--from LAT LON --to-poi KIND`, MCP `routes_to_poi`,
   web "Route to the nearest church / ruin / peak…"). The fourth point-based mode, and the
   inverse of `--poi`: that one *filters* routes by what they happen to pass, this one *draws*
