@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-09
+
+### Fixed
+
+- **The `mcp` extra is now capped at `mcp>=1.2,<2`.** The constraint was unbounded, so a fresh
+  `pip install -e ".[mcp]"` (or `".[dev]"`) resolved the newly released **mcp 2.0.0**, which
+  replaced the `Server` decorator API — `@app.list_tools()` / `@app.call_tool()`, how all eight
+  tools are registered — with `add_request_handler`. The result was an MCP server that failed on
+  import. **Only the MCP frontend was affected**; the CLI and web UI have no `mcp` dependency,
+  and a base install never resolved it at all. Porting to the 2.x API is recorded as a known
+  limitation in `HANDOFF.md`. If you installed v0.3.0 with the `mcp` extra, re-install to pick
+  up the cap.
+- CI was red from this same cause and is green again. The failure was an `ImportError` at module
+  scope in the MCP test module, which pytest reports as a **collection** error — so every job
+  failed and no test ran, rather than just the MCP cases.
+
 ## [0.3.0] - 2026-08-09
 
 ### Added
@@ -263,7 +279,8 @@ filter them by locally-computed elevation gain, distance, loop shape, and access
 - MIT license, CI (GitHub Actions running the test suite on Linux 3.10–3.13 plus a
   Windows smoke job), and this changelog.
 
-[Unreleased]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/BoykoNeov/hike-finder-mcp/releases/tag/v0.1.0

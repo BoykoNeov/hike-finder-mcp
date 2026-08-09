@@ -770,6 +770,6 @@ GPX/GeoJSON export, point-based route drawing, the points-of-interest destinatio
 filter, routing *to* the nearest such object, the points-of-interest inventory,
 and the downloaded-area inventory — is **implemented, unit-tested
 (offline), and validated live** across all three frontends (CLI + web + MCP), with
-computed gain cross-checked against the loop invariant (gain ≈ loss). Released as v0.3.0. See
+computed gain cross-checked against the loop invariant (gain ≈ loss). Released as v0.3.1. See
 [`CHANGELOG.md`](CHANGELOG.md) for the per-release breakdown and
 [`HANDOFF.md`](HANDOFF.md) for the architecture and open design notes.
