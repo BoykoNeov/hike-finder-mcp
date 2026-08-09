@@ -389,6 +389,22 @@ skip without the `mcp` extra).
   `--download some/path.json` writes wherever you point it and is tracked nowhere; there is no
   registry of arbitrary paths and inventing one would be a second source of truth. Said in the
   `--list-areas` help text so it isn't discovered the hard way.
+- **The MCP extra is capped at `mcp<2`, and porting to 2.x is real work.** mcp 2.0.0 replaced
+  the `Server` decorator API — `@app.list_tools()` / `@app.call_tool()`, which is how all eight
+  tools in `server.py` are registered — with `add_request_handler`, and dropped
+  `mcp.shared.memory.create_connected_server_and_client_session`, the in-memory session helper
+  `test_server.py` drives the server through in 23 places. The imports still *resolve* under
+  2.0 (`Server`, `stdio_server`, `mcp.types`), so a version probe that only checks importability
+  reports a false all-clear — the break is in the API those names expose. Only the CLI/web are
+  unaffected; `mcp` is an optional extra, so a base install never saw this.
+  **How it surfaced, which is the reusable part:** an unpinned optional dep silently broke CI
+  the moment 2.0.0 shipped upstream, on a commit that touched none of it. Because the failure
+  was an *import* error in a test module, pytest reported it as a **collection** error (exit 2)
+  — so all six jobs went red and *no* test ran, not just the MCP ones. Nothing in the repo was
+  wrong; the world moved. The lesson is narrower than "pin everything": a test-only import of a
+  third-party symbol takes down the whole suite, while the same dep behind `importorskip` only
+  skips. Cap majors on optional extras, and treat a suite that fails at collection as a
+  dependency question first.
 - **PyPI publish** is deliberately parked — GitHub-only for now. Metadata is publish-ready; the
   clean path when revisited is Trusted Publishing (OIDC) via a tag-triggered workflow.
 

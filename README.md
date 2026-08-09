@@ -767,7 +767,8 @@ elevation backends (API with rate-limit throttle, retry/backoff, and a persisten
 daily-request counter; local DEM via a point-sampled GDAL VRT), the transparent
 cache, loop composition, offline snapshots, near-misses, reverse-geocode naming,
 GPX/GeoJSON export, point-based route drawing, the points-of-interest destination
-filter, and the downloaded-area inventory — is **implemented, unit-tested
+filter, routing *to* the nearest such object, the points-of-interest inventory,
+and the downloaded-area inventory — is **implemented, unit-tested
 (offline), and validated live** across all three frontends (CLI + web + MCP), with
 computed gain cross-checked against the loop invariant (gain ≈ loss). Released as v0.3.0. See
 [`CHANGELOG.md`](CHANGELOG.md) for the per-release breakdown and
