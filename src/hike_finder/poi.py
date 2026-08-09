@@ -96,6 +96,13 @@ POI_KINDS: dict[str, PoiKind] = {
     "rock": PoiKind("natural", ("rock", "arch", "stone"), "rock", "rock formations"),
     "cave": PoiKind("natural", ("cave_entrance",), "cave", "caves"),
     "spring": PoiKind("natural", ("spring",), "spring", "springs"),
+    # Separate from `spring` because the tag KEY differs (amenity, not natural), which
+    # the one-clause-per-key query shape makes a hard constraint, not a style choice.
+    # It is also a different real-world promise: a spring is water you find, a
+    # drinking-water tap is water someone maintains and signs as potable.
+    "drinking_water": PoiKind(
+        "amenity", ("drinking_water",), "drinking water", "drinking water"
+    ),
     "waterfall": PoiKind("waterway", ("waterfall",), "waterfall", "waterfalls"),
     "viewpoint": PoiKind("tourism", ("viewpoint",), "viewpoint", "viewpoints"),
     "tower": PoiKind("man_made", ("tower",), "tower", "lookout towers"),

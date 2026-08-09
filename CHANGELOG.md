@@ -36,6 +36,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   nothing and says the data is missing. Re-download the area to use the filter offline.
   This widens the Overpass query, so it invalidates the Overpass cache (the query text is
   the cache key) — the first search after upgrading refetches.
+- **`drinking_water` POI kind** — a maintained, signposted tap or fountain, kept separate
+  from the existing `spring`: the tag key differs (`amenity`, not `natural`), which the
+  one-clause-per-key query shape makes a hard constraint, and the two are different
+  promises anyway — a spring is water you find, a tap is water someone maintains.
 - **CI runs weekly on a schedule**, so a dependency going incompatible upstream is caught by a
   dated run instead of reddening whichever unrelated commit happens to land next — which is
   exactly how mcp 2.0.0 surfaced in v0.3.0.
