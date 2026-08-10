@@ -378,7 +378,7 @@ thing is validated live against real OSM. Highlights:
   `[lon, lat]` ranges land inside the bbox on the right axes. Unfiltered listings are big at
   real density (501 of those 887 are summits) — deliberately uncapped, with the
   count-by-kind header carrying the "what's the mix" answer; noted in README/GUIDE.
-- **Nine more POI kinds + the `require` mechanism** (unreleased, since v0.4.0) — `boundary_stone`, `mill`,
+- **Nine more POI kinds + the `require` mechanism** (v0.5.0) — `boundary_stone`, `mill`,
   `mine`, `sinkhole`, `tree`, `artwork`, `firepit`, `camp`, `toilets`, taking the registry
   from 19 to 28. Chosen by a **density probe over four CZ regions** rather than from
   recalled taginfo (see the two Known-limitations entries this added), and the choice was
@@ -409,8 +409,7 @@ thing is validated live against real OSM. Highlights:
   (`"tree" not in selectors_by_key()["natural"]`) so a refactor cannot quietly start
   pulling 4000 street trees into every snapshot — the one regression here that would make
   results *more* complete and entirely useless.
-- **A snapshot records the POI kind set it was classified against** (unreleased, since
-  v0.4.0) — the honesty gap the nine kinds opened, closed with the mechanism this file
+- **A snapshot records the POI kind set it was classified against** (v0.5.0) — the honesty gap the nine kinds opened, closed with the mechanism this file
   had already named as the right one. **Verified live**, and the interesting half is the
   read side, because no fixture can build it: the Český ráj snapshot this file records
   from 2026-08-09 — a real 887-POI file written by the *previous* build — is read by this
@@ -536,7 +535,7 @@ thing is validated live against real OSM. Highlights:
   DOM hides exactly the bugs the harness exists to catch.**
 - **All three frontends validated live**, including the MCP server over real stdio.
 - **Repo hygiene**: MIT license, CHANGELOG, complete pyproject, and CI across Linux 3.10–3.14 +
-  Windows; v0.1.0, v0.2.0, v0.3.0, v0.3.1 and v0.4.0 tagged + GitHub-released. **CI being green is a
+  Windows; v0.1.0 through v0.6.0 tagged + GitHub-released. **CI being green is a
   per-commit fact, not a standing property of this repo** — check it (`gh run list`) before
   asserting it anywhere, a release body most of all. An unpinned optional extra silently
   falsified this very line for four commits while the sentence sat here unchanged; see the
