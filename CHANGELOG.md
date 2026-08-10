@@ -69,11 +69,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Japan's North Alps (Kamikōchi) carries **zero**, against 138 in the Krkonoše box this
   project was built on — while mapping 824 individual path ways the app never looks at.
   Every search there came back empty and blamed the user's filters. The new message names
-  the data source so the claim is checkable. Wired into the CLI (live *and* offline) and
-  the MCP server; **the web UI is not yet wired** — its `/api` returns a bare JSON array
-  with no room for advisory text, unlike `/api/pois`, so that needs an API-shape change.
-  No new Overpass traffic: the fact is carried out of the fetch that already happened
-  (re-fetching in the caller is free only while the Overpass cache is on).
+  the data source so the claim is checkable. Wired into all three frontends — the CLI
+  (live *and* offline), the MCP server, and now the web UI (see the endpoint change
+  below). No new Overpass traffic: the fact is carried out of the fetch that already
+  happened (re-fetching in the caller is free only while the Overpass cache is on).
+- **The web UI carries the caveats it could not: `/api/hikes` answers with an object,
+  not a bare array.** The shape is `{"hikes": [...], "notices": [...]}`, each notice a
+  `{"kind", "message"}` pair — **breaking for anything reading that endpoint directly**;
+  the page is served from the same module and was updated with it. The array had nowhere
+  to put a sentence about what the *source* could not answer, which left the browser the
+  one frontend that stayed silent where the CLI logs to stderr and the MCP server puts
+  the text in its reply:
+  - **`ferrata_gap`** is the one that mattered, and is why this landed before the
+    release. Excluding ferrata over a downloaded area whose routes carry no member-way
+    tags drops every route — correctly, since cable cannot be detected on them — and a
+    bare empty list reads as *"no safe routes here"*, the inversion that feature is
+    built to prevent. Shown whenever the filter is active and the file falls short,
+    **including when routes did come back**: a caveat is never gated on an empty result.
+    Which of the two sentences applies is still decided in one place, so "avoiding still
+    works on this file" is never promised of a file that cannot honour it.
+  - **`no_routes`** *replaces* the page's "widen the map or relax the filters" line
+    rather than joining it — that advice is precisely what the message exists to delete,
+    and printing both would answer one question two contradictory ways.
+  Both sentences come from the same `search` functions the other two frontends call, so
+  one file's shortfall cannot be worded three ways.
 - **The `church` POI kind is now labelled "places of worship"**, not "churches & chapels".
   The selector is `amenity=place_of_worship`, which carries no denomination, so the old
   label promised something the query never asked for — the same class of mislabel already

@@ -31,11 +31,14 @@ from .filters import Criteria
 from .format import format_poi_summary, hike_to_dict
 from .poi import kind_labels, normalise_kinds, unrecorded_kinds
 from .search import (
+    area_has_no_routes,
     compose_loops,
     compose_loops_around,
     download_area,
+    ferrata_gap_message,
     list_area_pois,
     list_snapshot_pois,
+    no_routes_message,
     route_via,
     routes_between,
     routes_to_poi,
@@ -69,6 +72,11 @@ INDEX_HTML = """<!doctype html>
   .row > div { flex:1; }
   button { margin-top:14px; width:100%; padding:9px; font-weight:600; cursor:pointer; }
   #status { margin-top:10px; color:#555; min-height:1.2em; }
+  /* What the SOURCE could not answer — kept out of #status so it survives a result set
+     that isn't empty. An empty list is only the loudest symptom of these gaps, not the
+     trigger for saying them (see web.py's _area_notices). */
+  .notice { margin-top:8px; padding:7px 9px; border-left:3px solid #d08700;
+            background:#fffaf0; color:#7a4b00; font-size:12px; }
   .hike { border-top:1px solid #eee; padding:9px 0; cursor:pointer; }
   .hike:hover { background:#f6f8fa; }
   .hike .name { font-weight:600; }
@@ -222,6 +230,7 @@ INDEX_HTML = """<!doctype html>
     </div>
     <p class="muted">Download what you see — routes as GPX tracks, or (in the “Show points of interest” mode) the objects as GPX waypoints. Load either into Komoot / OsmAnd / mapy.cz / a Garmin.</p>
     <div id="status"></div>
+    <div id="notices"></div>
     <div id="results"></div>
   </div>
 </div>
@@ -559,6 +568,9 @@ async function showPois(area, status){
   const results = document.getElementById('results');
   status.textContent = area ? ('Reading “' + area + '” offline…') : 'Looking…';
   results.innerHTML = '';
+  // The browse mode words its own coverage gap into the status line; a notice left over
+  // from a previous hike search would sit there describing a search nobody is looking at.
+  clearNotices();
   markers.clearLayers(); routeLines.clearLayers(); poiMarkers.clearLayers();
   try {
     const resp = await fetch('/api/poi-list?' + params.toString());
@@ -670,18 +682,30 @@ async function search(){
   status.textContent = area ? ('Searching “' + area + '” offline…') : 'Searching…';
   results.innerHTML = '';
   markers.clearLayers(); routeLines.clearLayers(); poiMarkers.clearLayers();
+  clearNotices();
   try {
     const resp = await fetch('/api/hikes?' + params.toString());
     const data = await resp.json();
     if (!resp.ok || data.error){ status.textContent = 'Error: ' + (data.error || resp.status); return; }
-    render(data);
-    const near = data.filter(h => h.near_miss).length;
+    // An object, not a bare array: the routes, plus what the source could not answer.
+    const hikes = data.hikes || [];
+    const notices = data.notices || [];
+    render(hikes);
+    showNotices(notices);
+    const near = hikes.filter(h => h.near_miss).length;
     const composing = mode === 'area' && !area && document.getElementById('compose_loops').checked;
     const viaLoop = mode === 'via' && document.getElementById('via_loop').checked;
     const noun = (mode === 'between' || mode === 'topoi') ? ' route(s)'
                : (mode === 'via') ? (viaLoop ? ' circular route' : ' route')
                : (mode === 'around' || composing) ? ' loop(s)' : ' match(es)';
-    if (data.length === 0 && mode === 'topoi'){
+    // Outranks every sentence below it, which is why it is checked first rather than
+    // added beside them: each of those blames a filter for excluding something, and with
+    // no route relations in the area there was nothing to exclude. Saying both would put
+    // "nothing is mapped here" and "widen the map" on screen at once.
+    const noRoutes = notices.find(n => n.kind === 'no_routes');
+    if (noRoutes){
+      status.textContent = noRoutes.message;
+    } else if (hikes.length === 0 && mode === 'topoi'){
       // Destination-shaped, and checked BEFORE the "must pass" wording below: nothing was
       // filtered out of an area here, a route to an object could not be drawn. The three
       // causes need three different fixes, so name all three rather than guess.
@@ -689,13 +713,13 @@ async function search(){
         + ' — either nothing of that kind is mapped within “look within”, the ones found sit '
         + 'off the trail network, or every route to them runs past the max distance. '
         + '(A miss means nothing of that kind is mapped in OSM near your start.)';
-    } else if (data.length === 0 && pois.length){
+    } else if (hikes.length === 0 && pois.length){
       // With a destination filter on, the usual culprit is the radius or the kind —
       // not the distance/gain band — so point at the right lever.
       status.textContent = 'Nothing here passes a ' + pois.join(' or a ')
         + ' — widen “how close counts”, pick another kind, or search a wider area. '
         + '(A miss means nothing of that kind is mapped in OSM near a route.)';
-    } else if (data.length === 0){
+    } else if (hikes.length === 0){
       status.textContent = mode === 'around'
           ? 'No loops pass within the radius of your point — widen the radius or the min/max distance.'
         : mode === 'between'
@@ -706,11 +730,30 @@ async function search(){
           ? 'No loops could be composed here — widen the map or the min/max distance.'
           : 'No matches — widen the map or relax the filters.';
     } else {
-      status.textContent = (data.length - near) + noun
+      status.textContent = (hikes.length - near) + noun
         + (near ? (' + ' + near + ' near miss(es)') : '') + (area ? ' [offline]' : '');
     }
     if (!area) showQuota();
   } catch (e){ status.textContent = 'Request failed: ' + e; }
+}
+
+function clearNotices(){
+  document.getElementById('notices').innerHTML = '';
+}
+
+function showNotices(notices){
+  // Everything EXCEPT `no_routes`, which the caller has already put in the status line
+  // in place of the "widen the map" advice it contradicts. What lands here is the class
+  // of caveat that must be visible alongside a perfectly good list of routes — today the
+  // ferrata gap, where an unexplained result reads as a safety claim nobody made.
+  const box = document.getElementById('notices');
+  box.innerHTML = '';
+  (notices || []).filter(n => n.kind !== 'no_routes').forEach(n => {
+    const el = document.createElement('div');
+    el.className = 'notice';
+    el.textContent = n.message;      // textContent, not innerHTML: server prose, unparsed
+    box.appendChild(el);
+  });
 }
 
 async function downloadArea(){
@@ -919,6 +962,40 @@ def _poi_kinds(qs: dict, key: str = "poi") -> tuple[str, ...]:
     for item in qs.get(key, []):
         raw.extend(part for part in str(item).split(",") if part.strip())
     return normalise_kinds(raw)
+
+
+def _area_notices(area, criteria: Criteria) -> list[dict]:
+    """What a SAVED area cannot answer about this search, worded for the browser.
+
+    Each entry is ``{"kind", "message"}``. The kind is what the page keys its rendering
+    off, and the two kinds are rendered differently on purpose:
+
+    * ``no_routes`` — nothing here is mapped as a hiking route. It **replaces** the page's
+      empty-result sentence rather than joining it: "widen the map or relax the filters"
+      is precisely the advice ``no_routes_message`` exists to delete, and showing both
+      would answer the same question twice, contradictorily. The CLI and the MCP server
+      both word this as outranking every other empty message.
+    * ``ferrata_gap`` — cable cannot be read from this file (or was never fetched into
+      it). Shown whenever the ferrata filter is active and the gap is real, **including
+      when routes did come back**: this project never gates a caveat on an empty result
+      (see ``search.snapshot_poi_gap``), and here the reason is sharper still — a
+      ``ferrata=false`` search of an unreadable area returns nothing, and nothing is
+      exactly what reads as "there is nothing cabled here".
+
+    The messages come from the same ``search`` functions the CLI and the MCP server use,
+    so the three frontends cannot word one file's shortfall three ways. What the web adds
+    is a *channel*: ``search_snapshot`` logs these, and a log line reaches a terminal.
+    """
+    notices: list[dict] = []
+    if area_has_no_routes(area):
+        notices.append({"kind": "no_routes", "message": no_routes_message()})
+    if criteria.ferrata is not None:
+        # ONE function picks between the two ferrata sentences, and the order it picks
+        # them in is what keeps each true (see search.ferrata_gap_message).
+        gap = ferrata_gap_message(area, finding=criteria.ferrata is True)
+        if gap is not None:
+            notices.append({"kind": "ferrata_gap", "message": gap})
+    return notices
 
 
 def _cfg_for(qs: dict):
@@ -1147,13 +1224,18 @@ class Handler(BaseHTTPRequestHandler):
 
         Shared by ``/api/hikes`` (JSON) and ``/api/gpx`` / ``/api/geojson`` (file
         download) so all three agree on filters, area resolution, and error handling.
-        Returns ``(hikes, None)`` on success or ``(None, (status, {"error": ...}))``.
+        Returns ``(hikes, notices, None)`` on success or
+        ``(None, [], (status, {"error": ...}))`` — the same triple shape
+        ``_resolve_pois`` returns, and for the same reason: a result on its own is not
+        the whole answer when the source could not be asked the question (see
+        ``_area_notices``). The download paths simply drop the notices; a GPX file has
+        nowhere to put a sentence, and the search that produced it already showed one.
         """
         try:
             poi_kinds = _poi_kinds(qs)
             to_poi_kinds = _poi_kinds(qs, "to_poi")
         except ValueError as e:
-            return None, (400, {"error": str(e)})
+            return None, [], (400, {"error": str(e)})
         cfg = _cfg_for(qs)
         criteria = Criteria(
             min_gain_m=_num(qs, "min_gain_m"),
@@ -1179,7 +1261,7 @@ class Handler(BaseHTTPRequestHandler):
             # elevation pass), and a snapshot search is not one. Saying so beats silently
             # dropping the destination and returning a filtered area search that LOOKS
             # like an answer — the CLI rejects the same pair for the same reason.
-            return None, (
+            return None, [], (
                 400,
                 {"error": "to_poi draws a live route; it can't be combined with a saved area"},
             )
@@ -1187,14 +1269,18 @@ class Handler(BaseHTTPRequestHandler):
             # Offline: search a saved snapshot — no network, no API calls.
             path = snapshot_path(area_name)
             if path is None or not path.is_file():
-                return None, (404, {"error": f"no saved area named {area_name!r}"})
+                return None, [], (404, {"error": f"no saved area named {area_name!r}"})
             try:
                 snap = load_snapshot(path)
-                return search_snapshot(
+                hikes = search_snapshot(
                     snap, criteria, cfg=cfg, near_miss=near_miss, name_places=name_places
-                ), None
+                )
             except (OSError, ValueError) as e:
-                return None, (500, {"error": f"could not search snapshot: {e}"})
+                return None, [], (500, {"error": f"could not search snapshot: {e}"})
+            # The saved file is the only source that can fall short of the question, so
+            # this is where both caveats come from. `search_snapshot` logs them, which
+            # reaches a terminal and not a browser — hence the same message, carried.
+            return hikes, _area_notices(snap.area, criteria), None
 
         ua = _str(qs, "user_agent")
 
@@ -1206,9 +1292,9 @@ class Handler(BaseHTTPRequestHandler):
                     (around_lat, around_lon), criteria, cfg=cfg,
                     radius_m=_num(qs, "around_radius_m"),
                     user_agent=ua, near_miss=near_miss,
-                ), None
+                ), [], None
             except Exception as e:  # noqa: BLE001 — surface any fetch/HTTP failure to the UI
-                return None, _fetch_error(e)
+                return None, [], _fetch_error(e)
 
         # Routes to the nearest church / ruin / peak from a picked point (derives its own
         # area). Distinct from `poi_kinds` above, which only FILTERS whatever routes a
@@ -1222,11 +1308,11 @@ class Handler(BaseHTTPRequestHandler):
                     n=int(n) if n else None,
                     search_radius_m=_num(qs, "to_poi_radius_m"),
                     user_agent=ua,
-                ), None
+                ), [], None
             except Exception as e:  # noqa: BLE001
-                return None, _fetch_error(e)
+                return None, [], _fetch_error(e)
         if to_poi_kinds and (tp_lat is None) != (tp_lon is None):
-            return None, (400, {"error": "to_poi needs both to_poi_lat and to_poi_lon"})
+            return None, [], (400, {"error": "to_poi needs both to_poi_lat and to_poi_lon"})
 
         # N shortest routes between two picked points (derives its own area).
         f_lat, f_lon = _num(qs, "from_lat"), _num(qs, "from_lon")
@@ -1237,9 +1323,9 @@ class Handler(BaseHTTPRequestHandler):
                 return routes_between(
                     (f_lat, f_lon), (t_lat, t_lon), criteria, cfg=cfg,
                     k=int(k) if k else None, user_agent=ua,
-                ), None
+                ), [], None
             except Exception as e:  # noqa: BLE001
-                return None, _fetch_error(e)
+                return None, [], _fetch_error(e)
 
         # One route linking several picked points ('via'), optionally closed into a
         # non-retracing circular route. Each waypoint arrives as a repeated `via=lat,lon`.
@@ -1251,25 +1337,28 @@ class Handler(BaseHTTPRequestHandler):
                     lat_s, lon_s = item.split(",", 1)
                     points.append((float(lat_s), float(lon_s)))
                 except (ValueError, AttributeError):
-                    return None, (400, {"error": f"bad via point {item!r} (want 'lat,lon')"})
+                    return None, [], (400, {"error": f"bad via point {item!r} (want 'lat,lon')"})
             if len(points) < 2:
-                return None, (400, {"error": "give at least two via points to link"})
+                return None, [], (400, {"error": "give at least two via points to link"})
             try:
                 return route_via(
                     points, criteria, cfg=cfg,
                     loop=_tri(qs, "via_loop") is True, user_agent=ua,
-                ), None
+                ), [], None
             except Exception as e:  # noqa: BLE001
-                return None, _fetch_error(e)
+                return None, [], _fetch_error(e)
 
         bbox, bbox_err = self._bbox(qs)
         if bbox_err is not None:
-            return None, bbox_err
+            return None, [], bbox_err
 
         # Loop composition: synthesise loops from connected trails inside the box.
         composing = _tri(qs, "compose_loops")
         search = compose_loops if composing else search_hikes
-        kwargs = dict(cfg=cfg, user_agent=ua, near_miss=near_miss)
+        # Filled by the search with facts about the FETCH the hikes cannot carry — the
+        # same out-parameter the CLI and the MCP server read (see search.search_hikes).
+        diagnostics: dict = {}
+        kwargs = dict(cfg=cfg, user_agent=ua, near_miss=near_miss, diagnostics=diagnostics)
         # Naming applies only to ordinary routes — composed loops already carry their
         # constituent-trail label, never a route/<id> fallback.
         if not composing:
@@ -1277,16 +1366,33 @@ class Handler(BaseHTTPRequestHandler):
         try:
             hikes = search(bbox, criteria, **kwargs)
         except Exception as e:
-            return None, _fetch_error(e)
-        return hikes, None
+            return None, [], _fetch_error(e)
+        # No ferrata notice on a live path, and that is not an oversight: a live fetch
+        # always parses `ferrata_routes`/`ferrata_ways` and member-way tags, and the
+        # ferrata clause changed the query TEXT — the Overpass cache key — so a
+        # pre-feature response cannot be served under it either. `ferrata_gap_message`
+        # is provably None here, and a seam that can never fire reads as one that might.
+        notices = []
+        if diagnostics.get("no_routes"):
+            notices.append({"kind": "no_routes", "message": no_routes_message()})
+        return hikes, notices, None
 
     def _api(self, qs: dict) -> None:
-        hikes, err = self._resolve_hikes(qs)
+        hikes, notices, err = self._resolve_hikes(qs)
         if err is not None:
             self._json(*err)
             return
+        # An OBJECT, not the bare array this used to return. The array had nowhere to put
+        # a sentence about what the SOURCE could not answer, so the web UI was the one
+        # frontend that showed an empty list where the CLI and the MCP server explain
+        # themselves — and for `ferrata=false` over an unreadable area, an unexplained
+        # empty list reads as "no safe routes here", the exact inversion that feature
+        # spends its comments preventing. `/api/poi-list` already carries its gap this way.
         # geometry=True so the map can draw the route lines without a second search.
-        self._json(200, [hike_to_dict(h, geometry=True) for h in hikes])
+        self._json(200, {
+            "hikes": [hike_to_dict(h, geometry=True) for h in hikes],
+            "notices": notices,
+        })
 
     def _export(self, qs: dict, fmt: str) -> None:
         """Run the query's search and stream the results as a GPX / GeoJSON download.
@@ -1309,7 +1415,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
             self._stream(body, mime, filename)
             return
-        hikes, err = self._resolve_hikes(qs)
+        hikes, _notices, err = self._resolve_hikes(qs)
         if err is not None:
             self._json(*err)
             return

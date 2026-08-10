@@ -137,7 +137,10 @@ ordinary result list, or be stitched into a synthesised loop by `--compose-loops
 An area downloaded **before** this feature holds no ferrata objects and says so rather
 than reporting an empty list. Avoidance still works on such a file — it needs only the
 member-way tags — unless the file predates those too, in which case both questions are
-refused out loud instead of being answered from nothing.
+refused out loud instead of being answered from nothing. All three frontends say it: the
+CLI on stderr, the MCP server in its reply text, and the web UI in a notice beside the
+results — an unexplained empty list from a safety-adjacent filter would read as "no safe
+routes here", which is not a claim the tool is in a position to make.
 
 ### Hiking *to* something — churches, ruins, peaks…
 

@@ -167,6 +167,33 @@ const POI_LIST_MISSING_PARTIAL = {
   pois: [{ kind: 'ruins', label: 'ruin', name: 'Nístějka', lat: 50.7301, lon: 15.6001 }],
   summary: '1 object: 1 ruin', stale_area: false, area_gap: GAP_MISSING,
 };
+// One ordinary route, for the cases that are about what is said ALONGSIDE a result.
+const AREA_HIKES = [
+  { osm_id: 7, name: 'WebNorth', ref: null, unnamed: false, place_name: null,
+    distance_km: 5.1, gain_m: 120, loss_m: 120, circular: false, car_access: false,
+    chairlift_access: false, lift_type: null, start: { lat: 50.72, lon: 15.58 },
+    near_miss: false, notes: [], composed: false, composed_of: [], pois: [],
+    destination: null, geometry: [[[50.72, 15.58], [50.74, 15.62]]] },
+];
+// The two things a search can carry beyond its routes (see web.py's `_area_notices`).
+// They are rendered DIFFERENTLY, which is the whole reason each carries a `kind`:
+// `no_routes` replaces the status line it contradicts, `ferrata_gap` gets its own box
+// and survives a non-empty result.
+const FERRATA_GAP = { kind: 'ferrata_gap', message:
+  'ferrata: this area’s routes carry no member-way tags, so cabled sections cannot '
+  + 'be detected on them at all — this is NOT a report that the routes are free of cable.' };
+const NO_ROUTES = { kind: 'no_routes', message:
+  'No hiking route relations are mapped in that area — this is about the map data, '
+  + 'not your filters.' };
+function hikesReply(url) {
+  // `nofer` answers with routes AND the gap: the browser's rule is that the caveat is
+  // shown regardless of what came back, so the case worth driving is the one where a
+  // result exists to hide behind.
+  if (/area=nofer/.test(url)) return { hikes: AREA_HIKES, notices: [FERRATA_GAP] };
+  if (/area=norelations/.test(url)) return { hikes: [], notices: [NO_ROUTES] };
+  if (/[?&]to_poi=/.test(url)) return { hikes: TO_POI_HIKES, notices: [] };
+  return { hikes: [], notices: [] };
+}
 global.fetch = async (url) => {
   fetched.push(url);
   const poiList = /area=oldarea/.test(url) ? POI_LIST_STALE
@@ -177,7 +204,7 @@ global.fetch = async (url) => {
              : url.startsWith('/api/poi-list') ? poiList
              : url.startsWith('/api/pois') ? POI_KINDS
              : url.startsWith('/api/quota') ? { enabled: false }
-             : /[?&]to_poi=/.test(url) ? TO_POI_HIKES
+             : url.startsWith('/api/hikes') ? hikesReply(url)
              : [];
   return { ok: true, status: 200, json: async () => body };
 };
@@ -470,6 +497,57 @@ const fire = (ev, latlng) => (handlers[ev] || []).forEach(f => f({ latlng }));
   check('and the pre-POI wording is reserved for a file with no objects at all',
         !/no points of interest/.test(cards[1]) && /no points of interest/.test(cards[3]),
         [cards[1], cards[3]]);
+
+  // 14. What the SOURCE could not answer. `/api/hikes` answers with an envelope now
+  // (routes + notices), and the two notice kinds must NOT be rendered the same way.
+  // The stub's `appendChild` pushes onto `_children` and the page clears with
+  // `innerHTML = ''`, which the stub does not translate into dropping them — so both
+  // lists are reset by hand before each search, or a stale child answers for a new one.
+  el('mode').value = 'area';
+  updateMode();
+  // Drop the destination filter left over from §7 — with it on, the page's empty-result
+  // sentence is the POI one, and "no_routes displaced 'widen the map'" would pass on a
+  // sentence that was never going to say it.
+  el('poi').selectedOptions = [];
+  el('area').value = 'nofer';
+  el('ferrata').value = 'false';
+  el('notices')._children.length = 0;
+  el('results')._children.length = 0;
+  await search();
+  check('the ferrata filter reaches the query', /ferrata=false/.test(lastHikes()), lastHikes());
+  check('a ferrata gap is shown, not swallowed',
+        el('notices')._children.length === 1
+        && /NOT a report that the routes are free of cable/
+             .test(el('notices')._children[0].textContent),
+        el('notices')._children.map(c => c.textContent));
+  check('and it stays visible with routes still listed — never gated on an empty result',
+        el('results')._children.length === 1, el('results')._children.length);
+  check('the status line still reports what did come back',
+        /1 match\(es\)/.test(el('status').textContent), el('status').textContent);
+
+  // The other kind: it REPLACES the empty-result advice rather than joining it. Saying
+  // both would put "nothing is mapped here" and "widen the map" on screen at once.
+  el('area').value = 'norelations';
+  el('notices')._children.length = 0;
+  el('results')._children.length = 0;
+  await search();
+  check('no route relations is reported as a fact about the map',
+        /not your filters/.test(el('status').textContent), el('status').textContent);
+  check('and it displaces the "widen the map" advice instead of sitting beside it',
+        !/widen the map/.test(el('status').textContent), el('status').textContent);
+  check('that one is not ALSO rendered as a notice',
+        el('notices')._children.length === 0, el('notices')._children.length);
+
+  // And the quiet direction, which is what makes either one a signal: a search with
+  // nothing to caveat renders no notice at all.
+  el('area').value = 'krkonose';
+  el('ferrata').value = '';
+  el('notices')._children.length = 0;
+  await search();
+  check('a search with nothing to say says nothing',
+        el('notices')._children.length === 0, el('notices')._children.length);
+  check('and falls back to the ordinary empty-result advice',
+        /widen the map/.test(el('status').textContent), el('status').textContent);
 
   console.log('PASS ' + ok.length + ' / FAIL ' + fail.length);
   fail.forEach(f => console.log('  FAIL: ' + f));

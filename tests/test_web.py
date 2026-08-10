@@ -48,15 +48,29 @@ class _Ramp(ElevationProvider):
         return [(lat - 50.0) * 20000.0 for lat, _ in points]
 
 
-def _make_snapshot(path, pois=None, poi_kinds=None):
+def _make_snapshot(path, pois=None, poi_kinds=None, way_tags=None, ferrata=False, routes=None):
     """A snapshot for the HTTP tests. ``poi_kinds`` is the registry the area records
     having been classified against — ``None`` (the default) stands for a file saved
-    before that field existed, which is what the pre-POI fixture needs to be."""
+    before that field existed, which is what the pre-POI fixture needs to be.
+
+    ``way_tags`` (parallel to ``ways``, index for index) and ``ferrata`` are the two
+    halves of "can this file answer a question about cable": the tags are what avoidance
+    is measured from, the ferrata lists are what finding needs. Both default to the
+    older file — no member-way tags, no record of the fetch — because that is the case
+    the caveat exists for. ``routes=[]`` builds an area OSM maps no hiking relations in.
+    """
+    route = {"id": 7, "name": "WebNorth", "ways": [[(50.0, 14.0), (50.05, 14.0)]], "tags": {}}
+    if way_tags is not None:
+        route["way_tags"] = [dict(t) for t in way_tags]
     area = AreaData(
-        routes=[{"id": 7, "name": "WebNorth", "ways": [[(50.0, 14.0), (50.05, 14.0)]], "tags": {}}],
+        routes=[route] if routes is None else list(routes),
         pois=list(pois or []),
         poi_kinds=None if poi_kinds is None else tuple(poi_kinds),
     )
+    if ferrata:
+        # What a live parse always sets: empty lists are a real answer ("looked, found
+        # none"), which is exactly what `None` cannot say.
+        area.ferrata_routes, area.ferrata_ways = [], []
     rec = RecordingElevationProvider(_Ramp())
     bbox = (49.9, 13.9, 50.2, 14.2)
     find_hikes(area, rec, Criteria(), bbox=bbox)
@@ -84,6 +98,16 @@ def server(tmp_path, monkeypatch):
         pois=[{"coord": (50.0250, 14.0015), "kind": "ruins", "name": "Zřícenina"}],
         poi_kinds=[k for k in all_kinds() if k not in ("tree", "mill")],
     )
+    # A fourth, written by THIS build: its route carries member-way tags and it records
+    # the ferrata fetch, so both cable questions can be answered from it. The complement
+    # of `webtest`, which can answer neither — a caveat that never turns off is noise.
+    _make_snapshot(tmp_path / "webferrata.json", way_tags=[{"highway": "path"}], ferrata=True)
+    # And the one in between: member-way tags but no record of the ferrata fetch. It can
+    # answer "avoid cable" and not "find cable" — the asymmetry the two flags are built on.
+    _make_snapshot(tmp_path / "webtagged.json", way_tags=[{"highway": "path"}])
+    # A fifth: a real area of the map with no hiking route relations in it at all (see
+    # search.area_has_no_routes — measured over Japan's North Alps).
+    _make_snapshot(tmp_path / "webempty.json", routes=[])
     srv = ThreadingHTTPServer(("127.0.0.1", 0), web.Handler)
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
@@ -97,6 +121,19 @@ def server(tmp_path, monkeypatch):
 def _get(url):
     with urllib.request.urlopen(url, timeout=10) as resp:
         return resp.status, json.loads(resp.read().decode("utf-8"))
+
+
+def _hikes(url):
+    """``(status, routes)`` from ``/api/hikes``, which answers with an ENVELOPE.
+
+    ``{"hikes": [...], "notices": [...]}`` — the notices carry what the source could not
+    answer (see ``web._area_notices``) and have their own tests below. Everything that
+    only cares about the routes unwraps here; the envelope itself is pinned by
+    ``test_hikes_answers_with_an_envelope_not_a_bare_array`` so this helper can't tunnel
+    a shape change past the suite.
+    """
+    status, body = _get(url)
+    return status, body["hikes"]
 
 
 def _get_raw(url):
@@ -137,17 +174,17 @@ def test_poi_kinds_endpoint_mirrors_the_registry(server):
 
 def test_hikes_offline_filters_by_poi(server):
     """The destination filter runs over HTTP against a snapshot, with zero network."""
-    status, hikes = _get(server + "/api/hikes?area=webpoi&poi=ruins")
+    status, hikes = _hikes(server + "/api/hikes?area=webpoi&poi=ruins")
     assert status == 200 and len(hikes) == 1
     assert [(p["kind"], p["name"]) for p in hikes[0]["pois"]] == [("ruins", "Zřícenina")]
     # The POI carries its own coordinate, so the map can pin it without a second lookup.
     assert hikes[0]["pois"][0]["lat"] == 50.0250
 
     # The church is ~3 km off the route: no match at the default radius...
-    _, none = _get(server + "/api/hikes?area=webpoi&poi=church&near_misses=false")
+    _, none = _hikes(server + "/api/hikes?area=webpoi&poi=church&near_misses=false")
     assert none == []
     # ...and the radius is the lever that finds it.
-    _, wide = _get(
+    _, wide = _hikes(
         server + "/api/hikes?area=webpoi&poi=church&poi_radius_m=5000&near_misses=false"
     )
     assert len(wide) == 1 and wide[0]["pois"][0]["name"] == "Faraway"
@@ -155,7 +192,7 @@ def test_hikes_offline_filters_by_poi(server):
 
 def test_hikes_accepts_comma_separated_and_repeated_poi(server):
     for query in ("poi=ruins,church", "poi=ruins&poi=church"):
-        _, hikes = _get(server + "/api/hikes?area=webpoi&poi_radius_m=5000&" + query)
+        _, hikes = _hikes(server + "/api/hikes?area=webpoi&poi_radius_m=5000&" + query)
         assert len(hikes) == 1
         assert {p["kind"] for p in hikes[0]["pois"]} == {"ruins", "church"}
 
@@ -170,7 +207,7 @@ def test_unknown_poi_kind_is_a_loud_400_not_an_empty_list(server):
 
 
 def test_hikes_offline_by_area(server):
-    status, hikes = _get(server + "/api/hikes?area=webtest")
+    status, hikes = _hikes(server + "/api/hikes?area=webtest")
     assert status == 200
     assert len(hikes) == 1
     h = hikes[0]
@@ -202,6 +239,114 @@ def test_geojson_download_offline(server):
     # GeoJSON carries it through as 3D positions: [lon, lat, ele] (RFC 7946's optional 3rd
     # element) — the opposite axis order from /api/hikes. The ramp reads 0 m at lat 50.0.
     assert obj["features"][0]["geometry"]["coordinates"][0][0] == [14.0, 50.0, 0.0]
+
+
+# ------------------------------------------- what the SOURCE could not answer (notices)
+#
+# `/api/hikes` returned a bare JSON array until now, which is why the web UI was the one
+# frontend that showed an empty list where the CLI logs a sentence to stderr and the MCP
+# server puts one in its response text. These pin the envelope that replaced it and both
+# things it carries — including, for each, the case where it must stay quiet.
+
+
+def test_hikes_answers_with_an_envelope_not_a_bare_array(server):
+    """The shape itself, pinned once. Every other test here unwraps through `_hikes`
+    and would happily keep passing if the notices half quietly disappeared."""
+    status, body = _get(server + "/api/hikes?area=webtest")
+    assert status == 200
+    assert isinstance(body, dict) and set(body) == {"hikes", "notices"}
+    # A search that asked nothing the file cannot answer says nothing extra: a channel
+    # that always has something in it is one nobody reads.
+    assert len(body["hikes"]) == 1 and body["notices"] == []
+
+
+def test_a_ferrata_filter_on_an_unreadable_area_says_so_rather_than_returning_nothing(server):
+    """The failure the envelope exists for, and the reason it was done before the release.
+
+    `webtest`'s route carries no member-way tags, so cable cannot be detected on it and
+    `ferrata=false` drops it. Returned bare, that empty list reads as "no safe routes
+    here" — a safety claim nobody made, and the exact inversion the ferrata feature
+    spends its comments preventing.
+    """
+    status, body = _get(server + "/api/hikes?area=webtest&ferrata=false&near_misses=false")
+    assert status == 200 and body["hikes"] == []
+    assert [n["kind"] for n in body["notices"]] == ["ferrata_gap"]
+    msg = body["notices"][0]["message"]
+    # The UNREADABLE sentence, not the "avoiding still works here" one — that promise is
+    # false on a file with no member-way tags, and choosing between the two is
+    # `search.ferrata_gap_message`'s whole job. Asserting on which one arrived is what
+    # keeps the web from wording it a second way.
+    assert "carry no member-way tags" in msg and "AVOIDING them still works" not in msg
+    assert "NOT a report that the routes are free of cable" in msg
+
+
+def test_the_two_ferrata_flags_get_different_answers_from_the_same_file(server):
+    """`webtagged` carries member-way tags but never fetched ferrata objects, so it can
+    answer one question and not the other — and the browser must be told which.
+
+    Finding needs the fetched objects; avoiding needs only the tags. Collapsing the two
+    into one message would either warn on a file that answers fine, or promise avoidance
+    on one that cannot deliver it — the wording bug that only showed up when this was run.
+    """
+    _, avoiding = _get(server + "/api/hikes?area=webtagged&ferrata=false")
+    assert len(avoiding["hikes"]) == 1 and avoiding["notices"] == []
+
+    _, finding = _get(server + "/api/hikes?area=webtagged&ferrata=true&near_misses=false")
+    assert finding["hikes"] == []
+    assert [n["kind"] for n in finding["notices"]] == ["ferrata_gap"]
+    msg = finding["notices"][0]["message"]
+    assert "predates cabled-route fetching" in msg
+    # ...and here the closing promise IS true, because this file has the tags avoidance
+    # is measured from. On `webtest`, which has neither, the other sentence is sent.
+    assert "AVOIDING them still works" in msg
+
+
+def test_a_readable_area_answers_the_ferrata_question_with_no_caveat_at_all(server):
+    """The other direction, which is what makes the notice a signal instead of noise:
+    an area whose routes carry member-way tags returns routes and says nothing."""
+    _, body = _get(server + "/api/hikes?area=webferrata&ferrata=false")
+    assert len(body["hikes"]) == 1 and body["notices"] == []
+
+
+def test_the_ferrata_caveat_is_decided_without_ever_seeing_the_results(server):
+    """Not gated on an empty result, structurally — `_area_notices` is not shown them.
+
+    The rule this repo already applies to `snapshot_poi_gap`: a non-empty result proves
+    only that SOME part of the question was answerable, so hiding the caveat behind one
+    answers half a question quietly. Here the quiet half is about cable.
+    """
+    import inspect
+
+    from hike_finder.filters import Criteria
+    from hike_finder.overpass import AreaData
+
+    area = AreaData(routes=[{"id": 1, "ways": [[(50.0, 14.0), (50.1, 14.0)]], "tags": {}}])
+    assert web._area_notices(area, Criteria(ferrata=False))[0]["kind"] == "ferrata_gap"
+    assert web._area_notices(area, Criteria()) == []       # nothing asked, nothing said
+    assert "hikes" not in inspect.signature(web._area_notices).parameters
+
+
+def test_an_area_with_no_route_relations_blames_the_map_not_the_filters(server):
+    """"Nothing matched" and "nothing is mapped here" take different fixes. The browser
+    renders this one INSTEAD of its "widen the map or relax the filters" line, which is
+    the advice this message exists to delete — the CLI and MCP server say the same."""
+    status, body = _get(server + "/api/hikes?area=webempty")
+    assert status == 200 and body["hikes"] == []
+    assert [n["kind"] for n in body["notices"]] == ["no_routes"]
+    assert "not your filters" in body["notices"][0]["message"]
+
+
+def test_the_live_search_carries_the_no_routes_fact_too(server, monkeypatch):
+    """The live bbox path reads the same `diagnostics` out-parameter the CLI and the MCP
+    server do, rather than re-fetching the area to word an error message."""
+    def _stub(bbox, criteria, cfg=None, *, diagnostics=None, **kw):
+        diagnostics["no_routes"] = True
+        return []
+
+    monkeypatch.setattr(web, "search_hikes", _stub)
+    _, body = _get(server + "/api/hikes?south=50.7&west=15.5&north=50.8&east=15.7")
+    assert body["hikes"] == []
+    assert [n["kind"] for n in body["notices"]] == ["no_routes"]
 
 
 def test_gpx_unknown_area_is_404(server):
@@ -237,7 +382,7 @@ def test_hikes_compose_loops_routes_to_compose_engine(server, monkeypatch):
 
     monkeypatch.setattr(web, "search_hikes", _fail)
     monkeypatch.setattr(web, "compose_loops", _stub)
-    status, hikes = _get(
+    status, hikes = _hikes(
         server + "/api/hikes?south=50.72&west=15.58&north=50.74&east=15.62&compose_loops=true"
     )
     assert status == 200 and len(hikes) == 1
@@ -268,7 +413,7 @@ def test_hikes_around_point_routes_to_compose_around(server, monkeypatch):
     monkeypatch.setattr(web, "search_hikes", _fail)
     monkeypatch.setattr(web, "compose_loops", _fail)
     monkeypatch.setattr(web, "compose_loops_around", _stub)
-    status, hikes = _get(
+    status, hikes = _hikes(
         server + "/api/hikes?around_lat=50.73&around_lon=15.60&around_radius_m=750"
     )
     assert status == 200 and len(hikes) == 1
@@ -297,7 +442,7 @@ def test_hikes_between_two_points_routes_to_routes_between(server, monkeypatch):
 
     monkeypatch.setattr(web, "search_hikes", _fail)
     monkeypatch.setattr(web, "routes_between", _stub)
-    status, hikes = _get(
+    status, hikes = _hikes(
         server + "/api/hikes?from_lat=50.72&from_lon=15.58&to_lat=50.74&to_lon=15.62&routes_k=4"
     )
     assert status == 200 and len(hikes) == 1
@@ -334,7 +479,7 @@ def test_hikes_to_poi_routes_to_the_destination_engine(server, monkeypatch):
     monkeypatch.setattr(web, "search_hikes", _fail)
     monkeypatch.setattr(web, "routes_between", _fail)
     monkeypatch.setattr(web, "routes_to_poi", _stub)
-    status, hikes = _get(
+    status, hikes = _hikes(
         server + "/api/hikes?to_poi_lat=50.73&to_poi_lon=15.60&to_poi=ruins&to_poi=castle"
         "&to_poi_n=2&to_poi_radius_m=4500"
     )
@@ -351,7 +496,7 @@ def test_hikes_to_poi_routes_to_the_destination_engine(server, monkeypatch):
 
 def test_a_search_without_to_poi_reports_no_destination(server):
     """Every other search serialises `destination: null` — never a stale or invented one."""
-    status, hikes = _get(server + "/api/hikes?area=webtest")
+    status, hikes = _hikes(server + "/api/hikes?area=webtest")
     assert status == 200 and hikes
     assert all(h["destination"] is None for h in hikes)
 

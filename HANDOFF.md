@@ -482,6 +482,46 @@ thing is validated live against real OSM. Highlights:
   and `ceskyraj.json` has neither. `ferrata_gap_message` is now the single place that
   picks between the two sentences, and the ordering (unreadable first) is what keeps each
   one true.
+- **The web UI carries its caveats: `/api/hikes` is an envelope, not a bare array.**
+  `{"hikes": [...], "notices": [{"kind", "message"}]}`. The array was the reason the
+  browser was the one frontend that answered a question it could not answer with a
+  silent empty list; `/api/poi-list` had already set the object precedent. Four things
+  worth not re-deriving:
+  - **The two kinds are rendered DIFFERENTLY, and that is the point of carrying a
+    `kind` at all.** `ferrata_gap` gets its own persistent box (`.notice`), shown
+    whenever the filter is active and the file falls short — *including when routes came
+    back*, the "never gate a caveat on an empty result" rule. `no_routes` **replaces**
+    the page's empty-result sentence instead of joining it: "widen the map or relax the
+    filters" is precisely the advice `no_routes_message` exists to delete, and rendering
+    both would put two contradictory answers on screen. Wiring both into one box was the
+    obvious first draft and is the bug.
+  - **No ferrata notice is computed on a live path, deliberately.** A live parse always
+    sets `ferrata_routes`/`ferrata_ways` and member-way tags, and the ferrata clause
+    changed the query text — the Overpass cache key — so a pre-feature response cannot be
+    served under it either. `ferrata_gap_message` is provably `None` there, and a seam
+    that can never fire reads as one that might. The saved-file branch is the only source
+    that can fall short, so `web._area_notices` is called from exactly one place.
+  - **`no_routes` reuses the `diagnostics` out-parameter** the CLI and MCP server read,
+    rather than re-fetching the area to word a message (free only while the Overpass
+    cache is on).
+  - The notice text is set with `textContent`, not `innerHTML`: it is server prose and
+    there is no reason to hand it a parser.
+  **Verified live over real HTTP** (the server, on hand-built offline snapshots — no
+  network), all four cases and both directions: `untagged` (no member-way tags) +
+  `ferrata=false` → 0 routes and the **unreadable** sentence, never the "avoiding still
+  works" one; `tagged` + `ferrata=false` → 1 route and **no notice at all**; `tagged` +
+  `ferrata=true` → the **unrecorded** sentence, whose closing promise is true only on a
+  file like this one; `norelations` → `no_routes`; and `untagged` with no ferrata filter
+  → 1 route, no notice. The served page carries `id="notices"` and `showNotices`, and
+  `/api/gpx` still streams (the export path drops notices — a GPX has nowhere to put a
+  sentence, and the search that produced it already showed one).
+  Offline pins: seven HTTP cases in `test_web.py` (the envelope shape itself, so the
+  `_hikes` unwrapping helper cannot tunnel a shape change past the suite; both ferrata
+  sentences; both quiet directions; `no_routes` offline and live) and eight browser-side
+  checks in `webui_harness.cjs` — including the one the server cannot currently produce
+  and the browser must still honour: **a gap notice rendered while routes are listed**.
+  The real browser was NOT driven (no extension available in that session); the node
+  harness runs the page's own script, which is this repo's standing substitute.
 - **All three frontends validated live**, including the MCP server over real stdio.
 - **Repo hygiene**: MIT license, CHANGELOG, complete pyproject, and CI across Linux 3.10–3.14 +
   Windows; v0.1.0, v0.2.0, v0.3.0, v0.3.1 and v0.4.0 tagged + GitHub-released. **CI being green is a
@@ -516,17 +556,14 @@ skip without the `mcp` extra).
   improvement but still names the wrong defect: the *label* is what is wrong. The gain
   gate (`filters._line_closes`) already scales its bound by route length and could lend
   the same treatment here. Next candidate; deliberately not bundled with the gain fix.
-- **The web UI cannot carry the caveats the CLI and MCP server print, and there are now
-  two of them.** `/api/hikes` returns a bare JSON array with no room for advisory text
-  (unlike `/api/pois`, which is already an object), so wiring either is an API-shape
-  change plus its own JS and test surface.
-  (a) `search.no_routes_message()` — "no route relations are mapped here".
-  (b) **The ferrata gap, which matters more.** `--no-ferrata` over an area whose routes
-  carry no member-way tags drops every route; the CLI logs
-  `search.ferrata_gap_message(...)` to stderr and the MCP server puts it in the response
-  text, but the web UI shows a bare empty list. For a safety-adjacent filter a silent
-  empty reads as "no safe routes here", which is the exact inversion this feature spends
-  its comments preventing. Do (b) first if only one gets done.
+- **`/api/hikes` answers with an object now, and the reason is worth keeping.** It
+  returned a bare JSON array for four releases, which had nowhere to put a sentence about
+  what the *source* could not answer — so the web UI was the one frontend that showed a
+  silent empty list where the CLI logs to stderr and the MCP server puts the text in its
+  reply. See "The web UI carries its caveats" under What is DONE. The residual limit is
+  narrower: the *point-based* modes (`--around`, `--from/--to`, `--via`, `--to-poi`)
+  return `notices: []` unconditionally, because they build their own bbox and their
+  failure shapes are already worded in the page. Nothing computes a notice for them yet.
 - **`--show-ferrata` cannot export.** `--gpx`/`--geojson` are named in its ignored-flags
   note rather than wired up, because `ferrata.FerrataLine` carries only a start point,
   not the cabled line's geometry. Exporting means widening that record and adding a
