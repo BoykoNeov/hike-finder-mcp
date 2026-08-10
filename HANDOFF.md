@@ -516,10 +516,23 @@ skip without the `mcp` extra).
   improvement but still names the wrong defect: the *label* is what is wrong. The gain
   gate (`filters._line_closes`) already scales its bound by route length and could lend
   the same treatment here. Next candidate; deliberately not bundled with the gain fix.
-- **The web UI does not yet say "no route relations are mapped here"** the way the CLI and
-  MCP server do. `/api` returns a bare JSON array with no room for advisory text (unlike
-  `/api/pois`, which is already an object), so wiring it is an API-shape change plus its
-  own JS and test surface. `search.no_routes_message()` is the shared sentence to use.
+- **The web UI cannot carry the caveats the CLI and MCP server print, and there are now
+  two of them.** `/api/hikes` returns a bare JSON array with no room for advisory text
+  (unlike `/api/pois`, which is already an object), so wiring either is an API-shape
+  change plus its own JS and test surface.
+  (a) `search.no_routes_message()` — "no route relations are mapped here".
+  (b) **The ferrata gap, which matters more.** `--no-ferrata` over an area whose routes
+  carry no member-way tags drops every route; the CLI logs
+  `search.ferrata_gap_message(...)` to stderr and the MCP server puts it in the response
+  text, but the web UI shows a bare empty list. For a safety-adjacent filter a silent
+  empty reads as "no safe routes here", which is the exact inversion this feature spends
+  its comments preventing. Do (b) first if only one gets done.
+- **`--show-ferrata` cannot export.** `--gpx`/`--geojson` are named in its ignored-flags
+  note rather than wired up, because `ferrata.FerrataLine` carries only a start point,
+  not the cabled line's geometry. Exporting means widening that record and adding a
+  LINE exporter (`pois_to_gpx` writes waypoints; these are lines, so GeoJSON LineStrings
+  / GPX tracks). A real feature, not a footnote — `--show-pois` sets the precedent that
+  a browse mode SHOULD export.
 
 - **Gain threshold vs noise:** the threshold must exceed the *peak-to-peak* noise amplitude, not
   half of it (±5 m jitter = 10 m peak-to-peak; a 10 m threshold sits on the boundary). Tune per

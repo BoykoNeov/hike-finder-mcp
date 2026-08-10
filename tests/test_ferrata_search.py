@@ -16,8 +16,6 @@ fine because nothing filters on it. Doing the same for ferrata emptied every
 import json
 import logging
 
-import pytest
-
 from hike_finder.ferrata import FerrataSummary, select_ferrata
 from hike_finder.filters import Criteria, Hike, find_hikes
 from hike_finder.format import format_hike, hike_to_dict

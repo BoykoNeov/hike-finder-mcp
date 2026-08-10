@@ -276,7 +276,46 @@ everything. Tune with `HIKE_TRANSIT_RAIL_RADIUS` / `HIKE_TRANSIT_STOP_RADIUS`.
 
 If you search a **saved area downloaded before this feature existed**, it holds no
 transit data — the search says so and returns nothing, instead of reporting every route
-as unreachable. Re-download the area to fix it. Numeric filters:
+as unreachable. Re-download the area to fix it.
+
+**`--ferrata` / `--no-ferrata` — cabled climbing, found or avoided.** A via ferrata
+(*klettersteig*) is a climb on fixed steel cable, walked in a harness — a different
+activity from hiking, not a harder hike:
+
+```
+hike-finder --bbox 46.50 12.08 46.58 12.20 --ferrata --max-distance 40
+```
+```
+Via Ferrata Strobel — 2.41 km, +993 m / -182 m
+    [one-way, car, transit:bus stop, ferrata 3 0.8 km] (start 46.5755,12.1202, OSM relation 15791503)
+Via ferrata Marino Bianchi — 1.04 km, gain n/a
+    [loop, ferrata 1/2/3 1.0 km] (start 46.5833,12.1934, OSM relation 6503486)
+```
+
+The flag fires on **any** tagged cable, however small a share of the route — 300 m on a
+12 km walk is exactly what must not be averaged away — and the grades are printed raw,
+never ranked (OSM mixes numeric `1+`/`3.5` with A–F, and no ordering is safe across
+both). `--ferrata` also returns dedicated `route=via_ferrata` relations, which no other
+search shows.
+
+`--no-ferrata` drops routes **known** to include cable. It is complete over the routes on
+offer — every one is built from member ways whose tags are already in hand — but it is a
+filter, **not a safety guarantee**: cable nobody has tagged cannot be detected, and the
+tool says so on stderr every time you use it.
+
+`--show-ferrata` lists an area's cabled lines themselves, with no routes drawn:
+
+```
+hike-finder --bbox 46.50 12.08 46.58 12.20 --show-ferrata
+```
+```
+13 cabled line(s): 0 mapped as a via ferrata route, 13 as individual ways
+  Sentiero ferrata F. Berti (grade 3, 1.9 km, single way)
+  Via Ferrata Strobel (grade 3, 0.8 km, single way)
+```
+
+A saved area downloaded before this feature holds no ferrata objects and says so rather
+than returning a confident empty list. Numeric filters:
 `--min-gain`/`--max-gain` (m), `--min-distance`/`--max-distance` (km). To require
 that a route actually goes somewhere — a church, a ruin, a summit — add
 `--poi KIND` (see [Hiking *to* something](#hiking-to-something--churches-ruins-peaks)).

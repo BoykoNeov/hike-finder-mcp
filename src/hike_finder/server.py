@@ -3,11 +3,14 @@
 Tools:
   find_hikes(south, west, north, east, min_gain_m, max_gain_m,
              min_distance_km, max_distance_km,
-             circular, car_access, chairlift_access,
+             circular, car_access, chairlift_access, ferrata,
              near_misses, area, compose_loops, name_places, format)
   list_pois(south, west, north, east | area, kinds, format)  — list the churches /
              ruins / peaks in an area WITHOUT routing to them. One Overpass call, no
              elevation, no quota; `area` makes it fully offline.
+  list_ferrata(south, west, north, east | area, format)  — the same, for via ferrata:
+             list an area's cabled lines without routing to them. The counterpart of
+             the `ferrata` flag, which filters ROUTES by whether they include cable.
   download_area(south, west, north, east, path)  — fetch an area once and save it
              so find_hikes(area=path) can search it offline with no further API calls.
 
@@ -67,7 +70,7 @@ CFG = _config.load()
 
 # `app` is built at the BOTTOM of this module, not here: the mcp 2.x `Server` takes its
 # handlers as constructor arguments (`on_list_tools` / `on_call_tool`) rather than through
-# decorators, so it cannot exist until they are defined. Everything else about the eight
+# decorators, so it cannot exist until they are defined. Everything else about the nine
 # tools is unchanged — `Tool(inputSchema=...)` still validates, via the field's alias.
 
 # The destination filter, offered identically by every search tool — "a 10 km hike that

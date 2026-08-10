@@ -594,3 +594,84 @@ def test_show_pois_stays_quiet_when_nothing_was_ignored(tmp_path, capsys):
     _poi_snapshot(path, _DEMO_POIS)
     assert run(_parse("--show-pois", "--area", str(path), "--poi", "ruins")) == 0
     assert "ignored" not in capsys.readouterr().err
+
+
+def _ferrata_snapshot(path):
+    """A saved area holding one cabled way and one walkable hiking route."""
+    from hike_finder.overpass import parse_area
+    from hike_finder.snapshot import AreaSnapshot, save_snapshot
+
+    area = parse_area([
+        {"type": "relation", "id": 1, "tags": {"route": "hiking", "name": "Walk"},
+         "members": [{"type": "way", "ref": 100, "role": "", "geometry": [
+             {"lat": 46.50, "lon": 12.10}, {"lat": 46.51, "lon": 12.10}]}]},
+        {"type": "way", "id": 100, "tags": {"highway": "path"}},
+        {"type": "way", "id": 500, "tags": {"highway": "via_ferrata", "name": "VF Test"},
+         "geometry": [{"lat": 46.52, "lon": 12.11}, {"lat": 46.525, "lon": 12.11}]},
+    ])
+    save_snapshot(
+        AreaSnapshot(bbox=(46.4, 12.0, 46.6, 12.3), area=area, elevations={},
+                     sample_interval_m=25.0),
+        path,
+    )
+
+
+def test_show_ferrata_says_which_flags_it_ignored(tmp_path, capsys):
+    """Same convention as --show-pois, and it has to be repeated rather than inherited:
+    the two browse modes share no code path, so nothing else would catch a silent drop.
+    `--gpx` is on the list deliberately — the mode cannot export (see HANDOFF), and
+    accepting the flag while writing no file is exactly the silence forbidden here."""
+    path = tmp_path / "vf.json"
+    _ferrata_snapshot(path)
+    assert run(_parse(
+        "--show-ferrata", "--area", str(path), "--min-gain", "500",
+        "--gpx", str(tmp_path / "out.gpx"),
+    )) == 0
+    err = capsys.readouterr().err
+    assert "--min-gain" in err and "--gpx" in err
+    assert "do not apply and were ignored" in err
+    # ...and it really did not write the file it was handed.
+    assert not (tmp_path / "out.gpx").exists()
+
+
+def test_show_ferrata_stays_quiet_when_nothing_was_ignored(tmp_path, capsys):
+    path = tmp_path / "vf.json"
+    _ferrata_snapshot(path)
+    assert run(_parse("--show-ferrata", "--area", str(path))) == 0
+    captured = capsys.readouterr()
+    assert "ignored" not in captured.err
+    assert "VF Test" in captured.out
+
+
+def test_the_two_inventories_refuse_to_run_together(tmp_path, capsys):
+    """The guard has to sit ABOVE both branches: --show-pois returns first, so a check
+    inside the --show-ferrata branch could never fire and the pair would silently list
+    only the points of interest."""
+    path = tmp_path / "vf.json"
+    _ferrata_snapshot(path)
+    assert run(_parse("--show-ferrata", "--show-pois", "--area", str(path))) == 2
+    assert "two different inventories" in capsys.readouterr().err
+
+
+def test_show_ferrata_rejects_the_point_based_flags(capsys):
+    assert run(_parse(
+        "--show-ferrata", "--bbox", "46.5", "12.0", "46.6", "12.2",
+        "--around", "46.5", "12.1",
+    )) == 2
+    assert "without routing to them" in capsys.readouterr().err
+
+
+def test_show_ferrata_and_the_route_filter_are_different_questions(capsys):
+    assert run(_parse(
+        "--show-ferrata", "--bbox", "46.5", "12.0", "46.6", "12.2", "--no-ferrata",
+    )) == 2
+    assert "filter ROUTES" in capsys.readouterr().err
+
+
+def test_avoidance_always_states_that_it_is_not_a_guarantee(tmp_path, capsys):
+    """Printed on every --no-ferrata run, not buried in --help: the flag reads as a
+    safety promise unless something says otherwise, every single time."""
+    path = tmp_path / "vf.json"
+    _ferrata_snapshot(path)
+    run(_parse("--no-ferrata", "--area", str(path)))
+    assert "not a safety guarantee" in capsys.readouterr().err

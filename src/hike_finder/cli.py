@@ -590,6 +590,35 @@ def _show_ferrata(args: argparse.Namespace, cfg) -> int:
     The ``--show-pois`` shape, and deliberately so — the objects ARE the answer, no route
     is drawn, no elevation is looked up, and both sources end in the same rendering.
     """
+    # Flags that describe a WALK have nothing to act on here. Named rather than dropped,
+    # per the same convention `_show_pois` follows: a filter that silently does nothing is
+    # the one outcome this project's conventions forbid. `--gpx`/`--geojson` are on this
+    # list rather than wired up because `FerrataLine` carries only a start point, not the
+    # cabled line's geometry — exporting it would mean widening the record, which is a
+    # feature, not a footnote (see HANDOFF).
+    ignored = [
+        flag
+        for flag, value in (
+            ("--min-gain", args.min_gain), ("--max-gain", args.max_gain),
+            ("--min-distance", args.min_distance), ("--max-distance", args.max_distance),
+            ("--circular", args.circular), ("--car-access", args.car_access),
+            ("--chairlift-access", args.chairlift_access),
+            ("--transit-access", args.transit_access),
+            ("--poi", getattr(args, "poi", None)),
+            ("--poi-radius", getattr(args, "poi_radius", None)),
+            ("--near-misses", args.near_misses),
+            ("--name-places", args.name_places),
+            ("--gpx", getattr(args, "gpx", None)),
+            ("--geojson", getattr(args, "geojson", None)),
+        )
+        if value is not None
+    ]
+    if ignored:
+        print(
+            f"note: --show-ferrata lists cabled lines, not walks — "
+            f"{', '.join(ignored)} do not apply and were ignored.",
+            file=sys.stderr,
+        )
     if args.area:
         snap, err = _resolve_area(args.area)
         if snap is None:
@@ -756,6 +785,17 @@ def run(args: argparse.Namespace) -> int:
         print("error: --area and --download are mutually exclusive.", file=sys.stderr)
         return 2
 
+    # Two inventories, checked BEFORE either branch — the `--show-pois` branch below
+    # returns, so a guard inside the `--show-ferrata` branch could never fire and the
+    # pair would silently list only the POIs.
+    if getattr(args, "show_pois", False) and getattr(args, "show_ferrata", False):
+        print(
+            "error: --show-pois and --show-ferrata are two different inventories — run "
+            "them separately.",
+            file=sys.stderr,
+        )
+        return 2
+
     # --show-pois is a different question ("what objects are here?"), not a hike search
     # with a filter on it, so it is answered here — before every mode below, each of
     # which would otherwise silently ignore it. The incompatible combinations are named
@@ -811,10 +851,17 @@ def run(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
-        if getattr(args, "show_pois", False):
+        if (
+            getattr(args, "around", None) is not None
+            or getattr(args, "from_pt", None) is not None
+            or getattr(args, "to_pt", None) is not None
+            or to_poi
+            or getattr(args, "via", None) is not None
+            or getattr(args, "via_loop", False)
+        ):
             print(
-                "error: --show-ferrata and --show-pois are two different inventories — "
-                "run them separately.",
+                "error: --show-ferrata lists cabled lines without routing to them — "
+                "drop the point-based flags.",
                 file=sys.stderr,
             )
             return 2
