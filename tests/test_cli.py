@@ -497,6 +497,28 @@ def test_list_areas_says_how_far_behind_the_registry_a_file_is(tmp_path, capsys,
     assert "kinds not recorded" in lines["unrecorded"]
 
 
+def test_list_areas_separates_an_empty_area_from_one_that_never_looked(
+    tmp_path, capsys, monkeypatch
+):
+    """Zero POIs is two different facts, and only one of them is worth a re-download.
+
+    A file that recorded the kind set and still holds nothing is reporting the ground.
+    Telling that user to re-download is the lie the kind record retires — and the count
+    alone cannot tell the two apart, which is why the inventory reads the record.
+    """
+    monkeypatch.setenv("HIKE_SNAPSHOT_DIR", str(tmp_path))
+    _poi_snapshot(tmp_path / "barren.json", [])                    # looked, found none
+    _poi_snapshot(tmp_path / "prepoi.json", [], poi_kinds=None)    # never looked
+    assert run(_parse("--list-areas")) == 0
+    rows = capsys.readouterr().out.splitlines()
+    entry = lambda name: "\n".join(  # noqa: E731
+        rows[next(i for i, r in enumerate(rows) if r.strip().startswith(name)) :][:2]
+    )
+    assert "no POIs mapped here" in entry("barren")
+    assert "re-download" not in entry("barren")
+    assert "no POIs (re-download for --poi)" in entry("prepoi")
+
+
 def test_show_pois_rejects_the_wrong_combinations(capsys):
     # It draws no routes, so there is nothing to compose.
     assert run(_parse("--show-pois", "--bbox", "1", "2", "3", "4", "--compose-loops")) == 2

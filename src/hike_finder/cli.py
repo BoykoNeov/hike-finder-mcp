@@ -572,15 +572,26 @@ def _print_areas(as_json: bool) -> int:
             else "bbox unknown"
         )
         when = (a.get("created_at") or "?").replace("T", " ").replace("+00:00", "Z")
-        # An older snapshot has no POIs, so say so here rather than letting a --poi
-        # search against it look like "there are no churches in Krkonoše".
-        poi = f"{a['pois']} POIs" if a.get("pois") else "no POIs (re-download for --poi)"
-        # The finer version of the same point: a file can be full of POIs and still
-        # predate whole kinds. The inventory is where someone decides which area to
-        # search, so it is the cheapest place to learn the file is behind the registry.
+        # What this file can say about points of interest. The count alone is not the
+        # answer: a *zero* means "predates the feature" or "genuinely empty ground"
+        # depending on whether the file records the kind set it was sorted into, and a
+        # non-zero one can still be behind the registry by whole kinds. The inventory is
+        # where someone decides which area to search, so it is the cheapest place to
+        # learn any of that — before a search returns a confident empty list.
         recorded = a.get("poi_kinds")
-        if a.get("pois"):
-            behind = unrecorded_kinds(tuple(recorded) if recorded is not None else None)
+        behind = unrecorded_kinds(tuple(recorded) if recorded is not None else None)
+        if not a.get("pois"):
+            # `behind is None` is the pre-POI file, the case this line has always been
+            # about. A file that DID record its kinds and still holds none is a real
+            # answer about the ground, and telling that user to re-download is the old
+            # lie the kind record exists to retire.
+            poi = (
+                "no POIs (re-download for --poi)"
+                if behind is None
+                else "no POIs mapped here"
+            )
+        else:
+            poi = f"{a['pois']} POIs"
             if behind is None:
                 poi += ", kinds not recorded"
             elif behind:

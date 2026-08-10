@@ -411,7 +411,19 @@ thing is validated live against real OSM. Highlights:
   results *more* complete and entirely useless.
 - **A snapshot records the POI kind set it was classified against** (unreleased, since
   v0.4.0) — the honesty gap the nine kinds opened, closed with the mechanism this file
-  had already named as the right one. `AreaData.poi_kinds` is stamped in `parse_area`,
+  had already named as the right one. **Verified live**, and the interesting half is the
+  read side, because no fixture can build it: the Český ráj snapshot this file records
+  from 2026-08-09 — a real 887-POI file written by the *previous* build — is read by this
+  one as `kinds not recorded` in `--list-areas`, and `--show-pois --area ceskyraj --poi
+  tree` hedges instead of answering. That is the `"unknown"` state on a genuinely old
+  file rather than on a hand-made `AreaData`. The write side was run too, which no
+  fixture touches either (every one of them skips `parse_area`): a fresh
+  `--bbox 50.55 15.17 50.58 15.21 --download` stamped the registry through
+  `parse_area` → `save_snapshot` → load → diff, and `--show-pois --poi tree` over it
+  returned **3 named trees** (`Dub`, `Přáslavický dub` ×2) with **no hedge at all** —
+  the same two-directions test the `--to-poi` bounds had to pass. Both files sit in
+  `--list-areas` side by side, one flagged and one not.
+  `AreaData.poi_kinds` is stamped in `parse_area`,
   round-trips through the snapshot, and is diffed against the registry on load by
   `poi.unrecorded_kinds`; `search.snapshot_poi_gap` turns that into the one of four
   states every frontend words. So an older area asked for a `tree` says it predates the

@@ -44,13 +44,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   The mechanism is the registry's own kind set, stored and compared as a **set** — not a
   snapshot version number, which would be a second source of truth about the registry
   that could disagree with it.
-  Three states are kept apart because collapsing any two of them is a different lie: an
-  area that predates points of interest entirely (says so outright, as before), one that
-  predates specific kinds (names them), and one saved **between** the arrival of points of
-  interest and this record, which holds objects but cannot say which kinds it looked for
-  (says exactly that, and cannot do better). One re-download settles the last case for
-  good. The snapshot format is unchanged otherwise and the version is not bumped — an
-  older file simply loads without the key, which is what puts it in the third state.
+  Four states are kept apart because collapsing any two of them is a differently-shaped
+  lie: an area that predates points of interest entirely (says so outright, as before),
+  one that predates specific kinds (names them), one saved **between** the arrival of
+  points of interest and this record, which holds objects but cannot say which kinds it
+  looked for (says exactly that, and cannot do better) — and one that looked for
+  everything and found nothing, which is a real answer about the ground. That fourth
+  state is new: before this, "looked for all 28, found none" was indistinguishable from a
+  pre-POI file and was reported as one, sending you off to re-download for nothing.
+  One re-download settles the third case for good. The snapshot format is unchanged
+  otherwise and the version is not bumped — an older file simply loads without the key,
+  which is what puts it in that third state.
 
 ### Changed
 
