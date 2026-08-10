@@ -181,6 +181,12 @@ INDEX_HTML = """<!doctype html>
       <option value="">any</option><option value="true">required</option><option value="false">excluded</option>
     </select>
 
+    <label>Via ferrata (cabled climbing)</label>
+    <select id="ferrata">
+      <option value="">any</option><option value="true">only ferrata</option><option value="false">exclude ferrata</option>
+    </select>
+    <p class="muted">A via ferrata is a climb on fixed steel cable, walked in a harness &mdash; not a harder hike. <b>Only ferrata</b> also returns dedicated <code>route=via_ferrata</code> relations no other search shows. <b>Exclude</b> drops routes <i>known</i> to include cable, from OSM tags &mdash; a filter, <b>not a safety guarantee</b>: untagged cable cannot be detected.</p>
+
     <label>Must pass (churches, ruins, peaks…)</label>
     <select id="poi" multiple size="7"></select>
     <p class="muted">Ctrl/&#8984;-click for several — a route passing <b>any</b> of them is kept, and what it reaches is listed with the distance. Leave empty for no destination filter.</p>
@@ -410,7 +416,7 @@ document.getElementById('via_undo').addEventListener('click', () => {
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function val(id){ const v = document.getElementById(id).value.trim(); return v === '' ? null : v; }
 
-const FIELDS = ['circular','car_access','chairlift_access','transit_access','near_misses',
+const FIELDS = ['circular','car_access','chairlift_access','transit_access','ferrata','near_misses',
                 'min_gain_m','max_gain_m','min_distance_km','max_distance_km','user_agent'];
 
 function fmtWhen(iso){
@@ -774,6 +780,10 @@ function render(hikes){
     // Only a positive result is shown, and it names the kind — same rule as format.py:
     // false and "never recorded" (null) are different, and a flag can't say which.
     if (h.transit_access) flags.push('transit:' + esc(h.transit_label || h.transit_type));
+    // Cabled climbing, gated on nothing but presence — the one flag that must survive
+    // describing a small minority of a route's metres (see ferrata.py). `label` is built
+    // server-side so the terminal, the MCP text and this list can't word it differently.
+    if (h.ferrata && h.ferrata.present) flags.push(esc(h.ferrata.label || 'ferrata'));
     const gain = (h.gain_m != null) ? ('+' + h.gain_m + ' m / -' + h.loss_m + ' m') : 'gain n/a';
     const note = (h.near_miss && h.notes && h.notes.length)
       ? '<div class="note">near miss: ' + esc(h.notes.join('; ')) + '</div>' : '';
@@ -1155,6 +1165,7 @@ class Handler(BaseHTTPRequestHandler):
             chairlift_access=_tri(qs, "chairlift_access"),
             transit_access=_tri(qs, "transit_access"),
             poi_kinds=poi_kinds,
+            ferrata=_tri(qs, "ferrata"),
         )
         # near_misses tri-state: absent -> "auto", true -> always, false -> never.
         nm = _tri(qs, "near_misses")

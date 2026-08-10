@@ -1338,13 +1338,19 @@ def area_ferrata_readable(area: AreaData) -> bool:
 
 
 def ferrata_unrecorded_message() -> str:
-    """Said when a saved area is asked to FIND ferrata it never fetched."""
+    """Said when a saved area is asked to FIND ferrata it never fetched.
+
+    The closing promise — that avoidance still works — is only true because this message
+    is reached solely via :func:`ferrata_gap_message`, which has already established that
+    the file carries member-way tags. Said unconditionally it would be a lie on the
+    oldest files, which carry neither (measured: `ceskyraj.json` is exactly such a file).
+    """
     return (
         "ferrata: this downloaded area predates cabled-route fetching — it holds no "
         "via ferrata relations or ways, so a search for them can only come back empty. "
-        "That is a fact about the file, not the terrain: re-download the area "
-        "(--download) to search it for ferrata. Avoiding them (--no-ferrata) still "
-        "works on this file, since that is measured from the member ways it already has."
+        "That is a fact about the file, not the terrain: re-download the area to search "
+        "it for ferrata. AVOIDING them still works on this file, since that is measured "
+        "from the member ways it already has."
     )
 
 
@@ -1358,9 +1364,27 @@ def ferrata_unreadable_message() -> str:
     return (
         "ferrata: this area's routes carry no member-way tags, so cabled sections "
         "cannot be detected on them at all — this is NOT a report that the routes are "
-        "free of cable. Re-download the area (--download) to ask either ferrata "
-        "question of it."
+        "free of cable. Re-download the area to ask either ferrata question of it."
     )
+
+
+def ferrata_gap_message(area: AreaData, *, finding: bool) -> str | None:
+    """The one sentence about what this area cannot answer about cable — or None.
+
+    ONE place picks between the two messages, because they are not interchangeable and
+    the ordering is what makes each true. A file with no member-way tags cannot answer
+    EITHER question, so it gets the unreadable sentence whichever flag is set; only once
+    that is ruled out is "avoidance still works here" a claim worth making. Getting this
+    backwards printed exactly that promise over `ceskyraj.json`, which cannot honour it.
+
+    ``finding`` distinguishes the two flags: `--ferrata` needs the fetched objects,
+    `--no-ferrata` does not.
+    """
+    if not area_ferrata_readable(area):
+        return ferrata_unreadable_message()
+    if finding and not area_records_ferrata(area):
+        return ferrata_unrecorded_message()
+    return None
 
 
 def ferrata_coverage_caveat() -> str:
@@ -1408,8 +1432,10 @@ def list_snapshot_ferrata(snapshot: AreaSnapshot) -> tuple[_ferrata.FerrataLine,
     ``list_snapshot_pois`` draws, and for the same reason: a browse never goes through
     ``search_snapshot``, so it has to repeat the check rather than inherit it.
     """
+    gap = ferrata_gap_message(snapshot.area, finding=True)
+    if gap is not None:
+        _log.warning("%s", gap)
     if not area_records_ferrata(snapshot.area):
-        _log.warning("%s", ferrata_unrecorded_message())
         return ()
     return _ferrata.select_ferrata(
         snapshot.area.ferrata_routes, snapshot.area.ferrata_ways
@@ -1536,10 +1562,10 @@ def search_snapshot(
     # all, and that breaks finding too. Neither warning is gated on the result being
     # empty: `find_hikes` drops unknown routes, so an empty result is the *symptom* being
     # explained, not the trigger.
-    if not area_ferrata_readable(snapshot.area) and criteria.ferrata is not None:
-        _log.warning("%s", ferrata_unreadable_message())
-    elif criteria.ferrata is True and not area_records_ferrata(snapshot.area):
-        _log.warning("%s", ferrata_unrecorded_message())
+    if criteria.ferrata is not None:
+        gap = ferrata_gap_message(snapshot.area, finding=criteria.ferrata is True)
+        if gap is not None:
+            _log.warning("%s", gap)
     hikes = find_hikes(
         snapshot.area,
         provider,

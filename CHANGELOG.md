@@ -6,6 +6,40 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Via ferrata are a registered concept: `--ferrata` finds them, `--no-ferrata` keeps
+  clear of them** (`ferrata` on every MCP search tool, a select in the web UI). Until now
+  a cabled climb was drawn as an ordinary hiking line with a distance and a gain figure
+  and no warning of any kind. Detection reads `highway=via_ferrata` **or**
+  `via_ferrata_scale`, on member ways and on the relation itself — either key suffices,
+  which the data forces: measured with `out count` over a Cortina d'Ampezzo box, 70 ways
+  carry a grade and only 45 are `highway=via_ferrata`, the other **25 being
+  `highway=path`**. Keying on the path type alone would miss a third of them.
+  The flag is gated on **presence, never share** — deliberately the inverse of the
+  `surface` rule, because 300 m of cable on a 12 km walk is exactly what must not be
+  averaged away; the measured extent and the raw grades ride alongside it. Grades are
+  never ranked or bucketed (real values include `0`, `1+`, `3.5`, `4+`, and OSM uses A–F
+  elsewhere — no ordering is safe across those schemes).
+  The two directions are **not symmetric and are not built as if they were**: finding
+  tolerates a false negative, avoiding tolerates none. `--no-ferrata` is complete over the
+  routes on offer — every returnable route is assembled from `route=hiking`/`route=foot`
+  member ways, whose tags are already in hand — but it is a filter, **not a safety
+  guarantee**, and says so in `--help`, in the README, in the MCP schema, and on stderr
+  every time it is used. Untagged cable is invisible to any query; live-verified example
+  in HANDOFF.
+- **`--show-ferrata` / MCP `list_ferrata`** — list an area's cabled lines themselves, no
+  routes drawn, no elevation looked up (the `--show-pois` counterpart, one Overpass call).
+- **`route=via_ferrata` relations are fetched** and returned only by `--ferrata`. They
+  live in their own `AreaData` list, so a cabled climb cannot reach an ordinary result
+  list or be stitched into a `--compose-loops` synthetic loop.
+  **This adds one union member and one way clause to the shared query and therefore
+  invalidates the Overpass cache** (the same trade the member-way tag fetch made for
+  `surface`). Snapshots use key presence with no `SNAPSHOT_VERSION` bump: a file saved
+  before this feature reports that it cannot answer, rather than answering "none here".
+  Avoidance still works on such a file, since it needs only member-way tags — unless the
+  file predates those too, in which case both questions are refused out loud.
+
 ### Fixed
 
 - **A loop's gain/loss is no longer reported from a line that never closes.** `circular`

@@ -42,10 +42,14 @@ from .filters import Criteria
 from .format import format_hike, format_poi, format_poi_summary
 from .poi import POI_KINDS, kind_labels, normalise_kinds
 from .search import (
+    area_records_ferrata,
+    ferrata_gap_message,
     compose_loops,
     compose_loops_around,
     download_area,
+    list_area_ferrata,
     list_area_pois,
+    list_snapshot_ferrata,
     list_snapshot_pois,
     route_via,
     routes_between,
@@ -93,8 +97,27 @@ _POI_SCHEMA = {
 }
 
 
+_FERRATA_SCHEMA = {
+    "ferrata": {
+        "type": "boolean",
+        "description": (
+            "Cabled climbing (via ferrata / klettersteig), which you walk in a harness "
+            "clipped to a fixed steel cable — a different activity from hiking, not a "
+            "harder hike. true = keep ONLY routes with cable, including dedicated "
+            "route=via_ferrata relations that no other search returns; false = drop "
+            "routes known to include cable. Detected from OSM tags "
+            "(highway=via_ferrata / via_ferrata_scale) on the route's member ways and "
+            "on the relation itself. IMPORTANT: false is a filter, not a safety "
+            "guarantee — cable that nobody has tagged in OSM cannot be detected, so "
+            "never report a surviving route as verified free of cable. Each result "
+            "reports the grades found and how much of its length is cabled."
+        ),
+    },
+}
+
+
 async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
-    """The eight tools. Both arguments are the mcp 2.x handler signature (request
+    """The nine tools. Both arguments are the mcp 2.x handler signature (request
     context, pagination params); neither is used — the list is small and static, so it
     ships in one page with a null cursor."""
     return ListToolsResult(tools=[
@@ -156,6 +179,7 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                         "reporting every route as unreachable.",
                     },
                     **_POI_SCHEMA,
+                    **_FERRATA_SCHEMA,
                     "near_misses": {
                         "type": "boolean",
                         "description": "Also return routes that just miss the filters, each "
@@ -232,6 +256,7 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                         "within 1 km, tram/bus within 400 m).",
                     },
                     **_POI_SCHEMA,
+                    **_FERRATA_SCHEMA,
                     "near_misses": {
                         "type": "boolean",
                         "description": "Also return loops that just miss the filters, annotated.",
@@ -274,6 +299,7 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                         "description": "Cap a route's length, km (default: 3x the straight-line gap).",
                     },
                     **_POI_SCHEMA,
+                    **_FERRATA_SCHEMA,
                     "format": {
                         "type": "string",
                         "enum": ["text", "gpx", "geojson"],
@@ -324,6 +350,7 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                         "description": "Drop the linked route if it runs longer than this, km.",
                     },
                     **_POI_SCHEMA,
+                    **_FERRATA_SCHEMA,
                     "format": {
                         "type": "string",
                         "enum": ["text", "gpx", "geojson"],
@@ -389,6 +416,7 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                         "description": "true = require parking mapped near the route's ends.",
                     },
                     **_POI_SCHEMA,
+                    **_FERRATA_SCHEMA,
                     "format": {
                         "type": "string",
                         "enum": ["text", "gpx", "geojson"],
@@ -446,6 +474,50 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                         "description": "Output format (default 'text'). 'gpx' emits waypoints, "
                         "'geojson' a FeatureCollection of points — both loadable into a GPS "
                         "or phone.",
+                    },
+                },
+                "required": [],
+            },
+        ),
+        Tool(
+            name="list_ferrata",
+            description=(
+                "List the via ferrata / klettersteig routes in an area — 'what cabled "
+                "climbs are around here?' — WITHOUT drawing any hiking route to them. "
+                "Give a bounding box for a live look, or `area` to read a downloaded "
+                "snapshot with no network at all.\n\n"
+                "A via ferrata is a climb equipped with fixed steel cable, rungs and "
+                "ladders, walked in a harness clipped to the cable. It is a different "
+                "activity from hiking, not a harder hike — do not present these as walks.\n\n"
+                "The counterpart of the `ferrata` flag on the search tools, which "
+                "filters ROUTES by whether they include cable. This one lists the cabled "
+                "lines themselves. Cheap: ONE Overpass call, no elevation lookup, nothing "
+                "from the API budget. Dedicated route=via_ferrata relations come first, "
+                "then individual cabled ways — the latter are often one pitch of a longer "
+                "climb rather than a climb in themselves, and are labelled as such.\n\n"
+                "Each entry carries its OSM grade verbatim (mixed scales are in use — "
+                "numeric 0-6 with +/- modifiers, and A-F elsewhere — so do not compare or "
+                "rank them without checking which scale applies). An empty result means "
+                "nothing is TAGGED as cabled in OSM there, not that nothing is there."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "south": {"type": "number"},
+                    "west": {"type": "number"},
+                    "north": {"type": "number"},
+                    "east": {"type": "number"},
+                    "area": {
+                        "type": "string",
+                        "description": "An already-downloaded area to list, with zero "
+                        "network — takes the place of the bounding box. Accepts a path "
+                        "from download_area or the bare `name` from list_areas. An area "
+                        "saved before cabled routes were fetched holds none and says so.",
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["text", "json"],
+                        "description": "Output format (default 'text').",
                     },
                 },
                 "required": [],
@@ -518,6 +590,7 @@ def _criteria(arguments: dict) -> Criteria:
         chairlift_access=arguments.get("chairlift_access"),
         transit_access=arguments.get("transit_access"),
         poi_kinds=normalise_kinds(arguments.get("poi")),
+        ferrata=arguments.get("ferrata"),
     )
 
 
@@ -560,6 +633,8 @@ def _handler_for(name: str):
         return _call_routes_to_poi
     if name == "list_pois":
         return _call_list_pois
+    if name == "list_ferrata":
+        return _call_list_ferrata
     if name == "download_area":
         return _call_download_area
     if name == "list_areas":
@@ -859,6 +934,72 @@ async def _call_list_pois(arguments: dict) -> list[TextContent]:
         ))]
     body = "\n".join(format_poi(p) for p in places)
     return [TextContent(type="text", text=f"{caveat}{format_poi_summary(places)}\n{body}")]
+
+
+async def _call_list_ferrata(arguments: dict) -> list[TextContent]:
+    """The cabled inventory: what via ferrata are here, with no route drawn to any."""
+    area_path = arguments.get("area")
+    if area_path:
+        if not os.path.isfile(area_path):
+            named = snapshot_path(area_path)
+            if named is not None and named.is_file():
+                area_path = str(named)
+        try:
+            snap = await asyncio.to_thread(load_snapshot, area_path)
+        except (OSError, ValueError) as e:
+            return [TextContent(type="text", text=(
+                f"Could not read the area {arguments['area']!r}: {e}. Pass a path written "
+                f"by download_area, or the bare name of an area shown by list_areas."
+            ))]
+        # Read BEFORE the listing, like the POI gap above: a pre-ferrata file returns an
+        # empty tuple, and an LLM client will report that as "there are none there"
+        # unless the difference arrives in the text.
+        gap = ferrata_gap_message(snap.area, finding=True)
+        if gap is not None and not area_records_ferrata(snap.area):
+            return [TextContent(type="text", text=(
+                f"{gap} Do NOT report this as 'there are no via ferrata there' — "
+                f"nobody looked."
+            ))]
+        lines = await asyncio.to_thread(list_snapshot_ferrata, snap)
+    else:
+        if [k for k in ("south", "west", "north", "east") if k not in arguments]:
+            raise ValueError(
+                "provide south/west/north/east for a live listing, or `area` for a "
+                "downloaded snapshot."
+            )
+        bbox = (arguments["south"], arguments["west"], arguments["north"], arguments["east"])
+        lines = await asyncio.to_thread(list_area_ferrata, bbox, CFG)
+
+    if not lines:
+        return [TextContent(type="text", text=(
+            "No via ferrata are mapped in that area. (A miss means nothing is TAGGED as "
+            "cabled in OSM there, not that nothing is there — and it is never evidence "
+            "that the area's hiking routes are free of cable.)"
+        ))]
+
+    if (arguments.get("format") or "text") == "json":
+        return [TextContent(type="text", text=json.dumps(
+            [
+                {
+                    "name": f.name,
+                    "scale": f.scale,
+                    "length_m": round(f.length_m),
+                    "start": {"lat": f.start[0], "lon": f.start[1]},
+                    "source": f.source,
+                }
+                for f in lines
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ))]
+    routes = sum(1 for f in lines if f.source == "route")
+    header = (
+        f"{len(lines)} cabled line(s): {routes} mapped as a via ferrata route, "
+        f"{len(lines) - routes} as individual ways. Grades are raw OSM values on mixed "
+        f"scales — do not rank them without checking which scale applies."
+    )
+    body = "\n".join(f.describe() for f in lines)
+    return [TextContent(type="text", text=f"{header}\n{body}")]
 
 
 async def _call_list_areas(arguments: dict) -> list[TextContent]:

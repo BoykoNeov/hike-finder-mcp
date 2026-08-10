@@ -25,10 +25,15 @@ from .filters import Criteria
 from .format import format_hike, format_poi, format_poi_summary, hike_to_dict
 from .poi import kind_labels, normalise_kinds, unrecorded_kinds
 from .search import (
+    area_records_ferrata,
     compose_loops,
     compose_loops_around,
     download_area,
+    ferrata_coverage_caveat,
+    ferrata_gap_message,
+    list_area_ferrata,
     list_area_pois,
+    list_snapshot_ferrata,
     list_snapshot_pois,
     route_via,
     routes_between,
@@ -99,6 +104,17 @@ def build_parser() -> argparse.ArgumentParser:
         "there without a car); --no-transit-access = exclude. Rail counts within 1 km, "
         "a tram/bus stop within 400 m. A downloaded area from before this feature has "
         "no transit data and the search will say so rather than guess.",
+    )
+    g.add_argument(
+        "--ferrata",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="--ferrata = keep only routes with cabled climbing (via ferrata / "
+        "klettersteig), including dedicated route=via_ferrata relations that no other "
+        "search returns; --no-ferrata = drop routes known to include cable. Detected "
+        "from OSM tags (highway=via_ferrata / via_ferrata_scale), so --no-ferrata is a "
+        "filter, NOT a safety guarantee — untagged cable cannot be detected. Use "
+        "--show-ferrata to list an area's cabled lines instead of routes.",
     )
     g.add_argument(
         "--near-misses",
@@ -265,6 +281,14 @@ def build_parser() -> argparse.ArgumentParser:
         "elevation is looked up. Omit --poi to show every kind. Combine with --gpx / "
         "--geojson to export them as waypoints for your GPS / phone.",
     )
+    i.add_argument(
+        "--show-ferrata",
+        action="store_true",
+        help="List every cabled line (via ferrata / klettersteig) in the area instead "
+        "of searching for hikes — dedicated route=via_ferrata relations first, then "
+        "individual cabled ways. No routes are drawn and no elevation is looked up. A "
+        "downloaded area from before this feature holds none and will say so.",
+    )
 
     o = p.add_argument_group("data sources (override env / config defaults)")
     o.add_argument(
@@ -346,6 +370,7 @@ def build_criteria(args: argparse.Namespace) -> Criteria:
         chairlift_access=args.chairlift_access,
         transit_access=args.transit_access,
         poi_kinds=normalise_kinds(raw_poi),
+        ferrata=getattr(args, "ferrata", None),
     )
 
 
@@ -552,6 +577,80 @@ def _show_pois(args: argparse.Namespace, cfg) -> int:
     return 0
 
 
+_SHOW_FERRATA_EMPTY = (
+    "No via ferrata are mapped here — try a wider area, or a range that has them (the "
+    "Dolomites and the Northern Limestone Alps are where they cluster). (A miss means "
+    "nothing is *tagged* as cabled in OSM here, not that nothing is there.)"
+)
+
+
+def _show_ferrata(args: argparse.Namespace, cfg) -> int:
+    """``--show-ferrata``: list an area's cabled lines, live or offline.
+
+    The ``--show-pois`` shape, and deliberately so — the objects ARE the answer, no route
+    is drawn, no elevation is looked up, and both sources end in the same rendering.
+    """
+    if args.area:
+        snap, err = _resolve_area(args.area)
+        if snap is None:
+            print(err, file=sys.stderr)
+            return 1
+        # `list_snapshot_ferrata` already logs whichever gap applies (see
+        # `ferrata_gap_message`), and that log line reaches stderr. Printing a second
+        # sentence here said the same thing twice — so the CLI adds only the exit code,
+        # which is the one thing a log line cannot carry.
+        lines = list_snapshot_ferrata(snap)
+        if not area_records_ferrata(snap.area):
+            return 1
+    else:
+        if not args.bbox:
+            print(
+                "error: --show-ferrata needs --bbox (or --area FILE to browse a "
+                "downloaded area).",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            lines = list_area_ferrata(
+                tuple(args.bbox),
+                cfg,
+                user_agent=args.user_agent,
+                overpass_url=args.overpass_url,
+            )
+        except Exception as e:  # network/HTTP errors surface here
+            _fetch_hint(e)
+            return 1
+
+    if args.json:
+        print(
+            json.dumps(
+                [
+                    {
+                        "name": f.name,
+                        "scale": f.scale,
+                        "length_m": round(f.length_m),
+                        "start": {"lat": f.start[0], "lon": f.start[1]},
+                        "source": f.source,
+                    }
+                    for f in lines
+                ],
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    elif not lines:
+        print(_SHOW_FERRATA_EMPTY)
+    else:
+        routes = sum(1 for f in lines if f.source == "route")
+        print(
+            f"{len(lines)} cabled line(s): {routes} mapped as a via ferrata route, "
+            f"{len(lines) - routes} as individual ways"
+        )
+        for f in lines:
+            print(f"  {f.describe()}")
+    return 0
+
+
 def _print_areas(as_json: bool) -> int:
     """Show the already-downloaded areas (the named snapshot directory)."""
     areas = list_snapshots()
@@ -692,6 +791,40 @@ def run(args: argparse.Namespace) -> int:
             )
             return 2
         return _show_pois(args, cfg)
+
+    # Same shape, same reasoning, one question earlier than every search mode below.
+    if getattr(args, "show_ferrata", False):
+        if args.download:
+            print(
+                "error: --show-ferrata lists an area's cabled lines; --download saves a "
+                "snapshot. Download first, then browse it with --show-ferrata --area FILE.",
+                file=sys.stderr,
+            )
+            return 2
+        if getattr(args, "ferrata", None) is not None:
+            # --ferrata/--no-ferrata FILTER routes; --show-ferrata draws none. Silently
+            # accepting the pair would let a user believe --no-ferrata had suppressed
+            # something from a listing whose whole subject is cable.
+            print(
+                "error: --show-ferrata lists cabled lines themselves; --ferrata / "
+                "--no-ferrata filter ROUTES by them. Use one or the other.",
+                file=sys.stderr,
+            )
+            return 2
+        if getattr(args, "show_pois", False):
+            print(
+                "error: --show-ferrata and --show-pois are two different inventories — "
+                "run them separately.",
+                file=sys.stderr,
+            )
+            return 2
+        return _show_ferrata(args, cfg)
+
+    # Said once, up front, wherever avoidance is actually engaged — not buried in --help.
+    # The flag reads as a safety promise if nobody says otherwise, and the one thing it
+    # cannot do is see cable nobody has tagged.
+    if getattr(args, "ferrata", None) is False:
+        print(f"note: {ferrata_coverage_caveat()}", file=sys.stderr)
 
     if getattr(args, "compose_loops", False) and (args.area or args.download):
         print(

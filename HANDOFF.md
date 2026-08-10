@@ -438,6 +438,50 @@ thing is validated live against real OSM. Highlights:
   *browser* logic is covered by `tests/test_web_js.py`, which runs the page's real script under
   node against a stubbed Leaflet/DOM (skipped without node). That harness is not decoration: it
   caught a drag's trailing `click` being taken for a point-pick.
+- **Via ferrata: `--ferrata` / `--no-ferrata` / `--show-ferrata`** (MCP `ferrata` on every
+  search tool + `list_ferrata`; a select in the web UI). All three frontends live-verified
+  against a Cortina box and its downloaded snapshot, and offline == live: 20 routes
+  unfiltered, 19 under `--no-ferrata`, 1 under `--ferrata`, identical through the CLI, the
+  web `/api/hikes`, and the MCP server over real stdio.
+  **The old entry here claimed 63 standalone `highway=via_ferrata` ways were "invisible
+  entirely". That structural claim was wrong**, and the plan built on it was wrong with
+  it. Measured with `out count` over two boxes: of Cortina's 46 `highway=via_ferrata`
+  ways only **6** are not already member ways of a hiking relation, and of Ehrwald's 30
+  only **4** (the ~87 % that ARE members were being fetched all along, sitting unread in
+  `way_tags`). Don't re-derive the count from the number 63 — neither bbox was recorded,
+  and it is the *structure* that mattered.
+  Two measurements shaped the design and are worth keeping:
+  **(1) `via_ferrata_scale` is the dominant carrier, not `highway=via_ferrata`** — 70
+  graded ways in Cortina against 46 with the highway value, and **25 of the 70 are
+  `highway=path`**, ordinary-looking paths with cable on them. The predicate is *either
+  key*; keying on the path type alone loses a third of them.
+  **(2) The two directions are not symmetric.** Finding tolerates a false negative;
+  avoiding tolerates none. Avoidance is complete over the route universe *by construction*
+  — every returnable route is assembled from `route=hiking`/`route=foot` member ways, so a
+  cabled section inside one is always described by tags already held — which is why the
+  query widening bought nothing for `--no-ferrata` and was justified only by the target
+  search. The residual is cable nobody tagged, and it is real: `rel/15791498`
+  (*Via Ferrata Ivano Dibona ascent parte superiore*) survives `--no-ferrata`, and a
+  direct Overpass check confirms its relation and all ten member ways carry `sac_scale`
+  and no ferrata tag whatsoever. That is a mapping gap, not a bug — but it is why every
+  frontend says "filter, not a safety guarantee" rather than leaving it to a docstring.
+  Two traps this cost real time to get right, both worth not re-learning:
+  **Presence, never dominance** — `surface`'s 40 %/50 % gates exist to stop a plurality
+  posing as an answer, and a hazard inverts that rule exactly. Route the summary through
+  `surface._summarise` or copy its flag-line shape and 300 m of cable on a 12 km walk
+  vanishes *with every test still green*; `test_a_short_cabled_section_still_trips_
+  avoidance` is the guard.
+  **Composed routes must be measured BEFORE the cheap pass, not after.**
+  `_attach_composed_surface` runs after `find_hikes`, which is fine for surface because
+  nothing filters on it. Ferrata IS filtered on, so the same placement left every
+  synthetic route `None` at filter time and emptied `--compose-loops --no-ferrata` over
+  landscapes full of walkable loops. It rides `pre_ferrata_by_id` instead, alongside
+  `pre_elevations_by_id`.
+  One wording bug got caught only by running it: `ferrata_unrecorded_message` ends by
+  promising that avoidance still works — true only for a file that HAS member-way tags,
+  and `ceskyraj.json` has neither. `ferrata_gap_message` is now the single place that
+  picks between the two sentences, and the ordering (unreadable first) is what keeps each
+  one true.
 - **All three frontends validated live**, including the MCP server over real stdio.
 - **Repo hygiene**: MIT license, CHANGELOG, complete pyproject, and CI across Linux 3.10–3.14 +
   Windows; v0.1.0, v0.2.0, v0.3.0, v0.3.1 and v0.4.0 tagged + GitHub-released. **CI being green is a
@@ -465,17 +509,6 @@ skip without the `mcp` extra).
   the obvious answer and is deliberately NOT taken — it widens every query, invalidates
   the Overpass cache, and changes what "a route" means. Decide that on purpose, not as a
   side effect.
-- **Via ferrata are drawn as ordinary hiking lines, with no grade and no warning.** Not a
-  registered concept anywhere in the codebase. In the Cortina box, 14 `route=hiking`
-  relations carry `via_ferrata_scale` and ~22 have "ferrata" in the name — those ARE
-  fetched and rendered exactly like a forest path — while 2 `route=via_ferrata` relations
-  and 63 standalone `highway=via_ferrata` ways are invisible entirely. A cabled climb
-  needing a harness and lanyard should not render identically to a stroll. Detection is
-  **free**: `parse_area` already keeps each member way's FULL tag dict (`way_tags`, the
-  same source `surface`/`tracktype` read), so `highway=via_ferrata` and `via_ferrata_scale`
-  are already in hand — no query change, no cache invalidation. Coverage would be partial
-  (members of `route=hiking` relations only), so say "some ferrate are detectable", never
-  "ferrata supported".
 - **`is_circular`'s 150 m start≈end fallback is absolute, and on a short route that is
   too loose.** `[M] Labský vodopád` is a 0.1 km route whose line ends 69 m from its start
   — under the tolerance, so it is labelled a loop, though 69 m of a 100 m route is not a

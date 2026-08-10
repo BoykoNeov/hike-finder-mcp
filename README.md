@@ -86,6 +86,59 @@ Internally the search is two-pass: cheap geometry/shape/access filters run first
 and a long through-route that merely crosses the area is dropped, so the
 elevation backend is only queried for routes that already match.
 
+### Via ferrata — find them, or keep clear of them
+
+A via ferrata (*klettersteig*, *sentiero attrezzato*) is a climb equipped with fixed
+steel cable, rungs and ladders, walked in a harness clipped to the cable. It is a
+different activity from hiking, not a harder hike — and until now this tool drew one as
+an ordinary line with a distance and a gain figure and nothing else.
+
+`--ferrata` searches **for** them; `--no-ferrata` keeps **clear** of them:
+
+```
+Via ferrata Marino Bianchi — 1.04 km, gain n/a [loop, ferrata 1/2/3 1.0 km]
+Sentiero Attrezzato Zumelès — 2.71 km, +145 m / -42 m
+    [one-way, surface:gravel 78%, ferrata 1+ 0.7 km]
+```
+
+Detection reads two OSM tags, on the route's member ways **and** on the relation itself:
+`highway=via_ferrata` and `via_ferrata_scale`. Either one is enough, which is not a
+belt-and-braces choice — measured over a box around Cortina d'Ampezzo, 70 ways carry a
+grade and only 45 of those are `highway=via_ferrata`; the other **25 are tagged
+`highway=path`**. Keying on the path type alone would miss a third of them.
+
+The flag is gated on **presence, never share** — the exact opposite of the surface rule
+above. 300 m of cable on a 12 km walk is precisely what must not be averaged away, so any
+tagged metre fires it and the measured extent rides alongside rather than instead of it.
+Grades are printed raw and never ranked or bucketed: real data holds `0`, `1+`, `3.5`,
+`4+` and OSM uses A–F elsewhere, and there is no ordering safe across those schemes.
+
+**`--no-ferrata` is a filter, not a safety guarantee.** It drops routes *known* to
+include cable. Every route the search can return is assembled from `route=hiking` /
+`route=foot` member ways, so a cabled section inside one is always described by tags we
+already hold — that is what makes the filter complete over the routes on offer. What it
+cannot see is cable nobody has tagged, and no amount of fetching fixes that. Measured
+live: `Via Ferrata Ivano Dibona ascent parte superiore` survives `--no-ferrata`, because
+its relation and all ten of its member ways carry `sac_scale` and no ferrata tag at all.
+
+`--ferrata` also returns dedicated `route=via_ferrata` relations, which **no other search
+shows**. They are kept in a list of their own so a cabled climb can never appear in an
+ordinary result list, or be stitched into a synthesised loop by `--compose-loops`.
+
+`--show-ferrata` lists an area's cabled lines themselves, with no routes drawn — the
+`--show-pois` counterpart, one Overpass call and no elevation lookup:
+
+```
+13 cabled line(s): 0 mapped as a via ferrata route, 13 as individual ways
+  Sentiero ferrata F. Berti (grade 3, 1.9 km, single way)
+  Via Ferrata Strobel (grade 3, 0.8 km, single way)
+```
+
+An area downloaded **before** this feature holds no ferrata objects and says so rather
+than reporting an empty list. Avoidance still works on such a file — it needs only the
+member-way tags — unless the file predates those too, in which case both questions are
+refused out loud instead of being answered from nothing.
+
 ### Hiking *to* something — churches, ruins, peaks…
 
 Distance and gain say how hard a walk is; they don't say whether it's worth doing.
