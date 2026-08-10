@@ -569,12 +569,25 @@ skip without the `mcp` extra).
   the same treatment here. Next candidate; deliberately not bundled with the gain fix.
 - **`/api/hikes` answers with an object now, and the reason is worth keeping.** It
   returned a bare JSON array for four releases, which had nowhere to put a sentence about
-  what the *source* could not answer — so the web UI was the one frontend that showed a
-  silent empty list where the CLI logs to stderr and the MCP server puts the text in its
-  reply. See "The web UI carries its caveats" under What is DONE. The residual limit is
-  narrower: the *point-based* modes (`--around`, `--from/--to`, `--via`, `--to-poi`)
-  return `notices: []` unconditionally, because they build their own bbox and their
-  failure shapes are already worded in the page. Nothing computes a notice for them yet.
+  what the *source* could not answer — so the web UI showed a silent empty list where the
+  CLI logs to stderr. See "The web UI carries its caveats" under What is DONE. Two
+  residual limits, and the first is now the *worst* instance of this class left:
+  - **MCP `find_hikes` does not carry the ferrata gap.** It words `no_routes` (from
+    `diagnostics` / `area_has_no_routes`) and nothing else; the only
+    `ferrata_gap_message` call in `server.py` is in `_call_list_ferrata`. So
+    `find_hikes(area=…, ferrata=false)` over an unreadable file returns "No matching
+    hikes found in that area." to an LLM client — the same silence the web UI just
+    stopped doing, in the frontend whose reader will confidently paraphrase it. An
+    earlier version of this file, of README and of CHANGELOG all claimed parity here;
+    they were wrong, and the wording is corrected rather than left standing.
+    When wiring it: append on `criteria.ferrata is not None` and a real gap, **not**
+    inside the `if not hikes:` block — that is the emptiness gating the web version
+    deliberately avoids, and the caveat has to reach the non-empty text reply too. The
+    `gpx`/`geojson` returns are documents with nowhere to put prose, the same call the
+    web export path makes.
+  - The web's *point-based* modes (`--around`, `--from/--to`, `--via`, `--to-poi`) return
+    `notices: []` unconditionally, because they build their own bbox and their failure
+    shapes are already worded in the page. Nothing computes a notice for them yet.
 - **`--show-ferrata` cannot export.** `--gpx`/`--geojson` are named in its ignored-flags
   note rather than wired up, because `ferrata.FerrataLine` carries only a start point,
   not the cabled line's geometry. Exporting means widening that record and adding a

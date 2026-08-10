@@ -89,9 +89,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   not a bare array.** The shape is `{"hikes": [...], "notices": [...]}`, each notice a
   `{"kind", "message"}` pair — **breaking for anything reading that endpoint directly**;
   the page is served from the same module and was updated with it. The array had nowhere
-  to put a sentence about what the *source* could not answer, which left the browser the
-  one frontend that stayed silent where the CLI logs to stderr and the MCP server puts
-  the text in its reply:
+  to put a sentence about what the *source* could not answer, which left the browser
+  silent where the CLI logs the same sentence to stderr:
   - **`ferrata_gap`** is the one that mattered, and is why this landed before the
     release. Excluding ferrata over a downloaded area whose routes carry no member-way
     tags drops every route — correctly, since cable cannot be detected on them — and a
