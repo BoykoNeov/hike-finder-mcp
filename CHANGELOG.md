@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-08-10
 
 ### Added
 
@@ -29,7 +29,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   wholesale. It is the mirror of the existing `exclude` deny-list and inverts its rules —
   a *missing* required tag disqualifies (where a missing denied tag never does), and it
   must reach the query (where a deny-list must not, to stay cache-neutral).
-
 - **A snapshot now records which POI kinds it was classified against**, and the tool diffs
   that against the registry when it loads one. Objects are sorted into kinds at download
   time, so an area saved by an older build can only return an empty list for a kind added
@@ -406,7 +405,8 @@ filter them by locally-computed elevation gain, distance, loop shape, and access
 - MIT license, CI (GitHub Actions running the test suite on Linux 3.10–3.13 plus a
   Windows smoke job), and this changelog.
 
-[Unreleased]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.2.0...v0.3.0
