@@ -249,6 +249,16 @@ thing is validated live against real OSM. Highlights:
     the fix; a matching constant in two files is what produced the drift in the first
     place. A route labelled a loop via the end-gap fallback now always has a gain, pinned
     across the disagreement window by `test_the_label_and_the_gain_gate_read_the_same_bound`.
+  - **The first draft of the fix reintroduced the defect, and the near miss is the
+    reusable part.** `_line_closes` kept its own `rel_tol: float = 0.05` and forwarded it,
+    so the shared function's fraction was dead on that path and changing it would have
+    moved the label alone — the same two-copies-of-one-number arrangement, one refactor
+    later. Extracting a shared function is not enough if callers keep re-declaring its
+    defaults. `tol_m` is the instructive contrast and stays a parameter: it traces to
+    `HIKE_LOOP_TOLERANCE`, so the caller is reading a real source of truth rather than
+    holding a second copy. A duplicate default is invisible to a behaviour test until
+    someone changes one of the two, so it is pinned structurally by
+    `test_only_one_function_declares_the_fraction`.
   - **`is_circular`'s `distance_km` is a CACHE, not a mode.** Omitted, it derives the
     identical sum from `ways`; `measure_geometry` passes the value it just computed only
     to save the second walk. Do not turn the default into "don't scale" — two callers

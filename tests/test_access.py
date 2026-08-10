@@ -159,6 +159,26 @@ def test_above_three_km_the_bound_is_the_old_flat_tolerance():
     assert closure_limit_m(2.0) == 100.0
 
 
+def test_only_one_function_declares_the_fraction():
+    """The 5 % has exactly one owner, and that is the whole point of the shared bound.
+
+    A local ``rel_tol=0.05`` default on either caller is a second copy of a number with
+    no config behind it — the arrangement that let the label and the gain gate drift
+    apart while both "used 150 m". ``tol_m`` is a different case and stays a parameter:
+    it traces to ``HIKE_LOOP_TOLERANCE``, which the caller genuinely reads from config.
+
+    Pinned structurally because the defect IS structural: a duplicate default is
+    invisible to a behaviour test until someone changes one of the two.
+    """
+    import inspect
+
+    from hike_finder.filters import _line_closes
+
+    assert "rel_tol" in inspect.signature(closure_limit_m).parameters
+    for fn in (is_circular, _line_closes):
+        assert "rel_tol" not in inspect.signature(fn).parameters, fn.__name__
+
+
 def test_distance_km_is_a_cache_not_a_mode():
     # `measure_geometry` passes the length it already computed purely to save the
     # second walk. Omitting it must not change any verdict, or two callers would

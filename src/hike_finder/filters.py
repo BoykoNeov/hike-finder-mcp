@@ -602,7 +602,6 @@ def _line_closes(
     distance_km: float,
     *,
     tol_m: float = 150.0,
-    rel_tol: float = 0.05,
 ) -> bool:
     """True if the stitched ``line`` returns to its own start — i.e. it really is the
     closed walk that a ``circular`` route's gain/loss is measured along.
@@ -621,12 +620,17 @@ def _line_closes(
     out "loop, gain n/a" — this gate correctly refusing the gain of a route the label
     should never have called a loop. One function decides now.
 
-    5 % has an enormous margin on the measured partition: every closing loop in that run
-    scored ≤ 0.02 and every broken one ≥ 0.69, with nothing in between.
+    Note what is deliberately NOT re-declared here: the 5 % fraction. ``tol_m`` stays a
+    parameter because it traces to ``HIKE_LOOP_TOLERANCE``, a real source of truth the
+    caller reads from config — but a local ``rel_tol=0.05`` default would be a second
+    copy of a number with no config behind it, which is precisely the arrangement that
+    let the two rules drift apart in the first place. It lives in ``closure_limit_m``
+    only. (The margin is enormous on the measured partition anyway: every closing loop
+    in that run scored ≤ 0.02 and every broken one ≥ 0.69, with nothing in between.)
     """
     if len(line) < 2:
         return False
-    limit = closure_limit_m(distance_km, tol_m=tol_m, rel_tol=rel_tol)
+    limit = closure_limit_m(distance_km, tol_m=tol_m)
     return haversine_m(line[0], line[-1]) <= limit
 
 
