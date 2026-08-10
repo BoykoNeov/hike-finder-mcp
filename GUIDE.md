@@ -713,7 +713,7 @@ easiest mistake to make here:
   read as "that's all there is". The count-by-kind header is the first line precisely so you
   can see the mix before scrolling, then narrow with `--poi`, or send the whole thing to
   `--json` / `--gpx` where 957 is nothing at all. (Growing the registry grows this number:
-  the nine kinds added in 0.5.0 account for 119 of those 957, artwork alone for 77.)
+  the nine kinds added since 0.4.0 account for 119 of those 957, artwork alone for 77.)
 - **Walk-shaped flags don't apply.** `--min-gain`, `--max-distance`, `--circular`,
   `--poi-radius` and friends describe routes, and there are none here. Passing them isn't an
   error (they're often left over from the previous command) but the run says on stderr which

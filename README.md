@@ -179,7 +179,7 @@ provider, and spends nothing from the daily API quota**.
 > different claim from "this file never looked". A snapshot saved before *any* POI support
 > says so outright, but one saved between two registry versions cannot tell.
 > **Re-download the area after upgrading** (`--download`) if a kind you expect comes back
-> empty. The kinds added in 0.5.0 are `boundary_stone`, `mill`, `mine`, `sinkhole`,
+> empty. The kinds added since 0.4.0 are `boundary_stone`, `mill`, `mine`, `sinkhole`,
 > `tree`, `artwork`, `firepit`, `camp` and `toilets`.
 
 `--gpx` / `--geojson` export the listing as **waypoints** (a GPX `<wpt>` per object, a

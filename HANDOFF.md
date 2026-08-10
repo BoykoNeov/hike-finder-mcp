@@ -378,7 +378,7 @@ thing is validated live against real OSM. Highlights:
   `[lon, lat]` ranges land inside the bbox on the right axes. Unfiltered listings are big at
   real density (501 of those 887 are summits) — deliberately uncapped, with the
   count-by-kind header carrying the "what's the mix" answer; noted in README/GUIDE.
-- **Nine more POI kinds + the `require` mechanism** (0.5.0) — `boundary_stone`, `mill`,
+- **Nine more POI kinds + the `require` mechanism** (unreleased, since v0.4.0) — `boundary_stone`, `mill`,
   `mine`, `sinkhole`, `tree`, `artwork`, `firepit`, `camp`, `toilets`, taking the registry
   from 19 to 28. Chosen by a **density probe over four CZ regions** rather than from
   recalled taginfo (see the two Known-limitations entries this added), and the choice was
@@ -512,7 +512,7 @@ skip without the `mcp` extra).
   surface/tracktype precedent (nothing *filters* on ungathered data), not a staleness bug,
   and it needs no version field.
 - **Adding a KIND is strictly worse than adding an exclusion on that last point, and this
-  is the one honesty gap the 0.5.0 batch leaves open.** An exclusion makes a stale snapshot
+  is the one honesty gap this batch leaves open.** An exclusion makes a stale snapshot
   over-report by a few objects. A new kind makes it answer `--show-pois --poi tree` with a
   confident **empty list** for a question the file never asked — which reads as "there are
   no named trees here", exactly the `transit_access` failure mode the tri-state exists to
