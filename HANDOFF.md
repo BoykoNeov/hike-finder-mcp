@@ -507,19 +507,42 @@ skip without the `mcp` extra).
   A difficulty claim absent 96 % of the time reads as "easy" rather than "unknown", which is
   the failure mode this project spends most of its comments avoiding. Revisit if OSM coverage
   improves; the fetch mechanism is already in place, so it is a rendering decision now.
-- **Surface covers OSM-relation routes only; every SYNTHESISED mode reports none.**
+- **Surface on SYNTHESISED routes rides on the graph, not on `ways` — deliberately.**
   `--compose-loops`, `--around`, `--from`/`--to`, `--via` and `--to-poi` build their route
   dicts from contracted graph segments (`"ways": [route.coords]` — one assembled polyline),
-  not from relation members, so there is no per-member list for `way_tags` to be parallel
-  to and the summary stays `None`. That is the honest output, not a wrong one, but it means
-  four of the six search modes are silent here — confirmed live (`--compose-loops` over
-  Špindl: 0 surface flags). Fixing it means carrying per-segment surface through
-  `build_trail_graph`'s degree-2 contraction and assembling it like `assemble_loop_series`
-  already does for elevation (`seg_elev`/`seg_points`) — a real change, and the reason the
-  README/GUIDE now say "routes that come from an OSM relation" rather than "every result".
-  `clip_routes_to_bbox` DOES rebuild `way_tags` alongside `ways` so the parallel invariant
-  holds by construction; today those dicts only feed `build_trail_graph`, but a stale
-  parallel list would mis-attribute surfaces the moment one reached `measure_geometry`.
+  so there is no per-member list for `way_tags` to be parallel to and `measure_geometry`
+  can only leave the summary at `None`. The tags travel on `Segment.step_tags` instead —
+  one per *step* of the segment's polyline, `len(coords) - 1` of them — and
+  `compose.assemble_tag_runs` turns a traversal back into the `(sub-polyline, tags)` pairs
+  `surface.summarise_*` already consumes, with `search._attach_composed_surface` setting the
+  result from outside `find_hikes` (the `anchor`/`destination` idiom). Five things to keep:
+  - **The rejected alternative was splitting the polyline into tag-uniform "member ways"**
+    so `measure_geometry` could do it unchanged. It puts a self-touching route — a
+    `--via-loop` that falls back to a forced retrace, a live-verified case — into greedy
+    stitching with four candidate ends at the revisited vertex; one wrong pairing trips
+    export's ≥98 % faithfulness gate and a clean single track with per-point `<ele>`
+    degrades to raw-ways with none. The measurement is still shared (`summarise_*` is called
+    verbatim); only the call site is second.
+  - **Step-aligned, not point-aligned**, which is why `assemble_loop_series` must NOT be
+    reused: it drops the junction value shared between consecutive segments (`oriented[1:]`),
+    right for N point-aligned values and off by one per segment for N−1 step-aligned ones.
+  - **A `snap_points` split is exact, not prorated.** `_subpolyline` slices `step_tags[e1:e2+1]`,
+    so a cut landing mid-asphalt gives each piece the surface actually under it. Prorating
+    the parent's mix by piece length was the cheaper option and smears; pinned by a test
+    where the two answers differ (3/7 vs 1/2).
+  - **Traversal is per occurrence**, so a retraced leg is weighted twice exactly as its
+    length is counted twice.
+  - **`TrailGraph.has_way_tags` is presence detection**, not "is anything tagged": a
+    pre-surface snapshot must keep reporting `None` ("we never looked") rather than a
+    0 %-coverage summary ("nobody tagged it"), the same rule as `transit_access` and
+    `AreaData.transit`. `snap_points` propagates it, or every point-based mode would go
+    silent. The check lives in `assemble_tag_runs` so one place decides.
+  `clip_routes_to_bbox` rebuilds `way_tags` alongside `ways` so the parallel invariant holds
+  by construction — and it is now load-bearing rather than merely defensive, since
+  `build_trail_graph` reads those tags. Every `build_trail_graph` call site in `search.py`
+  passes clipped routes, so all five modes are tag-bearing.
+  Micro-edge tag collisions (one physical edge claimed by several relations) resolve to the
+  first route-then-way index carrying tags, so the graph's determinism guarantee holds.
 - **Unrecognised `surface` values pass through verbatim**, e.g. a real route near Špindl tagged
   `surface=pfad, wurzeln, steine` (German free text stuffed into an enum field). It prints
   looking like a bug and is not one — it is what OSM says. Bucketing it into "other" would

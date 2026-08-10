@@ -34,6 +34,7 @@ from .compose import (
     _assemble,
     _dijkstra,
     assemble_loop_series,
+    assemble_tag_runs,
     build_trail_graph,
     clip_routes_to_bbox,
     find_loops,
@@ -55,6 +56,7 @@ from .snapshot import (
     SnapshotElevationProvider,
     SnapshotGeocoder,
 )
+from .surface import summarise_surface, summarise_tracktype
 
 Bbox = tuple[float, float, float, float]
 
@@ -311,7 +313,35 @@ def _measure_composed(
             dest = getattr(route, "destination", None)
             if dest is not None:
                 h.destination = dest
+            _attach_composed_surface(graph, route, h)
     return hikes
+
+
+def _attach_composed_surface(graph, route, h: Hike) -> None:
+    """Report what a SYNTHESISED route is underfoot, from the graph's per-step way tags.
+
+    Set from outside ``find_hikes``, like ``anchor`` and ``destination``. A composed route's
+    synthetic dict is one assembled polyline (``"ways": [route.coords]``) with no member list
+    for ``way_tags`` to be parallel to, so ``measure_geometry`` can only leave surface at
+    None; the tags survive on the graph instead, per step of each contracted segment.
+
+    Splitting the polyline into tag-uniform "member ways" so ``measure_geometry`` could do
+    this itself was the tempting alternative and is worse: a self-touching route (a
+    ``--via-loop`` that falls back to a forced retrace) would then meet greedy stitching with
+    four candidate ends at the revisited vertex, and one wrong pairing trips export's ≥98 %
+    faithfulness gate — turning a clean single track with per-point elevation into a raw-ways
+    export with none. The measurement is shared where it matters (``surface.summarise_*`` is
+    called verbatim); only the call site differs.
+
+    Silent when the area data never fetched member-way tags — ``assemble_tag_runs`` makes
+    that call, so a pre-surface snapshot keeps saying "we didn't look" rather than "nothing
+    is tagged", and only one place decides it.
+    """
+    runs = assemble_tag_runs(graph, route)
+    if runs is None:
+        return
+    h.surface = summarise_surface(runs)
+    h.tracktype = summarise_tracktype(runs)
 
 
 def compose_loops(

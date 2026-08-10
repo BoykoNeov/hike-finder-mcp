@@ -240,9 +240,7 @@ the four edges) or read them off mapy.cz. The boolean filters are **tri-state**:
 omit = don't care, `--circular` = require loops, `--no-circular` = exclude loops
 (same pattern for `--car-access`, `--chairlift-access` and `--transit-access`).
 
-**What you walk on.** A route that comes from an OSM relation carries a `surface:` flag
-when the data supports one (synthesised routes — `--compose-loops`, `--around`, `--via`,
-`--to-poi` — do not yet; see below):
+**What you walk on.** A route carries a `surface:` flag when the data supports one:
 
 ```
 [Z] Richtrovy Boudy - Špindlerův mlýn — 7.81 km, +678 m / -251 m
@@ -256,8 +254,8 @@ and prints `surface:mixed (77% known)` instead of a name when nothing reaches 40
 route. Use `--json` for the full breakdown and the coverage fraction.
 
 Composed and point-based routes are stitched from contracted graph segments rather than
-from relation members, so per-way tags do not survive the assembly — those modes report
-no surface at all rather than a wrong one.
+from relation members, so their tags ride along the graph instead — one per step of each
+segment, which is what lets a leg you walk twice count twice.
 
 **`--transit-access` — "a hike I can reach without a car."** Requires a public-transport
 stop near a trail end: a train station or halt within 1 km, or a tram/bus stop within

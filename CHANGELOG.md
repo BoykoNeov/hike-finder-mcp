@@ -40,7 +40,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   from the existing `spring`: the tag key differs (`amenity`, not `natural`), which the
   one-clause-per-key query shape makes a hard constraint, and the two are different
   promises anyway — a spring is water you find, a tap is water someone maintains.
-- **What you walk on** — routes that come from an OSM relation now report their `surface` (and `tracktype`) read from
+- **What you walk on** — every route now reports its `surface` (and `tracktype`) read from
   the member ways, weighted **by length rather than by way count**, since OSM splits a trail
   at every attribute change and counting ways would call four asphalt slivers plus one long
   forest track "mostly asphalt". The one-line flag appears only when at least half the route
@@ -51,7 +51,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This adds a second Overpass statement (`way(r); out tags;`, about +22 % response size) and
   so invalidates the Overpass cache. Synthesised routes (`--compose-loops`, `--around`,
   `--from`/`--to`, `--via`, `--to-poi`) are stitched from graph segments rather than relation
-  members and report no surface yet — nothing wrong, just nothing.
+  members, so they carry the tags along the graph — one per *step* of each contracted
+  segment, which keeps a mid-segment snap exact instead of prorated and weights a leg you
+  walk twice twice. An area downloaded before this release holds no member-way tags, and
+  reports no surface rather than an untagged one.
 - **A public-transport near-miss** is annotated like a parking one: a station just past the
   radius now reads "nearest public transport 1100 m away — just past the 1000 m limit"
   instead of being dropped silently.

@@ -47,6 +47,11 @@ from .geometry import (
 # snap, not a global weld bump.
 WELD_M = 1.0
 
+# The tags of a micro-edge nobody tagged. A single shared object on purpose: consecutive
+# untagged steps then collapse into one run in `assemble_tag_runs`, which groups by
+# identity. Never mutate it.
+_NO_TAGS: dict = {}
+
 
 def _weld_cell(weld_m: float) -> float:
     return weld_m / 111_320.0 if weld_m > 0 else 0.0
@@ -68,6 +73,14 @@ class Segment:
     share the *exact* coordinate and an assembled loop is truly closed). ``refs``
     are the distinct trail refs/colours traversed, for provenance. A segment with
     ``a == b`` is an already-closed loop component that has no junction to split.
+
+    ``step_tags`` carries the source member way's OSM tags for each *step* of ``coords`` —
+    so it has ``len(coords) - 1`` entries, NOT one per point. That is what lets a
+    synthesised route report `surface`/`tracktype` at all: a contracted segment can span
+    several member ways with different surfaces, and only a per-step record says where the
+    surface changes. Step alignment is also what keeps a ``snap_points`` split exact rather
+    than prorated by piece length. Empty when the area data carried no member-way tags
+    (see ``TrailGraph.has_way_tags``).
     """
 
     a: int
@@ -75,6 +88,7 @@ class Segment:
     coords: list[Coord]
     length_m: float
     refs: tuple[str, ...] = ()
+    step_tags: tuple[dict, ...] = ()  # parallel to the STEPS of `coords`: len(coords) - 1
 
 
 @dataclass
@@ -85,6 +99,12 @@ class TrailGraph:
     segments: list[Segment]
     # junction node id -> indices into `segments` incident to it
     adj: dict[int, list[int]] = field(default_factory=dict)
+    # Did the input routes carry member-way tags at all? Presence detection, not "is
+    # anything tagged" — a pre-surface snapshot has no `way_tags`, and reporting its
+    # composed routes as `surface: nothing tagged` would collapse "we never looked" into
+    # "nobody tagged it". Same distinction `AreaData.transit` and `Hike.surface` draw;
+    # callers leave `Hike.surface` at None when this is False.
+    has_way_tags: bool = False
 
     def degree(self, node: int) -> int:
         return len(self.adj.get(node, []))
@@ -175,23 +195,39 @@ def build_trail_graph(routes: list[dict], weld_m: float = WELD_M) -> TrailGraph:
     # *different* intermediate nodes, so their node pairs differ and they survive
     # as separate edges (a real two-segment loop). Two adjacent welded nodes admit
     # only one physical edge, so deduping by the node pair loses no real geometry.
+    #
+    # Each micro-edge also remembers the member way's own tags, which is where a composed
+    # route's `surface` comes from. Dedup means one edge can be claimed by several members;
+    # the FIRST route (then way) index carrying tags for it wins, so the choice does not
+    # depend on dict order — the same determinism guarantee the sorted micro-edge ids give.
+    # In practice a shared physical edge is the same OSM way in every relation, so the
+    # candidates agree anyway.
     edge_routes: dict[tuple[int, int], set[int]] = {}
+    edge_tags: dict[tuple[int, int], dict] = {}
+    has_way_tags = False
     for ri, route in enumerate(routes):
-        for way in route.get("ways", []):
+        tags_in = route.get("way_tags") or []
+        if tags_in:
+            has_way_tags = True  # presence, not "is anything tagged" — see TrailGraph
+        for wi, way in enumerate(route.get("ways", [])):
             if len(way) < 2:
                 continue
+            w_tags = tags_in[wi] if wi < len(tags_in) else None
             prev = intern(way[0])
             for pt in way[1:]:
                 cur = intern(pt)
                 if cur != prev:  # skip zero-length / sub-weld steps
                     key = (prev, cur) if prev < cur else (cur, prev)
                     edge_routes.setdefault(key, set()).add(ri)
+                    if w_tags and key not in edge_tags:
+                        edge_tags[key] = w_tags
                 prev = cur
 
     # Stable micro-edge ids (sorted node pairs) so the contracted graph — and every
     # loop derived from it — is deterministic regardless of dict iteration order.
     micro_ends: list[tuple[int, int]] = sorted(edge_routes)
     micro_routes: list[set[int]] = [edge_routes[k] for k in micro_ends]
+    micro_tags: list[dict] = [edge_tags.get(k, _NO_TAGS) for k in micro_ends]
     micro_adj: dict[int, list[tuple[int, int]]] = {}
     for eid, (u, v) in enumerate(micro_ends):
         micro_adj.setdefault(u, []).append((v, eid))
@@ -215,12 +251,14 @@ def build_trail_graph(routes: list[dict], weld_m: float = WELD_M) -> TrailGraph:
         """Walk a degree-2 chain from junction ``start`` until the next non-degree-2
         node (or back to ``start`` for an isolated loop)."""
         seg_coords = [coords[start]]
+        seg_steps: list[dict] = []  # one per step of seg_coords, so len(coords) - 1
         seg_routes: set[int] = set()
         length = 0.0
         cur, other, eid = start, first_other, first_eid
         while True:
             consumed[eid] = True
             seg_coords.append(coords[other])
+            seg_steps.append(micro_tags[eid])
             length += haversine_m(coords[cur], coords[other])
             seg_routes |= micro_routes[eid]
             if degree.get(other, 0) != 2 or other == start:
@@ -230,6 +268,7 @@ def build_trail_graph(routes: list[dict], weld_m: float = WELD_M) -> TrailGraph:
                     coords=seg_coords,
                     length_m=length,
                     refs=tuple(sorted({refs[r] for r in seg_routes})),
+                    step_tags=tuple(seg_steps),
                 )
             # Continue through the degree-2 node to its other micro-edge.
             nxt_other, nxt_eid = next(
@@ -251,7 +290,9 @@ def build_trail_graph(routes: list[dict], weld_m: float = WELD_M) -> TrailGraph:
             u, v = micro_ends[eid]
             register(walk(u, v, eid))
 
-    return TrailGraph(coords=coords, segments=segments, adj=adj)
+    return TrailGraph(
+        coords=coords, segments=segments, adj=adj, has_way_tags=has_way_tags
+    )
 
 
 # --------------------------------------------------------------------------- loop search
@@ -416,6 +457,56 @@ def assemble_loop_series(graph: TrailGraph, loop: "ComposedLoop", per_segment: d
         out.extend(oriented[1:] if out else oriented)
         cur = nxt
     return out
+
+
+def assemble_tag_runs(graph: TrailGraph, route: "ComposedLoop"):
+    """``(sub-polyline, tags)`` pairs along a composed route, ready for ``surface``.
+
+    The output feeds ``surface.summarise_surface`` / ``summarise_tracktype`` unchanged, so
+    the length-weighting math has exactly ONE producer for relation routes and synthesised
+    ones alike — the call site is second, the measurement is not.
+
+    Deliberately NOT ``assemble_loop_series``. That one drops the shared junction value
+    between consecutive segments (``oriented[1:]``), which is right for the N *point*-aligned
+    values it exists for (resampled points, their elevations) and off by one per segment for
+    the N-1 *step*-aligned values here: no step is shared between two segments, so every one
+    of them must be kept. Traversal is otherwise identical — ``ordered_segs`` walked from
+    ``start_node``, each segment reversed when entered ``b -> a``, and per *occurrence*, so a
+    segment a ``--via-loop`` retraces is weighted twice exactly as it is counted twice in the
+    route's length.
+
+    Consecutive steps sharing a tags object are merged into one run (untagged steps share
+    ``_NO_TAGS``, so an untagged stretch collapses to a single pair). Returns ``None`` when
+    the graph was built from data carrying no member-way tags at all (``has_way_tags`` —
+    every step would be ``_NO_TAGS``, and a 0 %-coverage summary claims "nobody tagged it"
+    when the truth is "we never looked"), when the route has no steps, or if a segment's
+    step/coord parallelism is broken — reporting nothing beats mis-attributing a surface.
+    The presence check lives HERE, not in the caller, so there is one place that decides.
+    """
+    if not graph.has_way_tags:
+        return None
+    coords: list[Coord] = []
+    steps: list[dict] = []
+    cur = route.start_node
+    for idx in route.ordered_segs:
+        s = graph.segments[idx]
+        forward = s.a == cur
+        pts = s.coords if forward else list(reversed(s.coords))
+        st = list(s.step_tags) if forward else list(reversed(s.step_tags))
+        if len(st) != len(pts) - 1:
+            return None
+        coords.extend(pts[1:] if coords else pts)
+        steps.extend(st)
+        cur = s.b if forward else s.a
+    if not steps:
+        return None
+    runs: list[tuple[list[Coord], dict]] = []
+    start = 0
+    for j in range(1, len(steps) + 1):
+        if j == len(steps) or steps[j] is not steps[start]:
+            runs.append((coords[start : j + 1], steps[start]))
+            start = j
+    return runs
 
 
 def _anchor_vertex(
@@ -669,19 +760,33 @@ def _project_point(line: list[Coord], p: Coord) -> tuple[float, _Pos, Coord]:
     return d, pos, _interp(line, pos)
 
 
-def _subpolyline(line: list[Coord], p1: _Pos, p2: _Pos) -> list[Coord]:
+def _subpolyline(
+    line: list[Coord], p1: _Pos, p2: _Pos, step_tags: tuple[dict, ...] = ()
+) -> tuple[list[Coord], tuple[dict, ...]]:
     """The ordered coords of ``line`` between positions ``p1`` and ``p2`` (``p1`` before
-    ``p2``), with the interpolated boundary points at each end. Consecutive duplicates
-    (a boundary landing exactly on a vertex) are collapsed."""
+    ``p2``), with the interpolated boundary points at each end, plus the matching slice of
+    ``step_tags``. Consecutive duplicates (a boundary landing exactly on a vertex) are
+    collapsed — along with the zero-length step leading into each one.
+
+    The tags slice is EXACT, not prorated by piece length: a cut lands inside edge ``e1``,
+    so the opening partial step still walks ``e1``'s way, each interior step walks its own,
+    and the closing partial step walks ``e2``'s — i.e. ``step_tags[e1 : e2 + 1]``. Prorating
+    a segment's surface mix across its pieces would smear a cut that falls in the middle of
+    an asphalt run into both halves.
+    """
     (e1, _), (e2, _) = p1, p2
     pts = [_interp(line, p1)]
     pts.extend(line[e1 + 1 : e2 + 1])  # interior vertices strictly between p1 and p2
     pts.append(_interp(line, p2))
+    steps = list(step_tags[e1 : e2 + 1]) if step_tags else []
     out = [pts[0]]
-    for q in pts[1:]:
+    out_steps: list[dict] = []
+    for j, q in enumerate(pts[1:]):
         if q != out[-1]:
             out.append(q)
-    return out
+            if steps:
+                out_steps.append(steps[j])
+    return out, tuple(out_steps)
 
 
 def snap_points(
@@ -764,9 +869,16 @@ def snap_points(
         marks.extend(sorted(cuts, key=lambda pn: pn[0]))
         marks.append(((last - 1, 1.0), s.b))
         for (pa, na), (pb, nb) in zip(marks, marks[1:]):
-            piece = _subpolyline(s.coords, pa, pb)
+            piece, piece_tags = _subpolyline(s.coords, pa, pb, s.step_tags)
             segments.append(
-                Segment(a=na, b=nb, coords=piece, length_m=polyline_length_m(piece), refs=s.refs)
+                Segment(
+                    a=na,
+                    b=nb,
+                    coords=piece,
+                    length_m=polyline_length_m(piece),
+                    refs=s.refs,
+                    step_tags=piece_tags,
+                )
             )
 
     adj: dict[int, list[int]] = {}
@@ -774,7 +886,18 @@ def snap_points(
         adj.setdefault(s.a, []).append(idx)
         if s.b != s.a:
             adj.setdefault(s.b, []).append(idx)
-    return TrailGraph(coords=coords, segments=segments, adj=adj), result
+    return (
+        TrailGraph(
+            coords=coords,
+            segments=segments,
+            adj=adj,
+            # The split graph is a superset of the original, so what the ORIGINAL knew
+            # about member-way tags is what it knows — losing this would silently mute
+            # surface for every mode that snaps a point (`--from`/`--to`, `--via`, `--to-poi`).
+            has_way_tags=graph.has_way_tags,
+        ),
+        result,
+    )
 
 
 def _dijkstra(
