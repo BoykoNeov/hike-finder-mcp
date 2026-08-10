@@ -262,12 +262,21 @@ thing is validated live against real OSM. Highlights:
     **castle**, so its absence from a `ruins` search is the registry working, not a dropped
     object. Rotštejn's "20 m" here matches the figure the `--poi` run recorded for it.
 
-  **What did NOT get exercised live:** the certificate has two bounds, and only one of them
-  fired. Every run here was bounded by the *search radius*; the **cheap-pass-drop** bound
-  (`_POI_CANDIDATE_FACTOR`×N, floor 10) never triggered, because Český ráj offers far fewer
-  candidate ruins than the floor. That branch remains offline-only, pinned by
-  `test_the_cheap_pass_admits_when_it_may_have_dropped_a_nearer_one`. A dense-POI kind
-  (`peak`, `viewpoint`) in a high-density box would be the way to reach it live.
+  **The second bound is now live too, and it also caught a real miss.** The runs above were
+  all bounded by the *search radius*; the **cheap-pass-drop** bound (`_POI_CANDIDATE_FACTOR`×N,
+  floor 10) needed a kind denser than Český ráj's ruins. `--to-poi peak` from the same
+  Sedmihorky start reaches it immediately: at `--routes 1` the pool is the 10 nearest
+  crow-flies summits, the 11th sits **300 m** away, and the mode logged the distinct wording
+  "past the 0.3 km **nearest candidate not examined**" — the `bound_m == excluded_crow_m`
+  branch, not the radius one. It was right to. That run's answer was *Čertova skála* at
+  1.21 km on foot; re-run at `--routes 5` (pool 20) rank 1 becomes an unnamed peak at
+  **0.43 km**, nearly three times nearer and sitting in the tail the cheap pass had dropped.
+  So the `--routes 1` answer really was not the nearest, and the mode never claimed it was.
+  The hedge stays armed at `--routes 5` as well (farthest 1.2 km vs a 0.4 km bound), which is
+  the same honest recursion the radius bound shows — nothing outside the pool is ever assumed
+  away. Both bounds have now fired live and both have been shown to point at something real,
+  and `test_the_cheap_pass_admits_when_it_may_have_dropped_a_nearer_one` still pins the
+  branch offline.
 
   Export round-tripped: 1 track / 143 trkpt / **143 `<ele>`** (the faithfulness gate passed) plus
   a single start `<wpt>`, diacritics intact; the GeoJSON carries a `destination` property and its
@@ -286,6 +295,25 @@ thing is validated live against real OSM. Highlights:
   5.4 km route over 8 real KČT trails; `--via-loop` on a wide triangle drew a genuine non-repeating
   loop (12.75 km, 9 % retraced, gain ≈ loss); and `--via-loop` on near-collinear points correctly fell
   back and loudly flagged a 100 %-retrace out-and-back.
+- **Surface / tracktype on SYNTHESISED routes** — `tests/test_composed_surface.py` pins the
+  pure side (step/coord parallelism, length-weighting surviving the assembly, an exact
+  `snap_points` split against the prorated answer it must not give, per-occurrence weighting
+  of a retraced leg, and `None`-not-empty when the data carried no member tags), plus two
+  end-to-end cases through `compose_loops`. **Verified live** over Krkonoše and Český ráj,
+  and the earlier "0 surface flags" observation is what it replaces:
+  - `--compose-loops` over the Špindl box, the exact run HANDOFF recorded as silent, now
+    prints a surface on **14 of 15** loops (`surface:asphalt 55%`, `surface:mixed (85% known)`,
+    …). The 15th is quiet for the right reason and not a gap: its summary exists with
+    **15.3 %** coverage, under the 50 % gate. All 15 carry a summary object; the *flag* is
+    what the gate withholds.
+  - **The retrace is weighted per occurrence, live.** `--via-loop` on near-collinear Špindl
+    points falls back to a 100 %-retraced out-and-back — 1.3 km of distinct trail, 2.7 km
+    walked — and reports `coverage: 1.0` with shares summing over the **doubled** length
+    (asphalt 36 % / fine gravel 35 % / unpaved 26 % / dirt 2 %). Had the runs covered the
+    distinct trail once, coverage would have read ~50 %. Four surfaces, none over 40 %, so it
+    prints `surface:mixed (100% known)` — the dominance gate doing its job on real data.
+  - **The mid-segment split path is live too**: `--to-poi peak` snapped its start 32 m onto a
+    segment (a real `_subpolyline` cut) and the resulting route still reported a breakdown.
 - **Destination filter** (`--poi`, MCP `poi`, web "Must pass") — the registry round-trip, the
   grid-vs-brute-force equivalence, line-not-vertex proximity, the snapshot round-trip, and the
   cheap-pass economy are all unit-tested (`test_poi.py`); the HTTP surface and the loud
@@ -417,7 +445,13 @@ skip without the `mcp` extra).
   crow-flies cheap pass dropped (`_POI_CANDIDATE_FACTOR`×N, min 10). When the longest route
   returned exceeds either bound the mode logs "not provably the nearest" rather than assuming
   the margin held. It *can* return the wrong one — `test_the_cheap_pass_admits_when_it_may_have
-  _dropped_a_nearer_one` constructs exactly that — but never silently.
+  _dropped_a_nearer_one` constructs exactly that, and a live `--to-poi peak --routes 1` over
+  Český ráj *did* it (1.21 km answer; the dropped tail held one at 0.43 km) — but never
+  silently. The cheap-pass bound bites hardest on **dense** kinds: `peak` in a rock town puts
+  the 11th-nearest summit 300 m away, so a pool of 10 is nowhere near enough and the hedge
+  fires on essentially every run. Raising `--routes` is the lever that widens the pool
+  (`keep = max(4×N, 10)`); there is no separate knob, by design — the factor exists to keep
+  the Dijkstra count proportional to what was asked for.
 - **`--to-poi` is live-only, deliberately.** A snapshot carries both routes and POIs, so an
   offline variant is conceivable, but the mode needs a trail graph and the elevation pass, and
   a snapshot's bbox is fixed while this mode derives its own from the start point and the cap.
