@@ -8,6 +8,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A short route is no longer labelled a loop because 150 m is a long way for it.**
+  `access.is_circular`'s last-resort test — the stitched line returning to within a
+  tolerance of its start, which catches a loop left open by a mapper's unwelded join —
+  used an absolute 150 m regardless of how long the route was. `[M] Labský vodopád` is a
+  real 0.1 km route whose line ends 69 m from its start: two thirds of the walk separate
+  the ends, and it was called a loop. The bound is now taken as a fraction of the route's
+  own length (5 %), still capped at 150 m.
+  **The scaling only bites below 3 km** — `5 % × 3 km` *is* 150 m, so every longer route
+  keeps precisely the behaviour it had, to the metre. Both real fixtures return an
+  unchanged verdict on all 23 relations.
+  The deeper defect was two rules disagreeing about one geometry. The gain gate
+  (`filters._line_closes`) had already learned to scale, so the same route came out
+  "loop, gain n/a" — labelled circular by one rule and refused its gain by the other,
+  with the wrong one holding the label. They were written with the same 150 m constant
+  and drifted anyway, so the bound now lives in one function, `access.closure_limit_m`,
+  that both call. A route labelled a loop by the end-gap fallback therefore always has a
+  gain again.
+  Knock-on worth knowing: `circular` also selects *where* access is measured — along the
+  whole line for a loop, at the two ends otherwise — so a route that stops being called a
+  loop now has its parking/lift/transit tested at its termini instead. That is the correct
+  reading for a non-loop, and at under 3 km the two point sets barely differ, but it is a
+  second behaviour riding on the same flag.
 - **MCP `find_hikes` now says when a saved area cannot answer the cable question.** It
   was the last frontend that answered from nothing: `find_hikes(area=…, ferrata=false)`
   over a downloaded file whose routes carry no member-way tags drops every route —

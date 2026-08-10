@@ -837,7 +837,7 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 | `HIKE_GAIN_THRESHOLD` | Hysteresis climb threshold, metres (must exceed peak-to-peak DEM noise) | `10` |
 | `HIKE_SAMPLE_INTERVAL` | Resample spacing along the track, metres | `25` |
 | `HIKE_SMOOTH_WINDOW` | Elevation smoothing window, samples | `3` |
-| `HIKE_LOOP_TOLERANCE` | start≈end distance that closes a loop, metres | `150` |
+| `HIKE_LOOP_TOLERANCE` | start≈end distance that closes a loop, metres — a ceiling on a 5 %-of-route-length bound, so it is the whole test only above 3 km | `150` |
 | `HIKE_CAR_RADIUS` | Parking-near-endpoint radius, metres | `300` |
 | `HIKE_LIFT_RADIUS` | Lift-station-near-endpoint radius, metres | `400` |
 | `HIKE_MAX_ROUTE_FACTOR` | Drop routes longer than this × the bbox diagonal (kills through-routes) | `4.0` |

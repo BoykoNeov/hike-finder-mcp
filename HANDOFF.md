@@ -75,7 +75,9 @@ True = require, False = exclude):
   by *circuit rank* `E − V + C` over the **full vertex graph** (`geometry.route_cycle_count`,
   stitch-order independent, counts a lollipop, detects T-junction closures because nodes are
   exact shared vertices, and does NOT invent cycles from clustered endpoints); else the stitched
-  line returning within `HIKE_LOOP_TOLERANCE` of its start (a loop left open by a digitization gap).
+  line returning within `access.closure_limit_m` of its start (a loop left open by a digitization
+  gap) — `HIKE_LOOP_TOLERANCE` capping a 5 %-of-route-length bound, shared with the gain gate so
+  the label and the gain cannot disagree about one geometry.
 - **`car_access`** — `access.car_accessible`. A mapped `amenity=parking` within `HIKE_CAR_RADIUS`
   of a trail terminus (parking-only by design). Best-effort.
 - **`chairlift_access`** — `access.chairlift_access`. A ride-up aerialway
@@ -229,6 +231,39 @@ thing is validated live against real OSM. Highlights:
 - **Geometry / closure / distance / termini** — all off one shared `geometry._vertex_graph`.
   Closure and distance are live-validated on real CZ relations (`tests/fixtures/medved_relations.json`,
   `spindl_area.json`).
+- **The "how close is closed" bound is scaled by route length, and lives in ONE place.**
+  This file used to carry `is_circular`'s absolute 150 m fallback as the next candidate;
+  it is done. `access.closure_limit_m` returns `min(tol_m, rel_tol × distance)` (150 m /
+  5 %) and is called by both `access.is_circular`'s start≈end fallback (the LABEL) and
+  `filters._line_closes` (the gain gate). Five things worth keeping:
+  - **The two halves cross at exactly 3 km** (`5 % × 3 km = 150 m`), so the scaling bites
+    *only* on routes shorter than that and everything longer keeps the old behaviour to
+    the metre. That bounds the blast radius precisely, and it also disposes of the worry
+    about fragmented relations: where the summed member length dwarfs the stitched line,
+    5 % of the sum already exceeds 150 m, `tol_m` caps it, and nothing changes. Re-run
+    over both fixtures — all 23 relations returned an unchanged verdict.
+  - **The bug was two rules disagreeing about one geometry, not a loose constant.**
+    `[M] Labský vodopád` (0.1 km, line ending 69 m from its start) read "loop, gain n/a":
+    the gain gate had already learned to scale and refused, while the label — written with
+    the same 150 m constant and never updated — still said loop. Sharing the function is
+    the fix; a matching constant in two files is what produced the drift in the first
+    place. A route labelled a loop via the end-gap fallback now always has a gain, pinned
+    across the disagreement window by `test_the_label_and_the_gain_gate_read_the_same_bound`.
+  - **`is_circular`'s `distance_km` is a CACHE, not a mode.** Omitted, it derives the
+    identical sum from `ways`; `measure_geometry` passes the value it just computed only
+    to save the second walk. Do not turn the default into "don't scale" — two callers
+    would then disagree about one route. Pinned.
+  - **`circular` has four readers, and this touched more than the label.** The filter
+    (`Criteria.accepts_*`), the rendered `loop`/`one-way` flag, the gain gate, and — the
+    non-obvious one — the access-point set in `measure_geometry`: a loop's parking/lift/
+    transit is tested along the WHOLE line, a non-loop's at its two ends. A route that
+    stops being called a loop therefore also stops being measured along its length. That
+    is the correct reading for a non-loop and the two sets barely differ under 3 km, but
+    it is a second behaviour change riding on one flag.
+  - **`roundtrip=yes` still short-circuits ahead of all of it**, which is load-bearing
+    rather than incidental: `compose_loops` stamps that tag on every synthesised loop and
+    plenty of them are short, so a distance-scaled bound reaching them would empty out
+    loop composition. Now pinned, which it was not before.
 - **Elevation** — both backends trustworthy (a detected closed loop reads gain≈loss). API
   backend: per-endpoint request dialect, cross-request throttle, retry/backoff with a
   `Retry-After` ceiling, and a persistent cross-process daily-quota counter. Local DEM: Copernicus
@@ -631,13 +666,6 @@ skip without the `mcp` extra).
   the obvious answer and is deliberately NOT taken — it widens every query, invalidates
   the Overpass cache, and changes what "a route" means. Decide that on purpose, not as a
   side effect.
-- **`is_circular`'s 150 m start≈end fallback is absolute, and on a short route that is
-  too loose.** `[M] Labský vodopád` is a 0.1 km route whose line ends 69 m from its start
-  — under the tolerance, so it is labelled a loop, though 69 m of a 100 m route is not a
-  loop by any reading. Since the gain gate landed it reads "loop, gain n/a", which is an
-  improvement but still names the wrong defect: the *label* is what is wrong. The gain
-  gate (`filters._line_closes`) already scales its bound by route length and could lend
-  the same treatment here. Next candidate; deliberately not bundled with the gain fix.
 - **`/api/hikes` answers with an object now, and the reason is worth keeping.** It
   returned a bare JSON array for four releases, which had nowhere to put a sentence about
   what the *source* could not answer — so the web UI showed a silent empty list where the

@@ -1085,6 +1085,11 @@ gain they report*:
   detail and more elevation lookups (more API requests).
 - `HIKE_LOOP_TOLERANCE` (default `150` m) — how close start and end must be to
   count as a loop. Bump it if a route you know is circular shows as `one-way`.
+  It is a **ceiling**, not a flat allowance: the gap must also be under 5 % of the
+  route's own length, so a 100 m trail whose ends sit 69 m apart is not a loop.
+  The two rules meet at 3 km — above that this number is the whole test, and
+  raising it is the only lever; below it, a short route is judged on its own scale
+  and raising this knob will not help.
 - `HIKE_CAR_RADIUS` / `HIKE_LIFT_RADIUS` (default `300` / `400` m) — how near an
   endpoint parking/a lift must be to flag access. Widen if you're getting false
   negatives in sprawly trailhead areas.
@@ -1106,7 +1111,7 @@ your numbers stay consistent and tunable instead of inherited from a third party
 | `No matching hikes found in that area.` | The bbox + filters genuinely matched nothing | Widen the bbox or loosen filters. Loops are sparse in KČT data (most relations are linear segments), so `--circular` legitimately returns few |
 | Many routes show `gain n/a` | Elevation backend couldn't answer — usually the API daily cap | Wait for the UTC-midnight reset, or set up the local-DEM backend |
 | Slow, or occasional `504` | Public Overpass is overloaded; the client retries with backoff | Wait it out, or point `HIKE_OVERPASS_URL` at a regional/self-hosted instance for heavy use |
-| A route you know is a loop shows `one-way` | Its ends are farther apart than the loop tolerance | Raise `HIKE_LOOP_TOLERANCE` |
+| A route you know is a loop shows `one-way` | Its ends are farther apart than the loop tolerance | Raise `HIKE_LOOP_TOLERANCE` — but on a route under 3 km the 5 %-of-length rule binds instead and this knob won't move it |
 | `car`/`lift` absent on a trail you can drive to | OSM has no parking/lift mapped near its ends — not a claim it's unreachable | Trust your local knowledge; the flag only reports what OSM maps |
 | `No routes pass a point of interest of that kind here` | Nothing of that kind is *mapped* within the radius of any route there | Widen `--poi-radius`, try a related kind (`castle` vs `ruins`), or search a wider area |
 | `unknown point-of-interest kind 'x'` | A typo — deliberately an error, so it can never read as "none exist" | Pick from `hike-finder --list-poi-kinds` |

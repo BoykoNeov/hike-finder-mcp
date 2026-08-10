@@ -6,6 +6,7 @@ a hand-built Overpass element list (the failure-prone part of the net layer).
 from hike_finder.access import (
     car_accessible,
     chairlift_access,
+    closure_limit_m,
     endpoints_closed,
     is_circular,
     matched_access_points,
@@ -101,6 +102,73 @@ def test_is_circular_point_to_point_false():
     line = [(50.0, 14.0), (50.0, 14.05)]  # ~3.5 km apart
     ways = [[(50.0, 14.0), (50.0, 14.05)]]
     assert is_circular(ways, line, {}, tol_m=150.0) is False
+
+
+# --- the start≈end fallback is scaled by the route's own length ----------------
+#
+# It used to be a flat 150 m, which is a reasonable digitization seam on a 10 km
+# walk and most of the route on a 100 m one. `[M] Labský vodopád` — a real 0.1 km
+# route whose line ends 69 m from its start — was labelled a loop because of it.
+
+M_PER_DEG_LAT = 111_195.0  # geometry.haversine_m's metre, not the 111 320 used for bbox pad
+
+
+def _out_and_back(out_m, gap_m):
+    """Walk ``out_m`` north, turn round, stop ``gap_m`` short of the start.
+
+    Two member ways meeting at the turn, so the vertex graph is a path (circuit
+    rank 0) and the ONLY thing that can call this a loop is the start≈end
+    fallback under test. Summed member length is ``out_m + (out_m - gap_m)``.
+    """
+    a = (50.0, 14.0)
+    b = (50.0 + out_m / M_PER_DEG_LAT, 14.0)
+    c = (50.0 + gap_m / M_PER_DEG_LAT, 14.0)
+    return [[a, b], [b, c]], [a, b, c]
+
+
+def test_a_short_route_is_not_a_loop_just_because_150_m_is_a_long_way_for_it():
+    # The reported symptom: ~0.1 km of trail (85 m out, 16 m back) ending 69 m from
+    # its start. Two thirds of the route separate the ends; nothing about that is a
+    # loop, yet an absolute 150 m tolerance waved it through.
+    ways, line = _out_and_back(85.0, 69.0)
+    assert is_circular(ways, line, {}, tol_m=150.0) is False
+
+
+def test_the_same_gap_on_a_long_route_is_still_a_digitization_seam():
+    # 69 m over 10 km is 0.7 % — a mapper's unwelded join, and the case the fallback
+    # exists for. Absolute metres cannot tell these two apart, which is the point.
+    ways, line = _out_and_back(5000.0, 69.0)
+    assert is_circular(ways, line, {}, tol_m=150.0) is True
+
+
+def test_a_roundtrip_tag_still_wins_on_a_short_route():
+    # Composed loops are stamped `roundtrip=yes` and are often short, so the tag must
+    # keep short-circuiting ahead of the distance math — otherwise loop composition
+    # would quietly empty out.
+    ways, line = _out_and_back(85.0, 69.0)
+    assert is_circular(ways, line, {"roundtrip": "yes"}) is True
+
+
+def test_above_three_km_the_bound_is_the_old_flat_tolerance():
+    # Where the two halves cross: 5 % of 3 km IS 150 m. Everything longer keeps
+    # exactly the behaviour it had before scaling was added — the change can only
+    # ever bite on short routes.
+    assert closure_limit_m(3.0) == 150.0
+    assert closure_limit_m(3.5) == 150.0
+    assert closure_limit_m(50.0) == 150.0
+    assert closure_limit_m(2.0) == 100.0
+
+
+def test_distance_km_is_a_cache_not_a_mode():
+    # `measure_geometry` passes the length it already computed purely to save the
+    # second walk. Omitting it must not change any verdict, or two callers would
+    # disagree about the same route.
+    for out_m, gap_m in ((85.0, 69.0), (5000.0, 69.0), (2000.0, 60.0)):
+        ways, line = _out_and_back(out_m, gap_m)
+        summed_km = (out_m + (out_m - gap_m)) / 1000.0
+        assert is_circular(ways, line, {}) is is_circular(
+            ways, line, {}, distance_km=summed_km
+        )
 
 
 def test_route_endpoints_dedups_loop():

@@ -22,7 +22,9 @@
   HIKE_SAMPLE_INTERVAL  metres (default 25)
   HIKE_SMOOTH_WINDOW    samples (default 3)
 
-  HIKE_LOOP_TOLERANCE   metres; start≈end closes a loop (default 150)
+  HIKE_LOOP_TOLERANCE   metres; CAPS the start≈end gap that closes a loop, which is
+                        also held under 5% of the route's own length (default 150;
+                        the two meet at 3 km — see access.closure_limit_m)
   HIKE_CAR_RADIUS       metres; parking within this of an endpoint = car access (default 300)
   HIKE_LIFT_RADIUS      metres; lift station within this of an endpoint = lift access (default 400)
   HIKE_TRANSIT_RAIL_RADIUS  metres; train station/halt within this of an endpoint =

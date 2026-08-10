@@ -23,6 +23,7 @@ from .access import (
     TRANSIT_STOP_RADIUS_M,
     car_accessible,
     chairlift_access,
+    closure_limit_m,
     is_circular,
     matched_access_points,
     nearest_lift_m,
@@ -443,7 +444,12 @@ def measure_geometry(
     # under-counts. The stitched line is still used for the is_circular gap
     # fallback and as the loop start fallback.
     distance_km = total_way_length_m(ways) / 1000.0
-    circular = is_circular(ways, line, route.get("tags", {}), tol_m=loop_tolerance_m)
+    # `distance_km` is passed only to save `is_circular` the second length walk — it
+    # derives the identical number from `ways` when omitted. It scales the start≈end
+    # fallback, so a 69 m gap on a 0.1 km route stops reading as a loop.
+    circular = is_circular(
+        ways, line, route.get("tags", {}), tol_m=loop_tolerance_m, distance_km=distance_km
+    )
 
     # Termini are the route's genuine open ends (degree-1 vertices of the full
     # vertex graph). They drive the START marker's access coupling below — the
@@ -608,19 +614,19 @@ def _line_closes(
     closes perfectly (70 m gain / 66 m loss), while `route/8464045` is faithful yet ends
     85 % of its own length away from its start (0 m gain / 117 m loss).
 
-    The tolerance is two-sided on purpose, because neither bound alone works. Absolute
-    metres cannot separate a 69 m gap on a 0.1 km route (not a loop at all) from the
-    same gap on a 10 km one (a digitization seam), so the gap is taken as a FRACTION of
-    the route's own length. But an unbounded fraction lets a 20 km loop end a kilometre
-    from its start, so it is also capped by ``tol_m`` — the project's existing "how close
-    is closed" number, shared with ``access.is_circular``'s line fallback.
+    The two-sided bound itself now lives in ``access.closure_limit_m``, because
+    ``access.is_circular``'s start≈end fallback needs the same number and, having been
+    written with the same 150 m constant, drifted from it: the LABEL stayed absolute
+    after this gate learned to scale, so a 0.1 km route ending 69 m from its start came
+    out "loop, gain n/a" — this gate correctly refusing the gain of a route the label
+    should never have called a loop. One function decides now.
 
     5 % has an enormous margin on the measured partition: every closing loop in that run
     scored ≤ 0.02 and every broken one ≥ 0.69, with nothing in between.
     """
     if len(line) < 2:
         return False
-    limit = min(tol_m, rel_tol * distance_km * 1000.0)
+    limit = closure_limit_m(distance_km, tol_m=tol_m, rel_tol=rel_tol)
     return haversine_m(line[0], line[-1]) <= limit
 
 

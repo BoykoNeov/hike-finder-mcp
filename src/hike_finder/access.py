@@ -23,7 +23,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from .geometry import Coord, haversine_m, route_cycle_count
+from .geometry import Coord, haversine_m, route_cycle_count, total_way_length_m
 
 # Aerialways you can ride UP sitting/standing in a cabin — the realistic
 # "let the lift do the climbing" set. Excludes drag/T-bar/platter/rope_tow
@@ -117,6 +117,35 @@ def endpoints_closed(ways: list[list[Coord]], weld_m: float = 1.0) -> bool:
     return route_cycle_count(ways, weld_m=weld_m) > 0
 
 
+def closure_limit_m(
+    distance_km: float,
+    *,
+    tol_m: float = 150.0,
+    rel_tol: float = 0.05,
+) -> float:
+    """How far a route's two ends may sit apart and still count as closed.
+
+    The single source of truth for "how close is closed", shared by
+    ``is_circular``'s start≈end fallback (which decides the LABEL) and
+    ``filters._line_closes`` (which decides whether a loop's gain is trustworthy).
+    They were written with the same 150 m constant and drifted anyway — the label
+    kept an absolute bound after the gain gate learned to scale — so the two now
+    read from here and cannot disagree about the same geometry again.
+
+    The bound is two-sided because neither half works alone. Absolute metres
+    cannot separate a 69 m gap on a 0.1 km route (not a loop at all) from the same
+    gap on a 10 km one (a digitization seam), so the gap is taken as a FRACTION of
+    the route's own length. But an unbounded fraction lets a 20 km loop end a
+    kilometre from its start, so ``tol_m`` caps it.
+
+    Note where the two halves cross: ``rel_tol × d ≤ tol_m`` exactly when
+    ``d ≤ 3 km`` at the defaults. Above 3 km this IS the old flat 150 m, to the
+    metre — the scaling only ever bites on short routes, which is the whole
+    population it was added for.
+    """
+    return min(tol_m, rel_tol * distance_km * 1000.0)
+
+
 def is_circular(
     ways: list[list[Coord]],
     line: list[Coord],
@@ -124,13 +153,27 @@ def is_circular(
     *,
     tol_m: float = 150.0,
     weld_m: float = 1.0,
+    distance_km: float | None = None,
 ) -> bool:
     """Decide whether a route is a loop.
 
     Priority: an explicit ``roundtrip`` tag is authoritative (respects the
     mapper's intent). Otherwise fall back to geometry: the member ways enclose a
-    loop (circuit rank), or the stitched line returns to within ``tol_m`` of its
-    start (catches a loop left open only by a digitization gap).
+    loop (circuit rank), or the stitched line returns to within
+    ``closure_limit_m`` of its start (catches a loop left open only by a
+    digitization gap).
+
+    That last bound used to be a flat ``tol_m``, and on a short route it was far
+    too loose: `[M] Labský vodopád` is a 0.1 km route whose line ends 69 m from
+    its start, which is most of the route and no kind of loop, yet it was labelled
+    one. Worse, the gain gate had ALREADY learned to scale, so the route came out
+    as "loop, gain n/a" — two rules disagreeing about one geometry, with the
+    wrong one holding the label. Both now call ``closure_limit_m``.
+
+    ``distance_km`` is a CACHE, not a mode. Omitted, it is derived from ``ways``
+    by the same sum the caller would pass (``measure_geometry`` has it to hand and
+    passes it to save the second walk). Do not "optimize" the default into meaning
+    "don't scale": every caller must get the same answer for the same route.
     """
     rt = (tags or {}).get("roundtrip", "").strip().lower()
     if rt in _TRUE:
@@ -139,9 +182,11 @@ def is_circular(
         return False
     if endpoints_closed(ways, weld_m=weld_m):
         return True
-    if len(line) >= 2 and haversine_m(line[0], line[-1]) <= tol_m:
-        return True
-    return False
+    if len(line) < 2:
+        return False
+    if distance_km is None:
+        distance_km = total_way_length_m([list(w) for w in ways]) / 1000.0
+    return haversine_m(line[0], line[-1]) <= closure_limit_m(distance_km, tol_m=tol_m)
 
 
 def route_endpoints(line: list[Coord]) -> list[Coord]:

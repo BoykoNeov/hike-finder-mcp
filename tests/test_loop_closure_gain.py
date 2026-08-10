@@ -12,6 +12,7 @@ one that didn't scored over 68 % and read an impossible asymmetry.
 """
 import pytest
 
+from hike_finder.access import is_circular
 from hike_finder.elevation.base import ElevationProvider
 from hike_finder.filters import Hike, add_elevation
 
@@ -153,3 +154,36 @@ def test_a_composed_loop_is_never_gated_on_its_stitched_line():
 
     assert h.gain_m is not None
     assert h.gain_m == pytest.approx(h.loss_m, abs=1.0)
+
+
+# --- the label and this gate no longer disagree about one geometry ------------
+
+
+def test_the_label_and_the_gain_gate_read_the_same_bound():
+    """A route the LABEL calls a loop off its end gap must clear this gate too.
+
+    They were written with the same 150 m constant and drifted: this gate learned to
+    scale by route length, ``access.is_circular`` did not. The visible result was
+    "loop, gain n/a" on a 0.1 km route — a hike labelled circular by one rule and
+    refused its gain by the other, with the wrong one holding the label. Both read
+    ``access.closure_limit_m`` now, so a fallback-labelled loop always has a gain.
+
+    Exact agreement holds up to ``Hike.distance_km``'s 2-decimal rounding, which can
+    move the limit by ≤ 0.25 m at the defaults — far below the margin either rule
+    was built to resolve, so the cases are chosen clear of it.
+    """
+    # The first case is the whole point: 69 m is under the old flat 150 m, so the
+    # label said loop, while the gate — already scaling — refused the gain. Any pair
+    # where the two bounds differ has to live in that window; the rest are the
+    # agreeing cases either side of it, so a bound broken in the OTHER direction
+    # (both accepting everything) is caught too.
+    for gap_m, distance_km in ((69.0, 0.2), (69.0, 10.0), (300.0, 20.0), (2.0, 0.2)):
+        line = _gap_line(gap_m)
+        ways = [[line[0], line[-1]]]
+        labelled = is_circular(ways, line, {}, distance_km=distance_km)
+
+        h = _hike(line, circular=True, distance_km=distance_km)
+        add_elevation(h, line, _LatRamp(), sample_interval_m=25.0)
+        has_gain = h.gain_m is not None
+
+        assert labelled is has_gain, f"gap {gap_m} m on {distance_km} km"
