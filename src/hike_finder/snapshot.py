@@ -205,33 +205,46 @@ class AreaSnapshot:
     def poi_count(self) -> int:
         return len(self.area.pois)
 
+    @property
+    def ferrata_count(self) -> int | None:
+        """Dedicated ferrata routes + cabled ways recorded, or ``None`` if the file
+        predates the feature. ``None`` rather than 0 so a listing can say "not recorded"
+        instead of implying an area was checked and found clear."""
+        if self.area.ferrata_routes is None and self.area.ferrata_ways is None:
+            return None
+        return len(self.area.ferrata_routes or ()) + len(self.area.ferrata_ways or ())
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _route_to_json(r: dict) -> dict:
+    """One route record. Shared by ``routes`` and ``ferrata_routes`` — they are the
+    same shape by design (see overpass.AreaData), and two copies of this would be two
+    chances for a cabled route to round-trip differently from a walkable one."""
+    return {
+        "id": r.get("id"),
+        "name": r.get("name"),
+        "ref": r.get("ref"),
+        "osmc_color": r.get("osmc_color"),
+        # Carry the source-of-truth "unnamed" flag (parse_area sets it). Without
+        # it an offline search rebuilds every route as named=True, so enrich_names
+        # would skip them and the baked place names would never apply — and
+        # hike_to_dict would wrongly report unnamed=False for a route/<id> route.
+        "unnamed": r.get("unnamed", False),
+        "tags": r.get("tags", {}),
+        "ways": [[[lat, lon] for lat, lon in way] for way in r["ways"]],
+        # Parallel to "ways" (see overpass.parse_area). Absent in files written
+        # before member-way tags were fetched; on load that absence keeps the
+        # surface summary at None instead of "nothing is tagged".
+        "way_tags": r.get("way_tags", []),
+    }
+
+
 def _area_to_json(area: AreaData) -> dict:
     out = {
-        "routes": [
-            {
-                "id": r.get("id"),
-                "name": r.get("name"),
-                "ref": r.get("ref"),
-                "osmc_color": r.get("osmc_color"),
-                # Carry the source-of-truth "unnamed" flag (parse_area sets it). Without
-                # it an offline search rebuilds every route as named=True, so enrich_names
-                # would skip them and the baked place names would never apply — and
-                # hike_to_dict would wrongly report unnamed=False for a route/<id> route.
-                "unnamed": r.get("unnamed", False),
-                "tags": r.get("tags", {}),
-                "ways": [[[lat, lon] for lat, lon in way] for way in r["ways"]],
-                # Parallel to "ways" (see overpass.parse_area). Absent in files written
-                # before member-way tags were fetched; on load that absence keeps the
-                # surface summary at None instead of "nothing is tagged".
-                "way_tags": r.get("way_tags", []),
-            }
-            for r in area.routes
-        ],
+        "routes": [_route_to_json(r) for r in area.routes],
         "parking": [
             {"coord": [p["coord"][0], p["coord"][1]], "name": p.get("name")}
             for p in area.parking
@@ -284,26 +297,49 @@ def _area_to_json(area: AreaData) -> dict:
     # one thing this whole field exists to stop.
     if area.poi_kinds is not None:
         out["poi_kinds"] = list(area.poi_kinds)
+    # Cabled climbing (ferrata.py). Written CONDITIONALLY, for the same reason
+    # `poi_kinds` is: an AreaData with `None` here is reachable (load an old file, save
+    # it again), and writing `[]` for it would upgrade "this file never looked for
+    # ferrata" into "it looked and found none" — the one claim a pre-feature file cannot
+    # make, and precisely the one that would send somebody up a cable unwarned.
+    #
+    # Both keys are written together and only together, so a file can never say it knows
+    # about ferrata routes but not ferrata ways. `--ferrata` reads both.
+    if area.ferrata_routes is not None:
+        out["ferrata_routes"] = [_route_to_json(r) for r in area.ferrata_routes]
+    if area.ferrata_ways is not None:
+        out["ferrata_ways"] = [
+            {
+                "id": w.get("id"),
+                "coords": [[lat, lon] for lat, lon in w["coords"]],
+                "name": w.get("name"),
+                "scale": w.get("scale"),
+            }
+            for w in area.ferrata_ways
+        ]
     return out
+
+
+def _route_from_json(r: dict) -> dict:
+    """Inverse of :func:`_route_to_json`, shared by both route lists."""
+    return {
+        "id": r.get("id"),
+        "name": r.get("name"),
+        "ref": r.get("ref"),
+        "osmc_color": r.get("osmc_color"),
+        # Default False so a pre-v2 snapshot (no "unnamed" key) loads unchanged.
+        "unnamed": r.get("unnamed", False),
+        "tags": r.get("tags", {}) or {},
+        # Restore tuples — geometry de-dup/graph code needs hashable coords.
+        "ways": [[(lat, lon) for lat, lon in way] for way in r["ways"]],
+        "way_tags": r.get("way_tags", []),
+    }
 
 
 def _area_from_json(d: dict) -> AreaData:
     area = AreaData()
     for r in d.get("routes", []):
-        area.routes.append(
-            {
-                "id": r.get("id"),
-                "name": r.get("name"),
-                "ref": r.get("ref"),
-                "osmc_color": r.get("osmc_color"),
-                # Default False so a pre-v2 snapshot (no "unnamed" key) loads unchanged.
-                "unnamed": r.get("unnamed", False),
-                "tags": r.get("tags", {}) or {},
-                # Restore tuples — geometry de-dup/graph code needs hashable coords.
-                "ways": [[(lat, lon) for lat, lon in way] for way in r["ways"]],
-                "way_tags": r.get("way_tags", []),
-            }
-        )
+        area.routes.append(_route_from_json(r))
     for p in d.get("parking", []):
         c = p["coord"]
         area.parking.append({"coord": (c[0], c[1]), "name": p.get("name")})
@@ -338,6 +374,23 @@ def _area_from_json(d: dict) -> AreaData:
             {"coord": (t["coord"][0], t["coord"][1]), "kind": t.get("kind"),
              "name": t.get("name")}
             for t in (d.get("transit") or [])
+        ]
+    # Key presence again, and the stakes are higher here than anywhere else this pattern
+    # is used: defaulting a pre-ferrata file to `[]` would let `--ferrata` answer "none
+    # in this area" about a file that never asked the question.
+    if "ferrata_routes" in d:
+        area.ferrata_routes = [
+            _route_from_json(r) for r in (d.get("ferrata_routes") or [])
+        ]
+    if "ferrata_ways" in d:
+        area.ferrata_ways = [
+            {
+                "id": w.get("id"),
+                "coords": [(lat, lon) for lat, lon in w["coords"]],
+                "name": w.get("name"),
+                "scale": w.get("scale"),
+            }
+            for w in (d.get("ferrata_ways") or [])
         ]
     return area
 

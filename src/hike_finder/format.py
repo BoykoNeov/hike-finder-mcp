@@ -10,6 +10,7 @@ The same applies to the *inventory* mode's output (:func:`format_poi`,
 from __future__ import annotations
 
 from .access import transit_label
+from .ferrata import summary_label as ferrata_label
 from .filters import Hike
 from .poi import count_by_kind, kind_label
 
@@ -55,6 +56,27 @@ def _surface_to_dict(s) -> dict | None:
     }
 
 
+def _ferrata_to_dict(f) -> dict | None:
+    """Serialise a FerrataSummary, or None when the data could not say.
+
+    ``length_m``/``fraction`` stay in the payload even at 0 on a route flagged
+    ``present`` — that pairing (cabled, extent unmeasured) is a relation-level claim,
+    and a consumer that drops the flag because the extent is 0 would lose exactly the
+    routes mapped that way.
+    """
+    if f is None:
+        return None
+    return {
+        "present": f.present,
+        "length_m": round(f.length_m),
+        "fraction": round(f.fraction, 3),
+        # Raw OSM values, unordered and unbucketed — mixed scales, see ferrata.py.
+        "grades": list(f.grades),
+        "relation_tagged": f.relation_tagged,
+        "label": ferrata_label(f),
+    }
+
+
 def format_hike(h: Hike) -> str:
     """The canonical one-line summary of a hike.
 
@@ -85,6 +107,14 @@ def format_hike(h: Hike) -> str:
             flags.append(f"surface:{dom.label} {round(dom.fraction * 100)}%")
         else:
             flags.append(f"surface:mixed ({round(h.surface.coverage * 100)}% known)")
+    # Cabled climbing. FIRST among the report-only flags and gated on nothing: this is
+    # the one flag whose whole purpose is to survive a route where it describes a small
+    # minority of the metres. The surface gates directly above are the opposite policy
+    # for the opposite reason — see ferrata.py on why a hazard inverts the dominance
+    # rule. Silent when absent AND when clean, so its absence is never a safety claim.
+    ferrata_flag = ferrata_label(h.ferrata)
+    if ferrata_flag:
+        flags.append(ferrata_flag)
     if h.gain_m is not None:
         elev = f"+{h.gain_m} m / -{h.loss_m} m"
     else:
@@ -160,6 +190,11 @@ def hike_to_dict(h: Hike, *, geometry: bool = False) -> dict:
         # so a consumer can weigh it instead of trusting a bare dominant value.
         "surface": _surface_to_dict(h.surface),
         "tracktype": _surface_to_dict(h.tracktype),
+        # Cabled climbing. `null` when the data could not answer; an OBJECT with
+        # `present: false` when every member way was read and none is cabled. A consumer
+        # that needs "checked and clear" must test `present is False` — the two are kept
+        # apart here precisely so it can, rather than both collapsing to a falsy value.
+        "ferrata": _ferrata_to_dict(h.ferrata),
         "start": {"lat": h.start[0], "lon": h.start[1]},
         "near_miss": h.near_miss,
         "notes": list(h.notes),

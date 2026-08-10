@@ -29,6 +29,7 @@ from dataclasses import replace
 
 from . import cache as _cache
 from . import config as _config
+from . import ferrata as _ferrata
 from . import poi as _poi
 from .compose import (
     _assemble,
@@ -44,6 +45,7 @@ from .compose import (
 )
 from .config import Config
 from .elevation import ElevationError, get_provider
+from .ferrata import FerrataSummary, summarise_ferrata
 from .filters import Criteria, Hike, find_hikes
 from .geocode import DEFAULT_NOMINATIM_URL, NominatimGeocoder
 from .geometry import Coord, haversine_m
@@ -264,9 +266,22 @@ def _measure_composed(
     syn_routes: list[dict] = []
     pre_elev_by_id: dict[int, list[float]] = {}
     pre_points_by_id: dict[int, list] = {}
+    # Cabled sections, computed HERE rather than attached afterwards the way surface is —
+    # and the difference is not cosmetic. Surface is report-only, so `_attach_composed_surface`
+    # can run after `find_hikes` and nothing depends on the ordering. Ferrata is FILTERED on,
+    # so a summary attached afterwards would arrive with the cheap pass already over:
+    # `--compose-loops --no-ferrata` would see `ferrata=None` on every synthetic route, fail
+    # the unknown-drops rule, and return an empty list for a landscape full of walkable loops.
+    # This is also the case where avoidance matters most — a loop synthesised through a cabled
+    # pitch is one nobody chose to walk.
+    pre_ferrata_by_id: dict[int, FerrataSummary | None] = {}
     for i, route in enumerate(routes):
         sid = -(i + 1)
         route_by_id[sid] = route
+        # `assemble_tag_runs` returns None when the graph was built from data carrying no
+        # member-way tags, which `summarise_ferrata` turns straight back into "we could not
+        # look" — the pre-surface-snapshot state, preserved rather than read as "clean".
+        pre_ferrata_by_id[sid] = summarise_ferrata(assemble_tag_runs(graph, route))
         syn_routes.append(
             {
                 "id": sid,
@@ -315,6 +330,7 @@ def _measure_composed(
         poi_radius_m=cfg.poi_radius_m,
         pre_elevations_by_id=pre_elev_by_id,
         pre_points_by_id=pre_points_by_id,
+        pre_ferrata_by_id=pre_ferrata_by_id,
         **_near_miss_kwargs(cfg),
     )
     for h in hikes:
@@ -1293,6 +1309,113 @@ def _warn_poi_gap(snapshot: AreaSnapshot, kinds=()) -> None:
         _log.warning(_SNAPSHOT_KINDS_UNKNOWN)
 
 
+def area_records_ferrata(area: AreaData) -> bool:
+    """True if this area was fetched by a build that asks Overpass for ferrata objects.
+
+    Governs the FIND half only. Avoidance does not depend on it: a route this app can
+    return is assembled from `route=hiking`/`route=foot` member ways, so a cabled section
+    inside one is already described by that route's own `way_tags`, on any file carrying
+    them — including files written before ferrata objects were ever fetched.
+    """
+    return area.ferrata_routes is not None or area.ferrata_ways is not None
+
+
+def area_ferrata_readable(area: AreaData) -> bool:
+    """True if the area's routes carry the member-way tags avoidance is measured from.
+
+    A pre-surface snapshot has none, so every route measures `ferrata=None` and an active
+    filter drops all of them. Returning an empty list for that is correct; returning it
+    *silently* is not, which is what this predicate exists to prevent.
+
+    Vacuously True when the area holds no routes at all — there is nothing to be unable
+    to read, and `no_routes_message` already owns that case. Reporting "cannot detect
+    ferrata" there would send a user to re-download an area whose real problem is that
+    OSM maps no route relations in it.
+    """
+    if not area.routes:
+        return True
+    return any(r.get("way_tags") for r in area.routes)
+
+
+def ferrata_unrecorded_message() -> str:
+    """Said when a saved area is asked to FIND ferrata it never fetched."""
+    return (
+        "ferrata: this downloaded area predates cabled-route fetching — it holds no "
+        "via ferrata relations or ways, so a search for them can only come back empty. "
+        "That is a fact about the file, not the terrain: re-download the area "
+        "(--download) to search it for ferrata. Avoiding them (--no-ferrata) still "
+        "works on this file, since that is measured from the member ways it already has."
+    )
+
+
+def ferrata_unreadable_message() -> str:
+    """Said when neither ferrata question can be answered from an area's routes.
+
+    The wording never implies safety. An area whose member-way tags were never fetched
+    cannot distinguish a cabled route from a walkable one, and the honest report of that
+    is "we cannot tell", not an empty result that reads as "nothing cabled here".
+    """
+    return (
+        "ferrata: this area's routes carry no member-way tags, so cabled sections "
+        "cannot be detected on them at all — this is NOT a report that the routes are "
+        "free of cable. Re-download the area (--download) to ask either ferrata "
+        "question of it."
+    )
+
+
+def ferrata_coverage_caveat() -> str:
+    """The standing limit on avoidance, said wherever `--no-ferrata` is offered.
+
+    Detection is a tag read, so it is exactly as complete as OSM's tagging. Every route
+    the app can return is built from member ways whose tags we hold — that is what makes
+    the filter complete over the route universe — but a cabled way carrying neither
+    `highway=via_ferrata` nor `via_ferrata_scale` is invisible to any query, and no
+    amount of fetching fixes it. Said plainly so the flag is never read as a guarantee.
+    """
+    return (
+        "--no-ferrata drops routes KNOWN to include cabled sections, detected from OSM "
+        "tags (highway=via_ferrata / via_ferrata_scale). Cable that nobody has tagged "
+        "cannot be detected — treat this as a filter, not a safety guarantee."
+    )
+
+
+def list_area_ferrata(
+    bbox: Bbox,
+    cfg: Config | None = None,
+    *,
+    user_agent: str | None = None,
+    overpass_url: str | None = None,
+) -> tuple[_ferrata.FerrataLine, ...]:
+    """Every cabled line in ``bbox`` — the ferrata inventory, live.
+
+    "What's cabled around here", with no route drawn to any of it. Same economy as
+    ``list_area_pois``: ONE cached Overpass call, no elevation provider constructed, so
+    the mode spends nothing from the daily quota.
+    """
+    cfg = cfg or _config.load()
+    cache = _cache.from_config(cfg)
+    area = _fetch_area(
+        bbox, cfg, cache, user_agent=user_agent, overpass_url=overpass_url, read_cache=True
+    )
+    return _ferrata.select_ferrata(area.ferrata_routes, area.ferrata_ways)
+
+
+def list_snapshot_ferrata(snapshot: AreaSnapshot) -> tuple[_ferrata.FerrataLine, ...]:
+    """Every cabled line in a saved area — the ferrata inventory, offline.
+
+    Warns and returns empty on a file that predates the fetch, rather than letting the
+    empty tuple pass for an answer about the landscape — the same distinction
+    ``list_snapshot_pois`` draws, and for the same reason: a browse never goes through
+    ``search_snapshot``, so it has to repeat the check rather than inherit it.
+    """
+    if not area_records_ferrata(snapshot.area):
+        _log.warning("%s", ferrata_unrecorded_message())
+        return ()
+    return _ferrata.select_ferrata(
+        snapshot.area.ferrata_routes, snapshot.area.ferrata_ways
+    )
+
+
 def list_area_pois(
     bbox: Bbox,
     kinds=(),
@@ -1406,6 +1529,17 @@ def search_snapshot(
             "feature), so the transit filter cannot be answered from it — re-download "
             "the area. Returning nothing rather than labelling every route unreachable"
         )
+    # Ferrata, and the two halves warn on DIFFERENT conditions — the asymmetry is the
+    # whole point (see ferrata.py). Finding them needs the fetched objects, so a file
+    # predating that fetch cannot answer. Avoiding them needs only member-way tags, so
+    # the same file answers fine; what breaks avoidance is a file with no member tags at
+    # all, and that breaks finding too. Neither warning is gated on the result being
+    # empty: `find_hikes` drops unknown routes, so an empty result is the *symptom* being
+    # explained, not the trigger.
+    if not area_ferrata_readable(snapshot.area) and criteria.ferrata is not None:
+        _log.warning("%s", ferrata_unreadable_message())
+    elif criteria.ferrata is True and not area_records_ferrata(snapshot.area):
+        _log.warning("%s", ferrata_unrecorded_message())
     hikes = find_hikes(
         snapshot.area,
         provider,

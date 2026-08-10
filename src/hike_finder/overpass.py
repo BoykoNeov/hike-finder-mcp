@@ -38,6 +38,7 @@ from importlib.metadata import PackageNotFoundError, version
 import requests
 
 from .access import RIDE_UP_AERIALWAYS, classify_transit, transit_selectors_by_key
+from . import ferrata as _ferrata
 from . import poi as _poi
 
 Coord = tuple[float, float]
@@ -88,6 +89,23 @@ class AreaData:
     # An empty `pois` list under a FULL kind set is a real answer about the landscape;
     # that is the whole distinction this field buys. A live fetch always sets it.
     poi_kinds: tuple[str, ...] | None = None
+    # Cabled climbing (see ferrata.py). BOTH default to `None`, the `transit` tri-state:
+    # an area built before this feature does not know whether ferrata are here, which is
+    # not the same claim as "there are none".
+    #
+    # `ferrata_routes` holds `route=via_ferrata` relations in the SAME dict shape as
+    # `routes`, so every downstream measurement works on them unchanged — but in a list
+    # of their own, deliberately. Dropping them into `routes` behind a boolean would put
+    # a cabled climb one forgotten `if` away from an ordinary result list and, worse,
+    # from the graph `--compose-loops` stitches synthetic loops out of. A separate list
+    # makes that leak impossible by construction rather than by vigilance in six places.
+    ferrata_routes: list[dict] | None = None
+    # Individual cabled ways in the box: {"id", "coords", "name", "scale"}. Most are
+    # already member ways of a hiking relation (measured: 40 of 46 in Cortina, 26 of 30
+    # in Ehrwald), so this is NOT where avoidance gets its answer — that rides on
+    # `way_tags`, which covers every way a returned route can be built from. This list
+    # exists so the minority that belong to no relation are still browsable.
+    ferrata_ways: list[dict] | None = None
 
 
 def _tag_filter(key: str, values: tuple[str, ...]) -> str:
@@ -143,7 +161,13 @@ def _transit_clauses(bbox: str) -> str:
 def build_query(
     south: float, west: float, north: float, east: float, timeout_s: int = 60
 ) -> str:
-    """Overpass QL: hiking routes + parking + aerialways + transit stops + POIs."""
+    """Overpass QL: hiking routes + parking + aerialways + transit stops + POIs + ferrata.
+
+    ``route=via_ferrata`` rides in the SAME union as the hiking relations, rather than
+    in a clause of its own, so the existing ``way(r); out tags;`` picks up its member
+    ways for free — one statement, no second join. It is split back out by tag in
+    ``parse_area``, into a list of its own that ordinary searches never see.
+    """
     bbox = f"{south},{west},{north},{east}"
     lift_re = "|".join(sorted(RIDE_UP_AERIALWAYS))
     return f"""
@@ -151,10 +175,16 @@ def build_query(
     (
       relation["route"="hiking"]({bbox});
       relation["route"="foot"]({bbox});
+      relation["route"="via_ferrata"]({bbox});
     );
     out body geom;
     way(r);
     out tags;
+    (
+      way["highway"="{_ferrata.FERRATA_HIGHWAY}"]({bbox});
+      way["{_ferrata.SCALE_KEY}"]({bbox});
+    );
+    out geom;
     nwr["amenity"="parking"]({bbox});
     out center;
     way["aerialway"~"^({lift_re})$"]({bbox});
@@ -212,7 +242,9 @@ def parse_area(elements: list[dict]) -> AreaData:
     # set is stamped here for the same reason and in the same breath: this function IS
     # where `poi.classify` runs, so the registry it was classified against is exactly the
     # one this build has. Recording it anywhere else would be a second source of truth.
-    area = AreaData(transit=[], poi_kinds=_poi.all_kinds())
+    area = AreaData(
+        transit=[], poi_kinds=_poi.all_kinds(), ferrata_routes=[], ferrata_ways=[]
+    )
     # FIRST: the tag-only member-way records from `way(r); out tags;`, keyed by way id
     # so the relation branch below can join them onto its members. They must also be
     # skipped by the feature branches — a member way carrying, say, `tourism=viewpoint`
@@ -228,11 +260,15 @@ def parse_area(elements: list[dict]) -> AreaData:
     # list by the element's identity to keep one entry per real-world object.
     seen_pois: set[tuple[str, object]] = set()
     seen_transit: set[tuple[str, object]] = set()
+    # A cabled way matches BOTH ferrata clauses when it carries a grade and the highway
+    # value, and Overpass emits an element once per matching statement.
+    seen_ferrata_ways: set[object] = set()
     for el in elements:
         if _is_tag_only_way(el):
             continue  # already harvested into way_tags above
         tags = el.get("tags", {}) or {}
-        if el.get("type") == "relation" and tags.get("route") in ("hiking", "foot"):
+        route_kind = tags.get("route") if el.get("type") == "relation" else None
+        if route_kind in ("hiking", "foot", _ferrata.FERRATA_ROUTE):
             ways: list[list[Coord]] = []
             # Kept strictly parallel to `ways` — index i of one describes index i of
             # the other — because surface is measured per member and weighted by that
@@ -245,7 +281,15 @@ def parse_area(elements: list[dict]) -> AreaData:
                     member_tags.append(way_tags.get(member.get("ref"), {}))
             if not ways:
                 continue
-            area.routes.append(
+            # `route=via_ferrata` is measured exactly like a hiking route — same dict,
+            # same downstream machinery — but filed apart, so it can only ever surface
+            # through a search that asked for it. See AreaData.ferrata_routes.
+            bucket = (
+                area.ferrata_routes
+                if route_kind == _ferrata.FERRATA_ROUTE
+                else area.routes
+            )
+            bucket.append(
                 {
                     "id": el.get("id"),
                     "name": tags.get("name") or tags.get("ref") or f"route/{el.get('id')}",
@@ -265,6 +309,24 @@ def parse_area(elements: list[dict]) -> AreaData:
                     "way_tags": member_tags,
                 }
             )
+        elif el.get("type") == "way" and _ferrata.way_is_ferrata(tags):
+            # ABOVE the POI branch for the same reason the access branches are: a cabled
+            # way that also carries a registry tag is a hazard first. It keeps its full
+            # geometry (`out geom`) because a ferrata is a line you walk, not a point —
+            # unlike parking or a transit stop, a representative coordinate would say
+            # nothing useful about where the cable actually runs.
+            geom = el.get("geometry") or []
+            ident = el.get("id")
+            if geom and ident not in seen_ferrata_ways:
+                seen_ferrata_ways.add(ident)
+                area.ferrata_ways.append(
+                    {
+                        "id": ident,
+                        "coords": [(pt["lat"], pt["lon"]) for pt in geom],
+                        "name": tags.get("name"),
+                        "scale": _ferrata.scale_of(tags),
+                    }
+                )
         elif tags.get("amenity") == "parking":
             coord = _representative_coord(el)
             if coord:

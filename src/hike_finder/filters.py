@@ -32,6 +32,7 @@ from .access import (
     transit_access,
 )
 from .elevation import ElevationError, ElevationProvider, cumulative_gain_loss
+from .ferrata import FerrataSummary, summarise_ferrata
 from .geometry import (
     Coord,
     haversine_m,
@@ -82,6 +83,12 @@ class Hike:
     # is why they need no Criteria tri-state the way transit_access does.
     surface: SurfaceSummary | None = None
     tracktype: SurfaceSummary | None = None
+    # Cabled climbing (see ferrata.py). Unlike surface/tracktype this one IS filtered on,
+    # in both directions — find them, or keep clear of them — so it carries the same
+    # tri-state discipline as `transit_access`: `None` is "this data could not say",
+    # `present=False` is "every member way was read and none is cabled". The distinction
+    # is the difference between an unexamined route and a safe one.
+    ferrata: FerrataSummary | None = None
     # Near-miss annotation. `near_miss` marks a route that does NOT meet the strict
     # criteria but is within tolerance of them; `notes` says exactly how it misses
     # ("gain 720 m — 80 m below the 800 m minimum"), so it is never mistaken for a
@@ -162,6 +169,19 @@ class Criteria:
     # entries from a list means to a user; AND-ing several would almost always return
     # nothing. Which objects were actually reached is reported in `Hike.pois`.
     poi_kinds: tuple[str, ...] = ()
+    # Cabled climbing (ferrata.py). Tri-state like the access flags, but the two active
+    # values are NOT mirror images of each other:
+    #
+    #   True  — "show me the ferrata". A target search. Tolerates a false negative: miss
+    #           one and the user still gets a list. Also pulls in `area.ferrata_routes`,
+    #           which no other search ever sees (search.py does that merge).
+    #   False — "keep me off cable". Tolerates none, because the cost of a miss is a
+    #           walker on a cabled pitch without a harness.
+    #
+    # This is why unknown-fails-the-filter (below) is not the whole story for False: a
+    # search that drops every route for want of data must SAY so, or an empty result
+    # reads as "nothing cabled here". search.ferrata_gap_message carries that sentence.
+    ferrata: bool | None = None
 
     def accepts_geometry(self, h: Hike) -> bool:
         """Everything decidable from the cheap pass (no elevation)."""
@@ -185,6 +205,14 @@ class Criteria:
                 return False
         if self.poi_kinds and not h.pois:
             return False
+        if self.ferrata is not None:
+            # Unknown fails an active filter, the `transit_access` rule — and here it is
+            # the only defensible reading in BOTH directions. Asked to find ferrata, a
+            # route nobody could examine is not evidence of one; asked to avoid them, it
+            # is not evidence of safety either, and "probably fine" is not a claim this
+            # project makes about cable. The caller warns when this empties a search.
+            if h.ferrata is None or h.ferrata.present != self.ferrata:
+                return False
         return True
 
     def accepts_gain(self, h: Hike) -> bool:
@@ -254,6 +282,13 @@ class Criteria:
             return False
         if self.poi_kinds and not h.pois:
             return False
+        if self.ferrata is not None:
+            # NOT relaxed, in either direction, and unlike distance or an access radius
+            # there is no tolerance that would even mean anything: a route is cabled or
+            # it is not. Reusing the strict test keeps a near-miss search from surfacing
+            # a ferrata as "close to what you asked for" when you asked to avoid one.
+            if h.ferrata is None or h.ferrata.present != self.ferrata:
+                return False
         return True
 
     def near_miss_notes(
@@ -494,7 +529,15 @@ def measure_geometry(
         surface_summary = summarise_surface(members)
         tracktype_summary = summarise_tracktype(members)
     else:
+        members = None
         surface_summary = tracktype_summary = None
+
+    # Ferrata reads the SAME member tags, plus the relation's own — which is why it can
+    # still answer on data that carries no member tags at all (a `route=via_ferrata`
+    # relation, or a hiking relation graded on the relation, says so in `tags`). Passed
+    # `members` rather than gated on it here, so the two not-known cases stay in one
+    # place: see ferrata.summarise_ferrata.
+    ferrata_summary = summarise_ferrata(members, route.get("tags"))
 
     pois: tuple[PoiHit, ...] = ()
     if poi_index is not None and poi_kinds:
@@ -517,6 +560,7 @@ def measure_geometry(
         transit_distance_m=transit_distance_m,
         surface=surface_summary,
         tracktype=tracktype_summary,
+        ferrata=ferrata_summary,
         # Carry the raw member-way geometry for export / map draw (immutable copy).
         ways=tuple(tuple(w) for w in ways),
         # Truthful "no signed name/ref" flag from the parser (default False for the
@@ -697,6 +741,7 @@ def find_hikes(
     poi_radius_m: float = 250.0,
     pre_elevations_by_id: dict[int, list[float]] | None = None,
     pre_points_by_id: dict[int, list[Coord]] | None = None,
+    pre_ferrata_by_id: dict[int, FerrataSummary | None] | None = None,
 ) -> list[Hike]:
     """Run the two-pass filter and return matches, optionally with near-misses.
 
@@ -768,7 +813,21 @@ def find_hikes(
     # near-miss pool) so they can earn an elevation lookup below.
     strict_survivors: list[tuple[Hike, list[Coord]]] = []
     relaxed_only: list[tuple[Hike, list[Coord]]] = []
-    for r in area.routes:
+    # `route=via_ferrata` relations are kept in a list of their own (overpass.AreaData)
+    # so they can never reach an ordinary result list. They join the candidates ONLY for
+    # a search that explicitly asked for ferrata. The filter would reject them anyway —
+    # `accepts_geometry` demands `ferrata.present is True` — and having both guards is
+    # the point: the separate list keeps them out by construction, the filter by
+    # measurement, and neither relies on the other being remembered.
+    #
+    # Once merged they face every OTHER criterion unchanged (distance, shape, access).
+    # That is intended: `--ferrata --max-distance 5` means what it says. Worth knowing
+    # while reading an empty result, though — these relations are typically short,
+    # rarely loops, and often nowhere near a parking lot.
+    candidates = list(area.routes)
+    if criteria.ferrata is True:
+        candidates.extend(area.ferrata_routes or ())
+    for r in candidates:
         measured = measure_geometry(
             r,
             area.parking,
@@ -791,6 +850,13 @@ def find_hikes(
         hike, line = measured
         if max_len_m is not None and hike.distance_km * 1000.0 > max_len_m:
             continue
+        # A SYNTHESISED route is one assembled polyline with no member list for `way_tags`
+        # to be parallel to, so `measure_geometry` can only leave ferrata at None. The
+        # tags survive on the graph instead, and `search._measure_composed` reads them
+        # there — before this, not after, because unlike surface this one is filtered on
+        # two lines below. A missing id stays None (unknown), never False.
+        if pre_ferrata_by_id is not None:
+            hike.ferrata = pre_ferrata_by_id.get(hike.osm_id)
         if criteria.accepts_geometry(hike):
             strict_survivors.append((hike, line))
         elif want_band and criteria.accepts_geometry_relaxed(
