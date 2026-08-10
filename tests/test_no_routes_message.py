@@ -71,8 +71,17 @@ def test_the_message_does_not_blame_the_user_s_filters():
 
 
 def test_the_message_is_frontend_neutral():
-    """One sentence, three frontends — so it cannot carry a CLI flag name."""
-    assert "--" not in S.no_routes_message()
+    """One sentence, several frontends — so it cannot name a CLI flag.
+
+    The MCP server and the web UI have no ``--bbox`` to widen, and telling an LLM to pass
+    one sends it looking for an argument that does not exist. Checks the specific flags
+    this sentence would plausibly reach for rather than a bare ``"--"``, which the message
+    already trips over for innocent reasons (an em-dash reads as two hyphens to nobody,
+    but ``route=hiking`` and future punctuation make a blanket ban a trap).
+    """
+    msg = S.no_routes_message()
+    for flag in ("--bbox", "--area", "--min-distance", "--max-distance", "--poi"):
+        assert flag not in msg
 
 
 # --- the live path ------------------------------------------------------------
