@@ -35,6 +35,8 @@ from .search import (
     routes_to_poi,
     search_hikes,
     search_snapshot,
+    area_has_no_routes,
+    no_routes_message,
     snapshot_kinds_missing_message,
     snapshot_poi_gap,
 )
@@ -884,9 +886,13 @@ def run(args: argparse.Namespace) -> int:
         # A POI filter that finds nothing offline gets the same "here's the lever" wording
         # as the live search — plus, from search_snapshot, a loud warning when the
         # snapshot simply predates POIs and could never have matched.
+        # Same precedence as the live branch — and reachable the same way, since a
+        # snapshot of a region with no route relations saves cleanly and simply holds none.
         _emit(
             hikes, args.json,
-            _POI_EMPTY if criteria.poi_kinds else "No matching hikes found in that area.",
+            no_routes_message() if area_has_no_routes(snap.area)
+            else _POI_EMPTY if criteria.poi_kinds
+            else "No matching hikes found in that area.",
         )
         _write_exports(hikes, args)
         return 0
@@ -933,6 +939,9 @@ def run(args: argparse.Namespace) -> int:
     composing = getattr(args, "compose_loops", False)
     search = compose_loops if composing else search_hikes
     used_before, _ = api_quota_snapshot(cfg)
+    # Filled by the search with facts about the fetch that the hikes can't carry — here,
+    # whether the area had any route relations at all (see search.area_has_no_routes).
+    diagnostics: dict = {}
     kwargs = dict(
         cfg=cfg,
         user_agent=args.user_agent,
@@ -940,6 +949,7 @@ def run(args: argparse.Namespace) -> int:
         elevation_mode=args.elevation_mode,
         dem_dir=args.dem_dir,
         near_miss=near_miss,
+        diagnostics=diagnostics,
     )
     # Reverse-geocode naming only applies to ordinary routes — a composed loop is
     # already labelled by its constituent trails ("composed of …"), never route/<id>.
@@ -970,6 +980,12 @@ def run(args: argparse.Namespace) -> int:
         empty_msg = _POI_EMPTY
     else:
         empty_msg = "No matching hikes found in that area."
+    # Outranks every message above it: when the area holds no route relations, none of
+    # them is true. "Widen the distance band", "drop --car-access", "nothing of that kind
+    # is mapped nearby" all describe a filter that excluded something, and nothing was
+    # ever there to exclude.
+    if diagnostics.get("no_routes"):
+        empty_msg = no_routes_message()
     _emit(hikes, args.json, empty_msg)
     _write_exports(hikes, args)
     return 0

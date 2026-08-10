@@ -421,7 +421,7 @@ def test_poi_list_reads_a_downloaded_area(server):
     status, body = _get(server + "/api/poi-list?area=webpoi")
     assert status == 200
     assert [p["kind"] for p in body["pois"]] == ["church", "ruins"]   # registry order
-    assert body["summary"] == "2 objects: 1 church, 1 ruin"
+    assert body["summary"] == "2 objects: 1 place of worship, 1 ruin"
     assert body["stale_area"] is False
     # A listed object carries no distance: there is no route to measure it from.
     assert "distance_m" not in body["pois"][0]

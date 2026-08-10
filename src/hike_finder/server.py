@@ -52,6 +52,8 @@ from .search import (
     routes_to_poi,
     search_hikes,
     search_snapshot,
+    area_has_no_routes,
+    no_routes_message,
     snapshot_kinds_missing_message,
     snapshot_poi_gap,
 )
@@ -703,6 +705,9 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
 
     name_places = arguments.get("name_places")
 
+    # Facts about the fetch the hikes can't carry (see search.area_has_no_routes); the
+    # offline branch reads the same thing straight off the snapshot's own area.
+    diagnostics: dict = {}
     # Offline: search a saved snapshot (no network), bbox comes from the snapshot.
     if area_path:
         snap = await asyncio.to_thread(load_snapshot, area_path)
@@ -721,7 +726,7 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
         composing = arguments.get("compose_loops")
         search = compose_loops if composing else search_hikes
         # Naming only applies to ordinary routes — composed loops carry their own label.
-        kwargs = {"near_miss": near_miss}
+        kwargs = {"near_miss": near_miss, "diagnostics": diagnostics}
         if not composing:
             kwargs["name_places"] = name_places
         hikes = await asyncio.to_thread(search, bbox, criteria, _cfg(arguments), **kwargs)
@@ -745,6 +750,19 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
             )
         else:
             msg = "No matching hikes found in that area."
+        # Outranks the rest: with no route relations in the area, none of the messages
+        # above is true — each blames a filter, and nothing was there to filter. Matters
+        # more here than in the CLI, since an LLM reading "try a wider bounding box" will
+        # dutifully retry, and every retry costs another Overpass request to learn the
+        # same thing.
+        # Read here rather than after every search: it exists only to word an empty
+        # result. Offline it comes straight off the snapshot's own area; live, the search
+        # filled it during the fetch that already happened.
+        no_routes = (
+            area_has_no_routes(snap.area) if area_path else diagnostics.get("no_routes")
+        )
+        if no_routes:
+            msg = no_routes_message()
         return [TextContent(type="text", text=msg)]
 
     # Optional GPX / GeoJSON serialisation (only when there ARE routes — an empty

@@ -25,7 +25,7 @@ def format_poi(p) -> str:
 
 
 def format_poi_summary(places) -> str:
-    """``43 objects: 12 churches & chapels, 8 viewpoints, …`` — the inventory's header.
+    """``43 objects: 12 places of worship, 8 viewpoints, …`` — the inventory's header.
 
     A count per kind, in registry order, because the first question about a list of
     ninety pins is what the mix is. Returns the honest empty phrasing for an empty

@@ -610,7 +610,7 @@ reaches and how far off the trail it sits:
 
 | | |
 |---|---|
-| heritage | `church`, `shrine` (wayside shrines & crosses), `ruins`, `castle`, `memorial`, `archaeology`, `boundary_stone`, `mill`, `mine`, `museum`, `artwork` |
+| heritage | `church` (any place of worship), `shrine` (wayside shrines & crosses), `ruins`, `castle`, `memorial`, `archaeology`, `boundary_stone`, `mill`, `mine`, `museum`, `artwork` |
 | landscape | `peak`, `rock`, `sinkhole`, `cave`, `spring`, `waterfall`, `viewpoint`, `tower`, `tree` |
 | comfort | `drinking_water`, `hut`, `shelter`, `picnic`, `firepit`, `camp`, `refreshment`, `toilets` |
 

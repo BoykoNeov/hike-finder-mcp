@@ -170,7 +170,7 @@ def test_place_never_claims_a_distance():
 def test_summary_counts_by_kind_in_registry_order():
     s = format_poi_summary(select_pois(RAW_POIS))
     assert s.startswith("4 objects: ")
-    assert s.index("churches") < s.index("ruin") < s.index("viewpoint")
+    assert s.index("places of worship") < s.index("ruin") < s.index("viewpoint")
 
 
 def test_summary_uses_the_singular_label_for_one():
@@ -211,7 +211,7 @@ def test_gpx_names_an_unnamed_object_by_its_kind():
     unnamed = [p for p in select_pois(RAW_POIS, ("church",)) if p.name is None]
     root = ET.fromstring(pois_to_gpx(unnamed))
     ns = "{http://www.topografix.com/GPX/1/1}"
-    assert root.find(f"{ns}wpt/{ns}name").text == "church"
+    assert root.find(f"{ns}wpt/{ns}name").text == "place of worship"
 
 
 def test_geojson_is_points_in_lon_lat_order():

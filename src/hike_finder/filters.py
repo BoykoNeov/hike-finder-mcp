@@ -547,6 +547,39 @@ def _stitch_is_faithful(line: list[Coord], ways, *, rel_tol: float = 0.02) -> bo
     return polyline_length_m(line) >= summed * (1.0 - rel_tol)
 
 
+def _line_closes(
+    line: list[Coord],
+    distance_km: float,
+    *,
+    tol_m: float = 150.0,
+    rel_tol: float = 0.05,
+) -> bool:
+    """True if the stitched ``line`` returns to its own start — i.e. it really is the
+    closed walk that a ``circular`` route's gain/loss is measured along.
+
+    This is NOT what ``_stitch_is_faithful`` measures, and the two disagree in both
+    directions on live data. Faithfulness is *length recovery* (the stitch kept ≥98 % of
+    member length); a stitch can recover every metre in an order that never returns to
+    the start. Measured over one Krkonoše run: `NS hornická Berghaus` is unfaithful yet
+    closes perfectly (70 m gain / 66 m loss), while `route/8464045` is faithful yet ends
+    85 % of its own length away from its start (0 m gain / 117 m loss).
+
+    The tolerance is two-sided on purpose, because neither bound alone works. Absolute
+    metres cannot separate a 69 m gap on a 0.1 km route (not a loop at all) from the
+    same gap on a 10 km one (a digitization seam), so the gap is taken as a FRACTION of
+    the route's own length. But an unbounded fraction lets a 20 km loop end a kilometre
+    from its start, so it is also capped by ``tol_m`` — the project's existing "how close
+    is closed" number, shared with ``access.is_circular``'s line fallback.
+
+    5 % has an enormous margin on the measured partition: every closing loop in that run
+    scored ≤ 0.02 and every broken one ≥ 0.69, with nothing in between.
+    """
+    if len(line) < 2:
+        return False
+    limit = min(tol_m, rel_tol * distance_km * 1000.0)
+    return haversine_m(line[0], line[-1]) <= limit
+
+
 def add_elevation(
     hike: Hike,
     line: list[Coord],
@@ -555,11 +588,14 @@ def add_elevation(
     sample_interval_m: float = 25.0,
     gain_threshold_m: float = 10.0,
     smooth_window: int = 3,
+    loop_tolerance_m: float = 150.0,
     pre_elevations: list[float] | None = None,
     pre_points: list[Coord] | None = None,
     use_presampled: bool = False,
 ) -> None:
-    """Expensive pass: fill gain/loss in place. Leaves them None on failure.
+    """Expensive pass: fill gain/loss in place. Leaves them None on failure — and on a
+    loop whose stitched line does not close (see ``_line_closes``), which is a failure
+    of the *geometry* rather than of the lookup but is reported the same honest way.
 
     Normally this resamples ``line`` and looks the points up through ``elevation``.
     When ``use_presampled`` is set, it instead uses the caller-supplied
@@ -595,6 +631,31 @@ def add_elevation(
     gain, loss = cumulative_gain_loss(
         elevations, threshold_m=gain_threshold_m, smooth_window=smooth_window
     )
+    # A loop's gain must equal its loss, and it only can if the line we just sampled
+    # along is the closed walk the route claims to be. `circular` and this are two
+    # different objects: `circular` comes off the member ways' vertex graph (circuit
+    # rank), while gain rides on the STITCHED line, and `stitch_ways` greedily drops
+    # members it can't chain. When they disagree, the elevation series belongs to some
+    # other path than the route, and the answer is not merely imprecise but impossible —
+    # live, Krkonoše: `gain=240 loss=0`, `gain=0 loss=117`, on routes labelled [loop].
+    # Report nothing rather than that, exactly as a failed lookup or an exhausted quota
+    # does. The track is dropped with it: it would be built from the same line.
+    #
+    # This is the same move HANDOFF records for distance and termini, which were taken
+    # off greedy stitching for this class of reason; gain was left behind.
+    #
+    # Deliberately NOT a general "is the stitch sane" check. It fires only on loops,
+    # because closure is the only cheap contradiction the geometry offers — a LINEAR
+    # route whose stitch is misordered has no such signal, and its gain stays as
+    # unverified after this as before. And not on the presampled path, whose route is a
+    # single synthesised ring, closed by construction (same reasoning the track's
+    # `_stitch_is_faithful` gate already skips there).
+    if (
+        hike.circular
+        and not use_presampled
+        and not _line_closes(line, hike.distance_km, tol_m=loop_tolerance_m)
+    ):
+        return
     hike.gain_m = round(gain)
     hike.loss_m = round(loss)
 
@@ -751,6 +812,7 @@ def find_hikes(
             sample_interval_m=sample_interval_m,
             gain_threshold_m=gain_threshold_m,
             smooth_window=smooth_window,
+            loop_tolerance_m=loop_tolerance_m,
             pre_elevations=pre_elevations_by_id.get(hike.osm_id) if use_pre else None,
             pre_points=pre_points_by_id.get(hike.osm_id) if pre_points_by_id else None,
             use_presampled=use_pre,
@@ -771,6 +833,7 @@ def find_hikes(
                 sample_interval_m=sample_interval_m,
                 gain_threshold_m=gain_threshold_m,
                 smooth_window=smooth_window,
+                loop_tolerance_m=loop_tolerance_m,
                 pre_elevations=pre_elevations_by_id.get(hike.osm_id) if use_pre else None,
                 pre_points=pre_points_by_id.get(hike.osm_id) if pre_points_by_id else None,
                 use_presampled=use_pre,

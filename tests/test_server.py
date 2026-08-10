@@ -776,7 +776,7 @@ def test_list_pois_reads_a_snapshot_offline(tmp_path):
     result = _call("list_pois", {"area": str(path)})
     assert not result.is_error
     text = result.content[0].text
-    assert text.startswith("2 objects: 1 church, 1 ruin")
+    assert text.startswith("2 objects: 1 place of worship, 1 ruin")
     assert "Sv. Petr" in text and "Nistejka" in text
 
 

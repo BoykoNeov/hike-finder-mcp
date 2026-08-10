@@ -4,6 +4,50 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A loop's gain/loss is no longer reported from a line that never closes.** `circular`
+  is decided on the member ways' vertex graph (circuit rank), but gain rides on the
+  *stitched* line, and `stitch_ways` greedily drops members it cannot chain. When the two
+  disagreed the elevation series belonged to some other path than the route, and the
+  numbers were not merely imprecise but impossible — live over Krkonoše, routes labelled
+  `[loop]` reported `gain=240 loss=0` and `gain=0 loss=117`. Such routes now report
+  `gain n/a`, the same honest degradation a failed lookup or an exhausted quota gets, and
+  the per-point elevation track is dropped with it (it came off the same line).
+  The measured partition is unambiguous: every loop whose line closed scored a
+  start-to-end gap under 2 % of its own length and read gain≈loss (345/353, 255/257,
+  194/205, 70/66, 34/34); every one that did not scored over 68 %.
+  This is the same move the project already made for distance and termini, which were
+  taken off greedy stitching for this class of reason — gain was left behind.
+  **Behaviour change:** an affected loop now *disappears* under an active
+  `--min-gain`/`--max-gain` instead of appearing with a garbage number. The gate fires
+  only on loops (closure is the only cheap contradiction the geometry offers — a linear
+  route with a misordered stitch has no such signal and its gain is exactly as unverified
+  as before) and never on composed loops, which are single synthesised rings.
+
+### Changed
+
+- **An area with no hiking route relations now says so**, instead of "No matching hikes
+  found in that area." The app reads only `route=hiking` / `route=foot` relations, and
+  whole regions map their trails without collecting them into any: a ~400 km² box over
+  Japan's North Alps (Kamikōchi) carries **zero**, against 138 in the Krkonoše box this
+  project was built on — while mapping 824 individual path ways the app never looks at.
+  Every search there came back empty and blamed the user's filters. The new message names
+  the data source so the claim is checkable. Wired into the CLI (live *and* offline) and
+  the MCP server; **the web UI is not yet wired** — its `/api` returns a bare JSON array
+  with no room for advisory text, unlike `/api/pois`, so that needs an API-shape change.
+  No new Overpass traffic: the fact is carried out of the fetch that already happened
+  (re-fetching in the caller is free only while the Overpass cache is on).
+- **The `church` POI kind is now labelled "places of worship"**, not "churches & chapels".
+  The selector is `amenity=place_of_worship`, which carries no denomination, so the old
+  label promised something the query never asked for — the same class of mislabel already
+  fixed for `tower`. In Czechia it was invisible; on the Kumano Kodo box **21 of the 22**
+  objects it returns are `religion=shinto|buddhist`. **Label only** — the kind key stays
+  `church`, so `--poi church`, every snapshot's recorded kind set and every cache entry
+  are untouched.
+
 ## [0.5.0] - 2026-08-10
 
 ### Added

@@ -398,10 +398,10 @@ def test_show_pois_lists_a_downloaded_area(tmp_path, capsys):
     _poi_snapshot(path, _DEMO_POIS)
     assert run(_parse("--show-pois", "--area", str(path))) == 0
     out = capsys.readouterr().out
-    assert "3 objects: 2 churches & chapels, 1 ruin" in out
+    assert "3 objects: 2 places of worship, 1 ruin" in out
     assert "Nístějka" in out and "Sv. Petr" in out
     # An unnamed object still gets a line, labelled by its kind rather than blank.
-    assert out.count("church") >= 2
+    assert out.count("place of worship") >= 2
 
 
 def test_show_pois_filters_by_kind_and_exports(tmp_path, capsys):

@@ -146,6 +146,7 @@ def search_hikes(
     dem_dir: str | None = None,
     near_miss: bool | str = False,
     name_places: bool | None = None,
+    diagnostics: dict | None = None,
 ) -> list[Hike]:
     """Fetch OSM data for ``bbox`` and return measured, filtered hikes.
 
@@ -158,12 +159,25 @@ def search_hikes(
     ``route/<id>`` route reads as a place-derived label. It runs only on the routes
     that already matched — the same two-pass economy the elevation pass uses — and is
     cached, so it stays a polite Nominatim citizen.
+
+    ``diagnostics``, if given, is filled with facts about the FETCH that the returned
+    hikes cannot carry — currently ``no_routes``, for telling "nothing matched" apart
+    from "nothing is mapped" (see ``area_has_no_routes``). It is an out-parameter rather
+    than a richer return type on purpose: the three frontends all dispatch
+    ``compose_loops if composing else search_hikes`` and call the winner with one shared
+    kwargs dict, so a keyword both accept is the only seam that stays uniform across
+    them. Re-fetching the area in the caller was the alternative and is worse than it
+    looks — it is free only while the Overpass cache is on (``ttl_days > 0``), and with
+    caching disabled it would fire a second live request against a public instance
+    merely to word an error message.
     """
     cfg = cfg or _config.load()
     cache = _cache.from_config(cfg)
     area = _fetch_area(
         bbox, cfg, cache, user_agent=user_agent, overpass_url=overpass_url, read_cache=True
     )
+    if diagnostics is not None:
+        diagnostics["no_routes"] = area_has_no_routes(area)
     provider = _provider(cfg, elevation_mode, dem_dir, cache)
     hikes = find_hikes(
         area,
@@ -362,6 +376,7 @@ def compose_loops(
     elevation_mode: str | None = None,
     dem_dir: str | None = None,
     near_miss: bool | str = False,
+    diagnostics: dict | None = None,
 ) -> list[Hike]:
     """Synthesise loops from connected marked-trail segments, then measure them.
 
@@ -378,12 +393,20 @@ def compose_loops(
     OSM id; ``Hike.composed_of`` lists their constituent trail refs for the renderer.
 
     The graph is clipped to ``bbox`` first, so a loop stays inside the searched area.
+
+    ``diagnostics`` behaves exactly as in ``search_hikes`` — the two share the seam so a
+    frontend that dispatches between them can ask the same question either way. It
+    matters as much here: composing needs relations to build its graph from, so an area
+    with none produces "no loops could be composed", which reads like the length band
+    was wrong when nothing was ever there to compose.
     """
     cfg = cfg or _config.load()
     cache = _cache.from_config(cfg)
     area = _fetch_area(
         bbox, cfg, cache, user_agent=user_agent, overpass_url=overpass_url, read_cache=True
     )
+    if diagnostics is not None:
+        diagnostics["no_routes"] = area_has_no_routes(area)
 
     graph = build_trail_graph(clip_routes_to_bbox(area.routes, bbox))
     provider = _provider(cfg, elevation_mode, dem_dir, cache)
@@ -1148,6 +1171,45 @@ _SNAPSHOT_NO_POIS = (
     "re-download the area to browse or export them offline; for now the listing can "
     "only be empty"
 )
+
+
+def area_has_no_routes(area: AreaData) -> bool:
+    """True when an area carries no hiking route relations AT ALL.
+
+    The one distinction an empty result cannot make on its own. "Your criteria excluded
+    everything" and "nothing here is mapped as a hiking route" are different facts about
+    different things — the second is about the map, not the search — and they take
+    different fixes, so collapsing them into one sentence sends the user to widen a
+    distance band that was never the problem.
+
+    Not a hypothetical: measured over a ~400 km² box on Japan's North Alps (Kamikōchi),
+    OSM carries **zero** `route=hiking`/`route=foot` relations, against 138 in the
+    Krkonoše box the project was built on. The terrain there is mapped in detail — as
+    individual ways, which this app does not read (see overpass.build_query) — so every
+    search over it comes back empty and, before this, said so as though the filters were
+    at fault.
+    """
+    return not area.routes
+
+
+def no_routes_message() -> str:
+    """The one sentence every frontend says when an area has no route relations.
+
+    Shared for the same reason as ``snapshot_kinds_missing_message``: the CLI, the web UI
+    and the MCP server are answering one question about one area, and three phrasings of
+    "this is about the map, not your filters" is three chances for one of them to imply
+    otherwise.
+
+    Deliberately does NOT quote how many paths are mapped there instead, tempting as that
+    is — the app never fetches `highway=path`, and adding it to the query to word an
+    error message would widen every request and invalidate every cached area.
+    """
+    return (
+        "No hiking route relations are mapped in that area — this is about the map data, "
+        "not your filters. The search reads OSM route=hiking / route=foot relations, and "
+        "some regions map their trails as individual paths without collecting them into "
+        "route relations. Try a nearby area or a wider bounding box."
+    )
 
 
 def snapshot_poi_gap(snapshot: AreaSnapshot, kinds=()) -> tuple[str, tuple[str, ...] | None]:

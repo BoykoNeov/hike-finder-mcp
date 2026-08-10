@@ -105,7 +105,8 @@ hike-finder --bbox 50.52 15.15 50.60 15.28 --poi ruins,castle --max-distance 25
     (start 50.5947,15.2640, OSM relation 369232)  [passes ruin "Rotštejn" (20 m)]
 ```
 
-Twenty-eight kinds are available: `church`, `shrine` (wayside shrines & crosses), `ruins`,
+Twenty-eight kinds are available: `church` (any place of worship), `shrine` (wayside
+shrines & crosses), `ruins`,
 `castle`, `memorial`, `archaeology`, `boundary_stone`, `mill`, `mine`, `peak`, `rock`,
 `sinkhole`, `cave`, `spring`, `drinking_water`, `waterfall`, `viewpoint`, `tower`, `tree`
 (named trees), `museum`, `artwork`, `hut`, `shelter`, `picnic`, `firepit`, `camp`,

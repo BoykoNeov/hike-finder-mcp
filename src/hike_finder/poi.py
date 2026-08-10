@@ -120,7 +120,22 @@ class PoiKind:
 # concept spanning two keys is registered as two kinds rather than complicating the
 # table.
 POI_KINDS: dict[str, PoiKind] = {
-    "church": PoiKind("amenity", ("place_of_worship",), "church", "churches & chapels"),
+    # "places of worship", NOT "churches & chapels" — the same class of mislabel as
+    # `tower`. The selector is `amenity=place_of_worship`, which carries no denomination,
+    # so the old label promised a Christian building the query never asked for. In
+    # Czechia that was invisible; measured on the Kumano Kodo box, 21 of the 22 objects
+    # it returns are `religion=shinto|buddhist` — the kind called "church" was returning
+    # almost entirely temples and shrines. The honest label is the neutral one, and it
+    # costs nothing: the KEY stays `church`, so `--poi church`, every snapshot's recorded
+    # kind set, and every cache entry are untouched (a key rename would invalidate all
+    # three — see the snapshot kind-set record).
+    #
+    # Reads as overlapping with `shrine` below, and doesn't: that one is `historic=
+    # wayside_shrine|wayside_cross` — a trailside marker you walk PAST — while this is a
+    # building you can walk INTO. Different tag keys, measured overlap 0.
+    "church": PoiKind(
+        "amenity", ("place_of_worship",), "place of worship", "places of worship"
+    ),
     "shrine": PoiKind(
         "historic", ("wayside_shrine", "wayside_cross"), "shrine", "wayside shrines & crosses"
     ),

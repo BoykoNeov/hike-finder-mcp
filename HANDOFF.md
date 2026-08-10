@@ -451,6 +451,43 @@ skip without the `mcp` extra).
 
 ## Known limitations / TODOs (design notes, not bugs)
 
+- **The app is only as good as `route=hiking`/`route=foot` coverage, and that varies by
+  region far more than by terrain.** Every mode — area search, `--around`, `--from/--to`,
+  `--via`, `--to-poi`, `--compose-loops` — builds its graph from relation member ways, so
+  relation sparsity is a *whole-app* failure, not a per-feature degradation. Measured with
+  `out count;` over six ~400 km² boxes (CZ Krkonoše = the control at 138 relations):
+  IT Dolomites **207** (1.50× — the app works better there than where it was built),
+  BG Rila 28, US Rocky Mtn NP 13, JP Kumano Kodo 6, **JP N. Alps / Kamikōchi 0**.
+  Relation *count* is not comparable across regions and the live runs prove it: CZ's are
+  short A→B fragments while Kumano's 6 are long trunk pilgrimage routes (~128 km of trail
+  between them) — Kumano and Rocky Mtn both work fine. Kamikōchi's zero is immune to that
+  caveat: 824 path ways mapped, none collected into a route. A `highway=path` fallback is
+  the obvious answer and is deliberately NOT taken — it widens every query, invalidates
+  the Overpass cache, and changes what "a route" means. Decide that on purpose, not as a
+  side effect.
+- **Via ferrata are drawn as ordinary hiking lines, with no grade and no warning.** Not a
+  registered concept anywhere in the codebase. In the Cortina box, 14 `route=hiking`
+  relations carry `via_ferrata_scale` and ~22 have "ferrata" in the name — those ARE
+  fetched and rendered exactly like a forest path — while 2 `route=via_ferrata` relations
+  and 63 standalone `highway=via_ferrata` ways are invisible entirely. A cabled climb
+  needing a harness and lanyard should not render identically to a stroll. Detection is
+  **free**: `parse_area` already keeps each member way's FULL tag dict (`way_tags`, the
+  same source `surface`/`tracktype` read), so `highway=via_ferrata` and `via_ferrata_scale`
+  are already in hand — no query change, no cache invalidation. Coverage would be partial
+  (members of `route=hiking` relations only), so say "some ferrate are detectable", never
+  "ferrata supported".
+- **`is_circular`'s 150 m start≈end fallback is absolute, and on a short route that is
+  too loose.** `[M] Labský vodopád` is a 0.1 km route whose line ends 69 m from its start
+  — under the tolerance, so it is labelled a loop, though 69 m of a 100 m route is not a
+  loop by any reading. Since the gain gate landed it reads "loop, gain n/a", which is an
+  improvement but still names the wrong defect: the *label* is what is wrong. The gain
+  gate (`filters._line_closes`) already scales its bound by route length and could lend
+  the same treatment here. Next candidate; deliberately not bundled with the gain fix.
+- **The web UI does not yet say "no route relations are mapped here"** the way the CLI and
+  MCP server do. `/api` returns a bare JSON array with no room for advisory text (unlike
+  `/api/pois`, which is already an object), so wiring it is an API-shape change plus its
+  own JS and test surface. `search.no_routes_message()` is the shared sentence to use.
+
 - **Gain threshold vs noise:** the threshold must exceed the *peak-to-peak* noise amplitude, not
   half of it (±5 m jitter = 10 m peak-to-peak; a 10 m threshold sits on the boundary). Tune per
   source — API data is pre-smoothed; raw SRTM/GLO-30 is noisier and wants a higher threshold.
