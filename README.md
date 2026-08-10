@@ -137,11 +137,13 @@ ordinary result list, or be stitched into a synthesised loop by `--compose-loops
 An area downloaded **before** this feature holds no ferrata objects and says so rather
 than reporting an empty list. Avoidance still works on such a file — it needs only the
 member-way tags — unless the file predates those too, in which case both questions are
-refused out loud instead of being answered from nothing. The CLI says it on stderr and
-the web UI in a notice beside the results — an unexplained empty list from a
+refused out loud instead of being answered from nothing. All three frontends say it — the
+CLI on stderr, the web UI in a notice beside the results, and MCP in the reply text of
+both `find_hikes` and `list_ferrata` — because an unexplained empty list from a
 safety-adjacent filter would read as "no safe routes here", which is not a claim the tool
-is in a position to make. On MCP it is `list_ferrata` that says it; the `ferrata` flag on
-`find_hikes` does **not** yet carry the sentence into its reply (see HANDOFF).
+is in a position to make. It is said whether or not routes came back: a file that never
+fetched ferrata objects can still return the routes whose own member ways are tagged as
+cabled, and a partial answer is where a missing caveat does the most damage.
 
 ### Hiking *to* something — churches, ruins, peaks…
 

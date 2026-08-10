@@ -533,6 +533,60 @@ thing is validated live against real OSM. Highlights:
   The stub drains on empty now. That is the same class of defect as the deferred
   `setTimeout` this harness already documents: **a stub that is more forgiving than the
   DOM hides exactly the bugs the harness exists to catch.**
+- **MCP `find_hikes` carries the ferrata gap in its reply text.** The last frontend that
+  answered a cable question it could not answer, and the one whose reader paraphrases:
+  `find_hikes(area=…, ferrata=false)` over a file with no member-way tags used to return
+  "No matching hikes found in that area." and nothing else. `server._ferrata_caveat` now
+  prepends `search.ferrata_gap_message`'s sentence plus one server-local instruction —
+  *do not turn this into a statement about cable on the ground, in either direction*.
+  Direction-neutral on purpose: the same silence misreads as "nothing cabled here" when
+  avoiding and "no ferrata here" when finding, and one sentence has to cover both.
+  Five decisions, all of them the shape an earlier feature already argued for:
+  - **Recomputed in `server.py`, not plumbed out of `search_snapshot`.** That function
+    already computes and logs it — which is exactly how the CLI gets its copy — and a log
+    line reaches a terminal, not a client's reply. `web._area_notices` recomputes for the
+    same reason. The message is shared; the *channel* is per-frontend.
+  - **One call site, on the saved-file branch only.** A live fetch always parses both
+    ferrata lists and the member-way tags, and the ferrata clause changed the query text
+    (the Overpass cache key), so a pre-feature response cannot be served under it either:
+    `ferrata_gap_message` is provably `None` there. A seam that can never fire reads as
+    one that might, so there isn't one. Pinned by `test_a_live_ferrata_search_is_never
+    _caveated`.
+  - **Not gated on an empty result**, the trap this file booked with the task. The
+    concrete shape is sharper than the general rule: asked to FIND cable, a file holding
+    member-way tags but no fetched ferrata objects returns the hiking routes whose own
+    members are tagged cabled — a real, non-empty answer — while the dedicated
+    `route=via_ferrata` relations it never downloaded stay missing. A partial answer is
+    where a missing caveat does the most damage.
+  - **Three return sites, and the third must NOT carry it.** The empty-result reply and
+    the final text reply do; `gpx` and `geojson` are documents with nowhere to put prose,
+    and prose in front of a GPX is not a caveat but invalid XML. Note the empty branch
+    runs *before* `format` is read, so only a matching search reaches those returns at
+    all — a test on a non-matching fixture would pass without proving anything.
+  - **`_ferrata_caveat` takes the SNAPSHOT, not its area**, so the "was a ferrata question
+    even asked" guard runs before anything is read off the file.
+  Both notices can fire together and both are said: an area with no route relations, asked
+  to find cable, is *also* a file that never fetched ferrata objects, and re-downloading
+  fixes the second while nothing fixes the first. Asked to avoid cable the same file
+  yields no caveat (`area_ferrata_readable` is vacuously true with no routes) so
+  `no_routes` stands alone — the complement falls out of the predicates rather than being
+  arranged, and is pinned as such.
+  **Verified over real stdio** (a `python -m hike_finder.server` subprocess, OS pipes,
+  JSON-RPC — offline, on hand-built snapshots, so no Overpass and no elevation API), all
+  twelve cases across four files: unreadable + `ferrata=false` → the **unreadable**
+  sentence, never the "avoiding still works" one; the same file with no ferrata flag →
+  the route and **no caveat**; tagged + `ferrata=true` → the **unrecorded** sentence,
+  whose closing promise is true only on a file like that; tagged + `ferrata=false` →
+  **silent**; current file → silent in both directions; no-routes + `ferrata=true` →
+  **both** sentences, + `ferrata=false` → `no_routes` alone; and the cabled fixture,
+  which is the one that matters: `ferrata=true` returned the caveat **followed by a real
+  route** (`ferrata 5.6 km`), its `gpx` opened on `<?xml` and its `geojson` parsed, both
+  free of the prose. Seven offline cases in `test_server.py` pin the lot; four of them
+  fail on the pre-change server, and the three that pass are the ones asserting silence.
+  One assertion had to be narrowed after the live run: a GPX legitimately carries the
+  route's OWN `ferrata 5.6 km` flag in its `<desc>`, so "the document says nothing about
+  ferrata" is the wrong property — "the document does not carry the CAVEAT" is the right
+  one.
 - **All three frontends validated live**, including the MCP server over real stdio.
 - **Repo hygiene**: MIT license, CHANGELOG, complete pyproject, and CI across Linux 3.10–3.14 +
   Windows; v0.1.0 through v0.6.0 tagged + GitHub-released. **CI being green is a
@@ -570,24 +624,19 @@ skip without the `mcp` extra).
 - **`/api/hikes` answers with an object now, and the reason is worth keeping.** It
   returned a bare JSON array for four releases, which had nowhere to put a sentence about
   what the *source* could not answer — so the web UI showed a silent empty list where the
-  CLI logs to stderr. See "The web UI carries its caveats" under What is DONE. Two
-  residual limits, and the first is now the *worst* instance of this class left:
-  - **MCP `find_hikes` does not carry the ferrata gap.** It words `no_routes` (from
-    `diagnostics` / `area_has_no_routes`) and nothing else; the only
-    `ferrata_gap_message` call in `server.py` is in `_call_list_ferrata`. So
-    `find_hikes(area=…, ferrata=false)` over an unreadable file returns "No matching
-    hikes found in that area." to an LLM client — the same silence the web UI just
-    stopped doing, in the frontend whose reader will confidently paraphrase it. An
-    earlier version of this file, of README and of CHANGELOG all claimed parity here;
-    they were wrong, and the wording is corrected rather than left standing.
-    When wiring it: append on `criteria.ferrata is not None` and a real gap, **not**
-    inside the `if not hikes:` block — that is the emptiness gating the web version
-    deliberately avoids, and the caveat has to reach the non-empty text reply too. The
-    `gpx`/`geojson` returns are documents with nowhere to put prose, the same call the
-    web export path makes.
+  CLI logs to stderr. See "The web UI carries its caveats" under What is DONE. MCP
+  `find_hikes` was the worst instance of this class and is now wired (see "MCP
+  `find_hikes` carries the ferrata gap" under What is DONE). Two residual limits:
   - The web's *point-based* modes (`--around`, `--from/--to`, `--via`, `--to-poi`) return
     `notices: []` unconditionally, because they build their own bbox and their failure
     shapes are already worded in the page. Nothing computes a notice for them yet.
+  - **MCP `find_hikes` cannot take a bare area name**, unlike `list_pois` and
+    `list_ferrata`, which try the path, fall back to the NAMED snapshot directory
+    (`snapshot_path`), and turn a read failure into a sentence. `_call_find_hikes` calls
+    `load_snapshot(area_path)` straight, so `find_hikes(area="cortina")` — the name an
+    LLM just read out of `list_areas` — raises before any of the search or its caveats
+    happen. A real inconsistency between tools on one server, and a separate task: the
+    fix is the two helpers those handlers already share the shape of, not more wording.
 - **`--show-ferrata` cannot export.** `--gpx`/`--geojson` are named in its ignored-flags
   note rather than wired up, because `ferrata.FerrataLine` carries only a start point,
   not the cabled line's geometry. Exporting means widening that record and adding a

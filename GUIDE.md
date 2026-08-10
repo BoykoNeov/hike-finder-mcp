@@ -302,8 +302,9 @@ search shows.
 offer — every one is built from member ways whose tags are already in hand — but it is a
 filter, **not a safety guarantee**: cable nobody has tagged cannot be detected, and the
 tool says so on stderr every time you use it. In the web UI the same caveat appears as a
-notice beside the results, so an empty list from a downloaded area that cannot answer the
-question never passes for "nothing cabled here".
+notice beside the results, and over MCP it arrives in the reply text of `find_hikes`
+itself, so an empty list from a downloaded area that cannot answer the question never
+passes for "nothing cabled here" — in any of the three frontends.
 
 `--show-ferrata` lists an area's cabled lines themselves, with no routes drawn:
 

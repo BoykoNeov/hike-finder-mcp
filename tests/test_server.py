@@ -866,3 +866,197 @@ def test_list_pois_unreadable_area_is_a_message_not_a_traceback(tmp_path):
     result = _call("list_pois", {"area": str(tmp_path / "nope.json")})
     assert "Could not read the area" in result.content[0].text
     assert "shown by list_areas" in result.content[0].text
+
+
+# ------------------------------------------ find_hikes carries the ferrata gap in its text
+#
+# The channel question, which is per-frontend even though the sentences are shared: the
+# CLI's copy goes to stderr (search_snapshot logs it) and the web UI's rides in the
+# /api/hikes envelope, while an MCP client only ever sees the reply text. Until this
+# landed, `find_hikes(area=…, ferrata=false)` over a file that cannot read cable answered
+# "No matching hikes found in that area." to a reader that paraphrases confidently.
+#
+# The fixture shapes mirror test_web.py's `server` fixture on purpose — an unreadable
+# file, a tagged-but-unrecorded one, a current one, and one with no routes at all — so
+# the two frontends can be read side by side and cannot drift apart on the same file.
+
+
+class _Ramp:
+    def lookup(self, points):
+        return [(lat - 50.0) * 20000.0 for lat, _ in points]
+
+
+def _ferrata_snapshot(path, *, way_tags=None, ferrata=False, routes=None):
+    """A real saved area, written to disk, differing only in what it can say about cable.
+
+    ``way_tags`` (parallel to ``ways``, index for index) is what AVOIDANCE is measured
+    from; the two ferrata lists are what FINDING needs. Both default to the older file —
+    neither present — because that is the case the caveat exists for. ``routes=[]`` builds
+    a stretch of map OSM collects no hiking relations in.
+
+    Deliberately a real `load_snapshot` source rather than a stub: the caveat is a claim
+    about a FILE, and every fixture in the ferrata suite that skipped `save_snapshot` also
+    skipped the round-trip that decides whether the record survived it.
+    """
+    from hike_finder.filters import find_hikes
+    from hike_finder.overpass import AreaData
+    from hike_finder.snapshot import AreaSnapshot, RecordingElevationProvider, save_snapshot
+
+    route = {"id": 7, "name": "Cable ridge", "ways": [[(50.0, 14.0), (50.05, 14.0)]], "tags": {}}
+    if way_tags is not None:
+        route["way_tags"] = [dict(t) for t in way_tags]
+    area = AreaData(
+        routes=[route] if routes is None else list(routes),
+        pois=[],
+    )
+    if ferrata:
+        # What a live parse always sets: empty lists are a real answer ("looked, found
+        # none"), which is the one thing `None` cannot say.
+        area.ferrata_routes, area.ferrata_ways = [], []
+    rec = RecordingElevationProvider(_Ramp())
+    bbox = (49.9, 13.9, 50.2, 14.2)
+    find_hikes(area, rec, Criteria(), bbox=bbox)
+    save_snapshot(
+        AreaSnapshot(bbox=bbox, area=area, elevations=rec.samples, sample_interval_m=25.0),
+        path,
+    )
+    return str(path)
+
+
+def test_find_hikes_says_a_file_cannot_read_cable_instead_of_answering_from_nothing(tmp_path):
+    """The gap this whole section exists for, in the direction that reads as a safety claim.
+
+    `webtest`'s counterpart here carries no member-way tags, so no route can be examined
+    for cable and `ferrata=false` drops every one of them. The empty list alone paraphrases
+    into "there are no cabled routes there" — a claim about the terrain, made from a file
+    that holds no evidence either way.
+    """
+    path = _ferrata_snapshot(tmp_path / "unreadable.json")
+    result = _call("find_hikes", {"area": path, "ferrata": False})
+    assert not result.is_error
+    text = result.content[0].text
+    # The caveat leads, matching list_pois: the reader must meet it before the result.
+    assert text.startswith("ferrata:")
+    assert "carry no member-way tags" in text
+    assert "NOT a report that the routes are free of cable" in text
+    assert "Do NOT turn this into a statement about cable on the ground" in text
+    # The WRONG sentence, and the reason ferrata_gap_message picks between the two in the
+    # order it does: this file cannot honour a promise that avoidance still works on it.
+    assert "AVOIDING them still works" not in text
+    # The empty-result sentence is still there — the caveat explains it, it does not
+    # replace it (that is `no_routes`' job, and only `no_routes`').
+    assert "No matching hikes found in that area." in text
+
+    # And it goes quiet when nobody asked about cable. A caveat that never switches off is
+    # noise; the same file with no ferrata flag says nothing about ferrata at all.
+    quiet = _call("find_hikes", {"area": path})
+    assert "ferrata" not in quiet.content[0].text
+
+
+def test_find_hikes_gives_the_two_ferrata_flags_different_answers_from_one_file(tmp_path):
+    """A file with member-way tags that never fetched ferrata objects — the asymmetry.
+
+    Avoiding cable needs only the member tags it has; finding it needs the objects it
+    never downloaded. One file, two questions, and only one of them short.
+    """
+    path = _ferrata_snapshot(tmp_path / "tagged.json", way_tags=[{"highway": "path"}])
+
+    finding = _call("find_hikes", {"area": path, "ferrata": True})
+    text = finding.content[0].text
+    assert "predates cabled-route fetching" in text
+    # Here the closing promise IS true, which is what earns this file the other sentence.
+    assert "AVOIDING them still works" in text
+    assert "Do NOT turn this into a statement about cable on the ground" in text
+
+    avoiding = _call("find_hikes", {"area": path, "ferrata": False})
+    assert "ferrata" not in avoiding.content[0].text.lower()
+
+
+def test_find_hikes_says_nothing_about_cable_when_the_file_can_answer(tmp_path):
+    """The complement, and the half that makes the rest a signal rather than a banner."""
+    path = _ferrata_snapshot(
+        tmp_path / "current.json", way_tags=[{"highway": "path"}], ferrata=True
+    )
+    result = _call("find_hikes", {"area": path, "ferrata": False})
+    text = result.content[0].text
+    assert "Cable ridge" in text        # an ordinary path survives avoidance
+    assert "ferrata" not in text.lower()
+
+
+def test_the_ferrata_caveat_is_not_gated_on_an_empty_result(tmp_path):
+    """The trap HANDOFF booked with this task, pinned.
+
+    Hiding the caveat behind an empty list looks like noise suppression and is not. The
+    concrete case, and the reason this fixture carries a CABLED member way: asked to FIND
+    cable, a file that never fetched ferrata objects still returns the hiking routes whose
+    own members are tagged as cabled — a real, non-empty answer — while the dedicated
+    `route=via_ferrata` relations it never downloaded stay missing from it. A non-empty
+    result is exactly when a short list is hardest to notice, so the sentence has to ride
+    on it. Nothing is stubbed here; the real engine produces the pair.
+    """
+    path = _ferrata_snapshot(tmp_path / "cabled.json", way_tags=[{"highway": "via_ferrata"}])
+    text = _call("find_hikes", {"area": path, "ferrata": True}).content[0].text
+    assert "predates cabled-route fetching" in text
+    # Both, in that order: the caveat, then the route it qualifies.
+    assert text.startswith("ferrata:")
+    assert "Cable ridge" in text.split("\n")[-1]
+
+
+def test_the_ferrata_caveat_never_reaches_a_gpx_or_geojson_document(tmp_path):
+    """Prose in front of a GPX file is not a caveat, it is invalid XML.
+
+    The export formats are documents with nowhere to put a sentence — the same call the
+    web export path makes, and the search that produced the file already showed it. Note
+    this needs the CABLED fixture too: the empty-result branch runs before `format` is
+    read, so a query that matches nothing never reaches these returns at all.
+    """
+    path = _ferrata_snapshot(tmp_path / "cabled.json", way_tags=[{"highway": "via_ferrata"}])
+    gpx = _call("find_hikes", {"area": path, "ferrata": True, "format": "gpx"})
+    geo = _call("find_hikes", {"area": path, "ferrata": True, "format": "geojson"})
+    assert gpx.content[0].text.startswith("<?xml")
+    # Not "no mention of ferrata": the route's OWN flag belongs in the track description
+    # (`ferrata 5.6 km`, which the live run over stdio shows there). What must be absent is
+    # the CAVEAT — prose about the file, in a document that has nowhere to put it.
+    assert "predates cabled-route fetching" not in gpx.content[0].text
+    assert "Do NOT turn this into a statement" not in gpx.content[0].text
+    # Parses as JSON, i.e. nothing was prepended to it either.
+    assert json.loads(geo.content[0].text)["type"] == "FeatureCollection"
+    assert "predates cabled-route fetching" not in geo.content[0].text
+
+
+def test_a_live_ferrata_search_is_never_caveated(monkeypatch):
+    """The seam that can provably never fire, pinned so nobody helpfully wires it.
+
+    A live fetch always parses both ferrata lists and the member-way tags, and the ferrata
+    clause changed the query TEXT — the Overpass cache key — so a pre-feature response
+    cannot be served under it either. `ferrata_gap_message` is None on this path by
+    construction; computing it here would read as a case that might happen.
+    """
+    monkeypatch.setattr(server, "search_hikes", lambda *a, **k: SAMPLE_HIKES)
+    result = _call("find_hikes", {
+        "south": 50.72, "west": 15.58, "north": 50.78, "east": 15.68, "ferrata": False,
+    })
+    assert result.content[0].text == "\n".join(format_hike(h) for h in SAMPLE_HIKES)
+
+
+def test_no_routes_and_the_ferrata_gap_are_both_said_when_both_are_true(tmp_path):
+    """Two different facts about one file, and neither one substitutes for the other.
+
+    An area OSM maps no hiking relations in, asked to FIND cable, is *also* a file that
+    never fetched ferrata objects. Re-downloading it fixes the second and cannot fix the
+    first, so an LLM told only one of them would send its user to do the wrong thing. The
+    web UI's `_area_notices` emits exactly this pair.
+    """
+    path = _ferrata_snapshot(tmp_path / "noroutes.json", routes=[])
+    both = _call("find_hikes", {"area": path, "ferrata": True}).content[0].text
+    assert "predates cabled-route fetching" in both
+    assert "No hiking route relations are mapped in that area" in both
+    assert "No matching hikes found in that area." not in both   # no_routes outranks it
+
+    # The complement falls out rather than being arranged: asked to AVOID cable, the same
+    # file has nothing to disclaim — there are no routes to be unable to read — and
+    # `no_routes` stands alone. Telling someone to re-download would be advice against
+    # a problem the download cannot solve.
+    alone = _call("find_hikes", {"area": path, "ferrata": False}).content[0].text
+    assert alone == server.no_routes_message()
+    assert "ferrata" not in alone.lower()

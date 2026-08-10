@@ -776,6 +776,34 @@ async def _call_routes_to_poi(arguments: dict) -> list[TextContent]:
     )
 
 
+def _ferrata_caveat(snapshot, criteria: Criteria) -> str:
+    """What a SAVED area cannot answer about cable, worded for an LLM client — or "".
+
+    The message itself comes verbatim from ``search.ferrata_gap_message``, the one place
+    that picks between the two sentences (and whose ORDER is what keeps each one true).
+    Only the closing instruction is server-local, and it is the whole reason this frontend
+    needs its own wording: the CLI writes its copy to stderr, where a human reads an empty
+    result and a warning as two facts, while an LLM reads a tool reply and paraphrases it
+    into prose for someone who never sees the original. "No matching hikes found" with the
+    caveat missing becomes "there is nothing cabled there" (asked to avoid) or "there are
+    no via ferrata there" (asked to find) — opposite misreadings of the same silence,
+    which is why the sentence added here is direction-neutral rather than one per flag.
+
+    Takes the SNAPSHOT rather than its area so the flag guard runs before anything is read
+    off the file at all: no ferrata question was asked, nothing to disclaim, nothing to
+    look at.
+    """
+    if criteria.ferrata is None:
+        return ""
+    gap = ferrata_gap_message(snapshot.area, finding=criteria.ferrata is True)
+    if gap is None:
+        return ""
+    return (
+        f"{gap} Do NOT turn this into a statement about cable on the ground, in either "
+        f"direction — this file cannot say.\n"
+    )
+
+
 async def _call_find_hikes(arguments: dict) -> list[TextContent]:
     criteria = _criteria(arguments)
     near_miss = _near_miss(arguments)
@@ -809,6 +837,16 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
             kwargs["name_places"] = name_places
         hikes = await asyncio.to_thread(search, bbox, criteria, _cfg(arguments), **kwargs)
 
+    # Only a saved file can fall short of the cable question, so the caveat is computed on
+    # exactly one branch — the same single call site, for the same reason, as the web UI's
+    # `web._area_notices`. A live fetch always parses `ferrata_routes`/`ferrata_ways` and
+    # member-way tags, and the ferrata clause changed the query TEXT (the Overpass cache
+    # key), so a pre-feature response cannot be served under it either: here
+    # `ferrata_gap_message` is provably None, and a seam that can never fire reads as one
+    # that might. Recomputed rather than plumbed out of `search_snapshot`, which already
+    # logs it — a log line reaches a terminal, not a client's reply text.
+    caveat = _ferrata_caveat(snap, criteria) if area_path else ""
+
     if not hikes:
         composing = arguments.get("compose_loops") and not area_path
         # When access is required, "nothing" may mean "loops exist, none near a parking/
@@ -841,16 +879,34 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
         )
         if no_routes:
             msg = no_routes_message()
-        return [TextContent(type="text", text=msg)]
+        # Both can be true at once and both are said: an area with no route relations,
+        # asked to FIND cable, is a file that never fetched ferrata objects AND a stretch
+        # of map with nothing to filter. The web UI's `_area_notices` produces exactly
+        # that pair. (Asked to AVOID cable the same file yields no caveat —
+        # `area_ferrata_readable` is vacuously true with no routes — so `no_routes` stands
+        # alone, which is what it should do: re-downloading fixes nothing there.)
+        return [TextContent(type="text", text=f"{caveat}{msg}")]
 
     # Optional GPX / GeoJSON serialisation (only when there ARE routes — an empty
     # result returns the helpful text above, more useful than an empty document).
+    # Neither carries the caveat: they are documents with nowhere to put prose, and
+    # prepending a sentence to a GPX file would make it invalid XML. Same call the web
+    # export path makes, and the search that produced the file showed the sentence.
     fmt = arguments.get("format") or "text"
     if fmt == "gpx":
         return [TextContent(type="text", text=hikes_to_gpx(hikes))]
     if fmt == "geojson":
         return [TextContent(type="text", text=hikes_to_geojson(hikes))]
-    return [TextContent(type="text", text="\n".join(format_hike(h) for h in hikes))]
+    # Not inside the `if not hikes:` block above, deliberately: a caveat gated on an empty
+    # result is the failure the web version was built to avoid, and here it has a concrete
+    # shape. Asked to FIND cable, a file that holds member-way tags but never fetched
+    # ferrata objects returns the hiking routes whose own members are tagged as cabled —
+    # a real, non-empty answer — while the dedicated `route=via_ferrata` relations it
+    # never downloaded stay missing from it. The caveat is the part that says the list is
+    # short, and a non-empty result is exactly when that is hardest to notice.
+    return [TextContent(
+        type="text", text=caveat + "\n".join(format_hike(h) for h in hikes)
+    )]
 
 
 async def _call_list_pois(arguments: dict) -> list[TextContent]:

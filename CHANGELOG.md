@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **MCP `find_hikes` now says when a saved area cannot answer the cable question.** It
+  was the last frontend that answered from nothing: `find_hikes(area=…, ferrata=false)`
+  over a downloaded file whose routes carry no member-way tags drops every route —
+  correctly, since cable cannot be detected on them — and replied "No matching hikes
+  found in that area." to a client that paraphrases confidently. The CLI logs the sentence
+  to stderr and the web UI puts it in a notice; MCP said it only from `list_ferrata`.
+  The reply now leads with `search.ferrata_gap_message`'s wording (one function picks
+  between "this file cannot read cable at all" and "this file never fetched ferrata
+  objects, but avoiding still works on it" — the order is what keeps each true) plus one
+  instruction added for this frontend: *do not turn this into a statement about cable on
+  the ground, in either direction*. The same silence misreads both ways — "nothing cabled
+  here" when avoiding, "no ferrata here" when finding.
+  **Not gated on an empty result**, which is the part worth knowing: a file that never
+  fetched ferrata objects still returns the hiking routes whose own member ways are tagged
+  as cabled, so the caveat rides on a *non-empty* answer too, where a short list is
+  hardest to notice. It does **not** ride on `format: "gpx" | "geojson"` — those are
+  documents with nowhere to put prose. Only the saved-file branch computes it; a live
+  fetch always parses the tags and its query text differs, so there is no gap to report.
+  Verified over a real stdio subprocess on hand-built snapshots (no network), twelve
+  cases, both directions of every flag — including the silences.
+
 ## [0.6.0] - 2026-08-10
 
 ### Added
