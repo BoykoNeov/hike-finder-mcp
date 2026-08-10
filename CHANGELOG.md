@@ -6,20 +6,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Changed
-
-- **The MCP server runs on mcp 2.x, and the `mcp` extra now requires `mcp>=2`** (v0.3.1 capped
-  it `<2` as a stopgap). **Breaking for MCP users only** — re-install the extra; 1.x is no
-  longer supported, since keeping both would mean a version branch in the server *and* in its
-  test harness. The CLI and web UI have no `mcp` dependency and are unaffected. All eight tools,
-  their schemas, and their behaviour are unchanged; the port is plumbing (handlers move from the
-  removed decorators to the `Server` constructor's `on_list_tools`/`on_call_tool`).
-- **A malformed tool call now comes back flagged as an error rather than looking like an
-  answer.** mcp 2.x does not validate arguments against a tool's `inputSchema` server-side, so
-  calls that 1.x rejected for us (e.g. `routes_to_poi` with no `kinds`) now reach the handler.
-  The handlers' own guards were already there and already worded; they now raise, so the reply
-  carries `isError` instead of arriving as ordinary content that reads like a successful
-  result. Asking for a tool that does not exist remains a protocol-level error.
+## [0.4.0] - 2026-08-10
 
 ### Added
 
@@ -61,6 +48,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **CI runs weekly on a schedule**, so a dependency going incompatible upstream is caught by a
   dated run instead of reddening whichever unrelated commit happens to land next — which is
   exactly how mcp 2.0.0 surfaced in v0.3.0.
+
+### Changed
+
+- **The MCP server runs on mcp 2.x, and the `mcp` extra now requires `mcp>=2`** (v0.3.1 capped
+  it `<2` as a stopgap). **Breaking for MCP users only** — re-install the extra; 1.x is no
+  longer supported, since keeping both would mean a version branch in the server *and* in its
+  test harness. The CLI and web UI have no `mcp` dependency and are unaffected. All eight tools,
+  their schemas, and their behaviour are unchanged; the port is plumbing (handlers move from the
+  removed decorators to the `Server` constructor's `on_list_tools`/`on_call_tool`).
+- **A malformed tool call now comes back flagged as an error rather than looking like an
+  answer.** mcp 2.x does not validate arguments against a tool's `inputSchema` server-side, so
+  calls that 1.x rejected for us (e.g. `routes_to_poi` with no `kinds`) now reach the handler.
+  The handlers' own guards were already there and already worded; they now raise, so the reply
+  carries `isError` instead of arriving as ordinary content that reads like a successful
+  result. Asking for a tool that does not exist remains a protocol-level error.
 
 ### Fixed
 
@@ -350,7 +352,8 @@ filter them by locally-computed elevation gain, distance, loop shape, and access
 - MIT license, CI (GitHub Actions running the test suite on Linux 3.10–3.13 plus a
   Windows smoke job), and this changelog.
 
-[Unreleased]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/BoykoNeov/hike-finder-mcp/compare/v0.1.0...v0.2.0

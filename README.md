@@ -807,8 +807,9 @@ daily-request counter; local DEM via a point-sampled GDAL VRT), the transparent
 cache, loop composition, offline snapshots, near-misses, reverse-geocode naming,
 GPX/GeoJSON export, point-based route drawing, the points-of-interest destination
 filter, routing *to* the nearest such object, the points-of-interest inventory,
-and the downloaded-area inventory — is **implemented, unit-tested
+the downloaded-area inventory, public-transport access, and the length-weighted
+surface report — is **implemented, unit-tested
 (offline), and validated live** across all three frontends (CLI + web + MCP), with
-computed gain cross-checked against the loop invariant (gain ≈ loss). Released as v0.3.1. See
+computed gain cross-checked against the loop invariant (gain ≈ loss). Released as v0.4.0. See
 [`CHANGELOG.md`](CHANGELOG.md) for the per-release breakdown and
 [`HANDOFF.md`](HANDOFF.md) for the architecture and open design notes.
