@@ -112,6 +112,23 @@ keeping:
   `test_poi.py` pins the round-trip and pins that `build_query` still contains the clauses.
   The one thing fetched but deliberately not classified is a kind's `exclude` deny-list
   (see Known limitations); the round-trip test cannot see it, so it has its own pins.
+- **`require` is the mirror of `exclude`, and inverts every one of its rules.** A kind can
+  demand a secondary tag (`tree` = `natural=tree` **and** a `name`). Four differences, each
+  load-bearing: (1) a **missing** required tag DOES disqualify, reversing the "not recorded
+  ≠ no" rule `exclude` and `transit_access` follow — a requirement exists because the
+  primary tag is too broad to be usable, so keeping the untagged makes the kind worthless
+  rather than merely imprecise; (2) it **must reach the query**, where a deny-list must not
+  — that is the whole point of it, and it therefore **does** invalidate the Overpass cache;
+  (3) a required kind gets its **own clause** and is **excluded from the merged regex for
+  its key**, or the merged clause would fetch the broad tag anyway and defeat the exercise
+  (`selectors_by_key` and `required_selectors` partition the registry; `test_poi.py` pins
+  that they do, because a kind in *both* would still pass the round-trip); (4) an empty
+  `values` tuple means **presence**, tested as `key in tags` rather than truthiness, so it
+  matches Overpass's bare `["name"]` exactly — including `name=`, which the query fetches
+  and the classifier must therefore accept.
+  The numbers that justify it: `natural=tree` is **4044** objects over four CZ regions
+  against **72** named. Fetching it merged would have multiplied a Český ráj snapshot's POI
+  count several-fold to reach 17 destinations.
 - **POIs are fetched on EVERY query**, not only when asked for. That keeps one Overpass
   cache key and makes every snapshot able to answer any destination question later; the
   alternative gives two cache keys and snapshots that only sometimes carry POIs, breaking
@@ -351,13 +368,47 @@ thing is validated live against real OSM. Highlights:
   with no caves must *not* be flagged stale). **Verified live** over Český ráj (the same box
   the `--poi` filter was verified on): `--show-pois --poi ruins,castle` listed the four
   objects HANDOFF already records for it — Valdštejn, zámek Hrubá Skála, Rotštejn, Hrubý
-  Rohozec — plus Radeč and Kavčiny; a download baked **887 POIs** into a named snapshot, and
+  Rohozec — plus Radeč and Kavčiny; a download baked **887 POIs** (a figure from the
+  19-kind registry, and from before the `tower`/`shelter` deny-lists — the same box now
+  lists **957**, so do not read the two as a like-for-like pair; the "501 summits"
+  sub-figure below still verifies exactly) into a named snapshot, and
   the offline browse of it by bare name produced **byte-identical output to the live run**.
   The 887-object export was checked in bulk: 887 `<wpt>`, **zero tracks, zero empty names**
   (unnamed objects carry their kind), zero mojibake in the file, and the GeoJSON's
   `[lon, lat]` ranges land inside the bbox on the right axes. Unfiltered listings are big at
   real density (501 of those 887 are summits) — deliberately uncapped, with the
   count-by-kind header carrying the "what's the mix" answer; noted in README/GUIDE.
+- **Nine more POI kinds + the `require` mechanism** (0.5.0) — `boundary_stone`, `mill`,
+  `mine`, `sinkhole`, `tree`, `artwork`, `firepit`, `camp`, `toilets`, taking the registry
+  from 19 to 28. Chosen by a **density probe over four CZ regions** rather than from
+  recalled taginfo (see the two Known-limitations entries this added), and the choice was
+  the user's, made against the counts. What was actually run live, so the claim matches the
+  evidence:
+  - **`--show-pois` over Moravský kras** (the one box where all nine are non-zero) matched
+    the raw Overpass tag counts **exactly on eight of nine**: boundary_stone 9, mill 11,
+    mine 77, sinkhole 85, artwork 166, firepit 71, camp 7, toilets 44. The ninth, `tree`,
+    read 21 against 24 — and the three-object gap was chased to the actual OSM elements
+    rather than assumed: `natural=tree` + `historic=wayside_shrine`, named "Panna Maria"
+    and "sv. Kryštof", which classify as shrines because the name is the shrine's. That is
+    the exact failure advisor flagged as invisible to the test suite (a new kind can
+    classify zero while looking wired), checked and clean.
+  - **`--poi artwork` over Český ráj** — the *filter* path, not just the listing —
+    returned real KČT relations annotated with named objects (`Rozhovor`,
+    `Věčný optimista`, `sousoší Piety`, `Adam a Eva`), including `NS Kopicův statek
+    (Skalní reliéfy)` passing **26 artworks within 42 m**, which is precisely what that
+    trail is (a rock-relief gallery). Many artworks are unnamed and render as bare
+    `artwork (N m)` — honest, not a bug.
+  - **The count moved and the docs were corrected rather than left standing**: the same
+    Český ráj box now lists **957** objects (119 of them the new kinds) where HANDOFF
+    recorded 887. The two are NOT comparable — 887 predates both the `tower`/`shelter`
+    deny-lists and these kinds — and the file now says so instead of carrying a stale
+    precise number in a document whose whole argument is against stale precise numbers.
+  Offline pins: the merged/required selector **partition**, the round-trip extended to
+  carry required tags, "a missing requirement disqualifies", "a failed requirement falls
+  through to the remaining kinds", and the density guard stated as a property
+  (`"tree" not in selectors_by_key()["natural"]`) so a refactor cannot quietly start
+  pulling 4000 street trees into every snapshot — the one regression here that would make
+  results *more* complete and entirely useless.
 - **Downloaded-area inventory + drawn-box selection** (`--list-areas`, MCP `list_areas`, web
   "Already downloaded" / "Draw a box") — live-verified for the CLI/HTTP paths. The web UI's
   *browser* logic is covered by `tests/test_web_js.py`, which runs the page's real script under
@@ -420,9 +471,31 @@ skip without the `mcp` extra).
 - **Daily quota** assumes a UTC-midnight reset and can lose an update under a cross-*process*
   race (acceptable for a soft advisory limit; no file locking).
 - **POI proximity is best-effort, like access.** No hit means nothing of that kind is *mapped*
-  in OSM near the route. The registry is also a curated subset — 19 kinds a walk is planned
-  around — so a "monastery" or a "windmill" is simply not askable until someone adds it to
+  in OSM near the route. The registry is also a curated subset — 28 kinds a walk is planned
+  around — so a concept nobody registered is simply not askable until someone adds it to
   `POI_KINDS` (one line; the query and classifier follow automatically).
+- **Weigh a candidate kind by MEASURING it, not by recalling taginfo.** This file used to
+  offer "a monastery or a windmill" as the example of a missing kind. Counted over four CZ
+  hiking regions (Český ráj / Krkonoše / Moravský kras / Šumava), `historic=monastery`
+  returns **1** object, `amenity=monastery` 2, `building=monastery` 1, and **zero** carry
+  `amenity=place_of_worship` as well. The recalled global taginfo ordering (`historic` ~22k
+  vs `amenity` ~12k) was real and completely irrelevant: it describes the world, not
+  walking country. `windmill` fared little better at 14. Both would have shipped as kinds
+  that look wired and return nothing. The same probe settles the tag-key question, the
+  density question and the live-verification numbers at once, and it is cheap — `out count;`
+  per candidate, node/way/relation separately. It is the `sac_scale`/`trail_visibility`
+  precedent (measured at 4 % and 1 %, rejected on the data) applied before the fact.
+- **Registry ORDER is a real decision, because `classify` is first-match-wins.** With one
+  kind per tag key that could not bite; with 28 kinds over 7 keys it can, and a new kind
+  appended after an existing one can classify **zero** objects while looking perfectly
+  wired — which `test_poi.py`'s round-trip cannot see, since it pins query↔classifier
+  agreement rather than real-world yield. So the collisions were counted too, and almost
+  none exist: artwork↔any historic **0**, adit↔cave_entrance **0**, firepit↔picnic **0**,
+  camp↔shelter **0**, mill↔ruins **0**, boundary_stone↔man_made **0**. Three do:
+  mill↔museum (2, resolved to `mill` — a watermill running as a museum is still what you
+  walked to) and `natural=tree`↔`historic=wayside_shrine` (3, resolved to `shrine` — the
+  NAME belongs to the shrine, not the tree). That last one is why a live Moravský kras
+  listing returns 21 named trees against a raw tag count of 24, and the 3 are not missing.
 - **Two kinds carry a deny-list, and it lives in the classifier, not the query.**
   `man_made=tower` is every tower (transmission, water, chimney) and `amenity=shelter`
   includes bus shelters, so both were reporting objects nobody plans a walk around — the
@@ -438,6 +511,19 @@ skip without the `mcp` extra).
   because `classify` runs upstream in `parse_area`. Re-download to reclassify. That is the
   surface/tracktype precedent (nothing *filters* on ungathered data), not a staleness bug,
   and it needs no version field.
+- **Adding a KIND is strictly worse than adding an exclusion on that last point, and this
+  is the one honesty gap the 0.5.0 batch leaves open.** An exclusion makes a stale snapshot
+  over-report by a few objects. A new kind makes it answer `--show-pois --poi tree` with a
+  confident **empty list** for a question the file never asked — which reads as "there are
+  no named trees here", exactly the `transit_access` failure mode the tri-state exists to
+  prevent. The existing staleness signal cannot catch it: `stale` is `not snap.area.pois`,
+  i.e. "this file predates POIs entirely", and a v0.4.0 snapshot has plenty of POIs — just
+  none of these nine kinds. A per-kind version field in the snapshot would close it
+  properly and is deliberately NOT built: it is a second source of truth about the registry,
+  and the registry is meant to be the only one. So it is **documented instead**, in README
+  and GUIDE where `--show-pois --area` lives ("re-download after upgrading"). If the
+  registry keeps growing, revisit — the honest mechanism would be storing the registry's
+  kind set in the snapshot and diffing it on load, which is one set, not a version scheme.
 - **Adding a POI kind widens every Overpass query** and invalidates the Overpass cache (the
   query text is the cache key), which is the price of the single-query-shape design. Weigh a
   new kind's density before adding it: `amenity=restaurant` in a city bbox is hundreds of

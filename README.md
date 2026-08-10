@@ -105,17 +105,22 @@ hike-finder --bbox 50.52 15.15 50.60 15.28 --poi ruins,castle --max-distance 25
     (start 50.5947,15.2640, OSM relation 369232)  [passes ruin "Rotštejn" (20 m)]
 ```
 
-Nineteen kinds are available: `church`, `shrine` (wayside shrines & crosses), `ruins`,
-`castle`, `memorial`, `archaeology`, `peak`, `rock`, `cave`, `spring`, `drinking_water`,
-`waterfall`, `viewpoint`, `tower`, `museum`, `hut`, `shelter`, `picnic`, `refreshment`. Repeat `--poi`
+Twenty-eight kinds are available: `church`, `shrine` (wayside shrines & crosses), `ruins`,
+`castle`, `memorial`, `archaeology`, `boundary_stone`, `mill`, `mine`, `peak`, `rock`,
+`sinkhole`, `cave`, `spring`, `drinking_water`, `waterfall`, `viewpoint`, `tower`, `tree`
+(named trees), `museum`, `artwork`, `hut`, `shelter`, `picnic`, `firepit`, `camp`,
+`refreshment`, `toilets`. Repeat `--poi`
 or comma-separate them; several kinds are **OR**-ed ("a church *or* a ruin"). Every match
 reports the object and **how far off the trail it sits**, so "passes near" and "ends at"
 stay distinguishable.
 
-Two kinds are narrower than their OSM tag: `tower` skips towers OSM records as
+Three kinds are narrower than their OSM tag: `tower` skips towers OSM records as
 transmission masts, water towers or chimneys, and `shelter` skips bus shelters. Objects
 OSM leaves untyped are kept either way — most real lookout towers carry no type tag at
-all, so dropping the untyped would lose them.
+all, so dropping the untyped would lose them. `tree` is narrower in the other direction:
+it asks only for trees that carry a **name**, because `natural=tree` is overwhelmingly
+street and garden trees (measured over four Czech regions: 4044 of them, against 72
+named).
 
 `--poi-radius M` (default 250, `HIKE_POI_RADIUS_M`) sets how close counts. Distance is
 measured to the trail **line**, not to its mapped nodes — a straight stretch drawn with
@@ -155,9 +160,10 @@ hike-finder --area ceskyraj --show-pois --poi viewpoint      # offline, zero net
   ...
 ```
 
-The same nineteen kinds as `--poi` select what to list; **omit `--poi` to show every
-kind** — at real density that can be a lot (the box above returns **887 objects**
-unfiltered), so the count-by-kind header comes first and nothing is capped. Results are
+The same twenty-eight kinds as `--poi` select what to list; **omit `--poi` to show every
+kind** — at real density that can be a lot (the box above returns **957 objects**
+unfiltered, 501 of them summits), so the count-by-kind header comes first and nothing is
+capped. Results are
 grouped by kind and ordered the same way every run. Walk-shaped flags (`--min-gain`,
 `--circular`, `--poi-radius`, …) have nothing to act on here; the run names any it ignored
 on stderr rather than looking like it filtered.
@@ -166,6 +172,15 @@ Two sources, one output: the live `--bbox`, or a downloaded `--area` — the "on
 area I already have" half, which needs **no network whatsoever**. Either way nothing is
 measured, because nothing is walked: it makes **one Overpass call, builds no elevation
 provider, and spends nothing from the daily API quota**.
+
+> **A snapshot only knows the kinds that existed when you downloaded it.** Objects are
+> sorted into kinds at download time, so asking an older `--area` for a kind added since
+> returns an empty list — and an empty list here reads as "there are none", which is a
+> different claim from "this file never looked". A snapshot saved before *any* POI support
+> says so outright, but one saved between two registry versions cannot tell.
+> **Re-download the area after upgrading** (`--download`) if a kind you expect comes back
+> empty. The kinds added in 0.5.0 are `boundary_stone`, `mill`, `mine`, `sinkhole`,
+> `tree`, `artwork`, `firepit`, `camp` and `toilets`.
 
 `--gpx` / `--geojson` export the listing as **waypoints** (a GPX `<wpt>` per object, a
 GeoJSON `Point` per object) rather than tracks — load them into OsmAnd / Komoot / mapy.cz /
@@ -409,7 +424,7 @@ hike-finder --from 50.73 15.60 --to-poi refreshment --routes 1 --to-poi-radius 6
             --user-agent you@example.com
 ```
 
-Same nineteen kinds as `--poi` (`--list-poi-kinds`), but they mean something different here.
+Same twenty-eight kinds as `--poi` (`--list-poi-kinds`), but they mean something different here.
 **`--poi` filters** routes you already found by what they happen to pass; **`--to-poi`
 draws** the route to the object. You can use both at once — "a route to the nearest ruin
 that also passes a pub" — because they answer different questions.

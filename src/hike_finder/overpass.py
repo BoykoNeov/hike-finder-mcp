@@ -83,17 +83,39 @@ class AreaData:
     pois: list[dict] = field(default_factory=list)
 
 
+def _tag_filter(key: str, values: tuple[str, ...]) -> str:
+    """``["key"]`` (presence) or ``["key"~"^(a|b)$"]`` — one bracket filter.
+
+    Empty ``values`` renders the bare presence test, which is what
+    ``poi.PoiKind.require`` means by an empty value tuple and what ``poi._has_tag``
+    checks with ``key in tags``. The two readings have to match or the query fetches
+    objects the classifier drops.
+    """
+    return f'["{key}"]' if not values else f'["{key}"~"^({"|".join(values)})$"]'
+
+
 def _poi_clauses(bbox: str) -> str:
     """One ``nwr[key~"^(v1|v2|…)$"]`` clause per POI tag key, from the registry.
 
     Derived from ``poi.selectors_by_key()`` rather than written out here, so the query
     and the classifier can never disagree about which objects exist (see poi.py). One
     regex per key keeps the query compact as the registry grows.
+
+    Kinds carrying a ``require`` get their OWN clause after the merged ones, with the
+    required tags appended as extra bracket filters. That is the one place a POI clause
+    is narrower than "the whole key", and it is narrower on purpose: ``natural=tree`` is
+    thousands of street trees in a hiking box, of which the ~1 % that are NAMED are the
+    walk destination. A deny-list stays out of the query (it does not change the cache
+    key); a requirement cannot, because the point of it is to not fetch the rest.
     """
     lines = []
     for key, values in _poi.selectors_by_key().items():
         alt = "|".join(values)
         lines.append(f'    nwr["{key}"~"^({alt})$"]({bbox});\n    out center;')
+    for key, values, require in _poi.required_selectors():
+        alt = "|".join(values)
+        extra = "".join(_tag_filter(k, vals) for k, vals in require)
+        lines.append(f'    nwr["{key}"~"^({alt})$"]{extra}({bbox});\n    out center;')
     return "\n".join(lines)
 
 

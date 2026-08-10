@@ -33,6 +33,7 @@ from hike_finder.poi import (
     classify,
     kind_labels,
     normalise_kinds,
+    required_selectors,
     route_pois,
     selectors_by_key,
 )
@@ -43,24 +44,55 @@ from hike_finder.snapshot import AreaSnapshot, snapshot_from_json, snapshot_to_j
 # --------------------------------------------------------------------------- registry
 
 
+def _satisfying_tags(spec, value: str) -> dict:
+    """The minimal element that a kind's own clause would fetch: its primary tag plus
+    whatever its ``require`` list insists on (a placeholder for a presence-only rule)."""
+    tags = {spec.key: value}
+    for key, values in spec.require:
+        tags[key] = values[0] if values else "anything"
+    return tags
+
+
 def test_every_registered_kind_round_trips():
     """Everything the query fetches is classifiable *or excluded*, and vice versa.
 
-    For each registered kind, a synthetic element carrying each of its accepted tag
-    values must classify back to that same kind, AND that value must appear in the
-    selector set the Overpass query is built from. This is the anti-drift pin.
+    For each registered kind, a synthetic element carrying its accepted tag value (plus
+    any tags the kind REQUIRES, since without them the query would never have fetched it
+    under this kind) must classify back to that same kind, AND that value must appear in
+    the selector set the Overpass query is built from. This is the anti-drift pin.
 
-    It says nothing about ``exclude``: the synthetic element carries only the primary
-    tag, so no deny-list can fire here. That is deliberate — the round-trip is about the
-    query and the classifier agreeing on which kinds EXIST — and it is why the
-    exclusions need the separate pins below.
+    It says nothing about ``exclude``: the synthetic element carries no deny-listed tag,
+    so no exclusion can fire here. That is deliberate — the round-trip is about the query
+    and the classifier agreeing on which kinds EXIST — and it is why the exclusions need
+    the separate pins below.
     """
-    selectors = selectors_by_key()
+    merged = {(key, v) for key, vals in selectors_by_key().items() for v in vals}
+    required = {(key, v) for key, vals, _req in required_selectors() for v in vals}
     for kind, spec in POI_KINDS.items():
         assert spec.values, f"{kind} registers no tag values"
         for value in spec.values:
-            assert classify({spec.key: value}) == kind
-            assert value in selectors[spec.key], f"{kind}/{value} is not fetched"
+            assert classify(_satisfying_tags(spec, value)) == kind
+            fetched = required if spec.require else merged
+            assert (spec.key, value) in fetched, f"{kind}/{value} is not fetched"
+
+
+def test_the_two_selector_sets_partition_the_registry():
+    """A kind is fetched by exactly ONE of the merged or the required clauses.
+
+    The partition is what keeps the anti-drift round-trip total after ``require`` split
+    the query in two. A kind in neither set is unfetchable; a kind in BOTH would have its
+    primary tag fetched unfiltered by the merged clause — precisely the density the
+    requirement exists to prevent, and invisible to the round-trip above, which would
+    still pass.
+    """
+    merged = {(key, v) for key, vals in selectors_by_key().items() for v in vals}
+    required = {(key, v) for key, vals, _req in required_selectors() for v in vals}
+    assert not (merged & required)
+    every = {(spec.key, v) for spec in POI_KINDS.values() for v in spec.values}
+    assert merged | required == every
+    # And a required kind really does carry a requirement to render.
+    for _key, _values, require in required_selectors():
+        assert require
 
 
 def test_build_query_contains_every_poi_selector():
@@ -74,6 +106,13 @@ def test_build_query_contains_every_poi_selector():
         assert f'nwr["{key}"~' in q
         for value in values:
             assert value in q
+    # A required kind is asked for by its OWN clause, primary selector plus every
+    # required filter appended — not by the merged one for its key.
+    for key, values, require in required_selectors():
+        clause = f'nwr["{key}"~"^({"|".join(values)})$"]'
+        for rk, rvals in require:
+            clause += f'["{rk}"]' if not rvals else f'["{rk}"~"^({"|".join(rvals)})$"]'
+        assert clause in q, f"the {key}={values} clause is missing its requirement"
     # And it still asks for the things it always did.
     assert 'relation["route"="hiking"]' in q
     assert 'nwr["amenity"="parking"]' in q
@@ -134,20 +173,62 @@ def test_exclusions_never_reach_the_query():
     invalidate every cached area — the price `POI_KINDS` pays for a new KIND. Filtering
     in the classifier instead keeps that cost at zero.
 
-    Pinned as: every POI clause is EXACTLY its primary selector, with no second bracket
-    filter appended. Asserting the secondary tag's name is absent from the whole query
-    would be wrong — `highway` is already in it as a transit clause, which is a different
-    statement entirely.
+    Pinned as: every MERGED POI clause is exactly its primary selector followed by the
+    bbox, and no deny-listed key is ever APPENDED to a selector. The blunter "no clause
+    anywhere carries a second bracket" this used to assert stopped being available when
+    `require` landed — a required kind's clause is a second bracket by definition — so
+    the pin now names the shape a deny-list would take instead.
+
+    Note why the appended form is the thing to test, and not the bare key: `highway` is
+    a deny-list key (bus shelters) AND a legitimate transit clause of its own. Asserting
+    it absent from the query would fail on a statement that has nothing to do with POIs.
     """
     selectors = selectors_by_key()
     assert "tower" in selectors["man_made"]  # fetched wholesale, narrowed downstream
     assert "shelter" in selectors["amenity"]
     q = build_query(50.7, 15.5, 50.8, 15.7)
     for key, values in selectors.items():
+        # `](` — the bbox follows IMMEDIATELY, so nothing was appended to this clause.
         assert f'nwr["{key}"~"^({"|".join(values)})$"](' in q
-    # No selector anywhere carries a SECOND bracket filter — the shape a deny-list
-    # pushed into the query would take (`…$"]["tower:type"!~…`).
-    assert '$"]["' not in q
+    for spec in POI_KINDS.values():
+        for deny_key, _deny_values in spec.exclude:
+            # `…$"]["tower:type"…` — a filter tacked onto a primary selector.
+            assert f'$"]["{deny_key}"' not in q
+
+
+def test_a_required_tag_must_be_present_and_a_missing_one_disqualifies():
+    """`require` is the mirror of `exclude`, and reverses its "not recorded ≠ no" rule.
+
+    An unnamed `natural=tree` is a street tree, not a destination — and there are ~4000 of
+    them in a hiking box against ~70 named ones. Keeping the untagged (the conservative
+    direction everywhere else in this file) would make the kind useless rather than merely
+    imprecise, which is why this one field insists.
+    """
+    assert classify({"natural": "tree"}) is None
+    assert classify({"natural": "tree", "name": "Žižkův dub"}) == "tree"
+    # Presence, not truthiness: Overpass's bare `["name"]` fetches `name=`, so the
+    # classifier has to accept it or the round-trip has a hole the tests can't see.
+    assert classify({"natural": "tree", "name": ""}) == "tree"
+
+
+def test_a_failed_requirement_falls_through_to_the_remaining_kinds():
+    """Same rule as an exclusion: losing one kind must not cost an object another.
+
+    An unnamed tree that OSM also tags as a memorial is still a memorial.
+    """
+    assert classify({"natural": "tree", "historic": "memorial"}) == "memorial"
+
+
+def test_the_broad_primary_tag_of_a_required_kind_is_never_fetched_wholesale():
+    """The density guard, stated as a property rather than as a comment.
+
+    `natural=tree` must not appear in the merged `natural` regex: if it ever does, every
+    area query starts pulling thousands of street trees into every snapshot, and nothing
+    else in the suite would notice — the results would be *more* complete, just useless.
+    """
+    assert "tree" not in selectors_by_key()["natural"]
+    q = build_query(50.7, 15.5, 50.8, 15.7)
+    assert '"^(tree)$"]["name"]' in q
 
 
 def test_kind_labels_covers_the_registry():

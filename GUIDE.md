@@ -602,19 +602,33 @@ reaches and how far off the trail it sits:
     (start 50.5947,15.2640, OSM relation 369232)  [passes ruin "Rotštejn" (20 m)]
 ```
 
-**Why** — the nineteen kinds are the things people actually plan a walk around:
+**Why** — the twenty-eight kinds are the things people actually plan a walk around:
 
 | | |
 |---|---|
-| heritage | `church`, `shrine` (wayside shrines & crosses), `ruins`, `castle`, `memorial`, `archaeology`, `museum` |
-| landscape | `peak`, `rock`, `cave`, `spring`, `waterfall`, `viewpoint`, `tower` |
-| comfort | `drinking_water`, `hut`, `shelter`, `picnic`, `refreshment` |
+| heritage | `church`, `shrine` (wayside shrines & crosses), `ruins`, `castle`, `memorial`, `archaeology`, `boundary_stone`, `mill`, `mine`, `museum`, `artwork` |
+| landscape | `peak`, `rock`, `sinkhole`, `cave`, `spring`, `waterfall`, `viewpoint`, `tower`, `tree` |
+| comfort | `drinking_water`, `hut`, `shelter`, `picnic`, `firepit`, `camp`, `refreshment`, `toilets` |
 
-Two of them are narrower than the raw OSM tag suggests. `man_made=tower` is every tower
+Three of them are narrower than the raw OSM tag suggests. `man_made=tower` is every tower
 — transmission masts, water towers, chimneys — and `amenity=shelter` includes bus
 shelters, so both drop the types OSM has positively marked as those. Anything OSM leaves
 untyped stays in: most real lookout towers carry no `tower:type`, and losing them to look
 precise would be the worse trade.
+
+`tree` narrows the other way — it asks for trees carrying a **name**, and nothing else.
+Bare `natural=tree` counted 4044 objects across four Czech regions (street trees, orchard
+rows) against 72 named ones, so fetching the tag whole would bury the destinations in
+their own noise. The formal *památný strom* tag was the alternative and is a genuinely
+different set: 65 objects, only 24 of which overlap the named ones — it would drop 48
+named trees and add 41 that show up in a listing or a GPX file as nameless pins. "Named
+trees" is what the search does, so it is what the kind is called.
+
+Which kind an object gets when it carries two of these tags is decided by table order,
+and that was checked against real data rather than assumed. The only collision that
+actually occurs in Czech mapping is a tree with a shrine mounted on it (`natural=tree` +
+`historic=wayside_shrine`) — three of them in Moravský kras, named "Panna Maria" and
+"sv. Kryštof". They list as **shrines**, which is right: the name belongs to the shrine.
 
 Repeat `--poi` or comma-separate: several kinds are **OR**-ed, so `--poi church --poi ruins`
 means "a church *or* a ruin", which is what picking two things off a list normally means.
@@ -694,11 +708,12 @@ easiest mistake to make here:
 **Read it**
 
 - **No `--poi` means every kind** — and at real density that is a *lot*. The Český ráj box
-  above returns **887 objects** with nothing selected (501 of them summits, this being
+  above returns **957 objects** with nothing selected (501 of them summits, this being
   sandstone-tower country). Nothing is capped, on purpose: a silently truncated list would
   read as "that's all there is". The count-by-kind header is the first line precisely so you
   can see the mix before scrolling, then narrow with `--poi`, or send the whole thing to
-  `--json` / `--gpx` where 887 is nothing at all.
+  `--json` / `--gpx` where 957 is nothing at all. (Growing the registry grows this number:
+  the nine kinds added in 0.5.0 account for 119 of those 957, artwork alone for 77.)
 - **Walk-shaped flags don't apply.** `--min-gain`, `--max-distance`, `--circular`,
   `--poi-radius` and friends describe routes, and there are none here. Passing them isn't an
   error (they're often left over from the previous command) but the run says on stderr which

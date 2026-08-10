@@ -89,6 +89,25 @@ class PoiKind:
     # unchanged, so adding an exclusion does not invalidate the Overpass cache the way
     # adding a kind does. ``test_poi.py`` pins that property.
     exclude: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    # Secondary tags an element MUST also carry, same ``(key, values)`` shape — and the
+    # mirror image of ``exclude`` in every respect that matters:
+    #
+    #   * An EMPTY ``values`` means "this key must be present, with any value at all",
+    #     which is exactly Overpass's bare ``["name"]`` filter. Presence is tested as
+    #     ``key in tags`` — not truthiness — so the classifier and the query agree on
+    #     the empty-string edge case instead of the query fetching something the
+    #     classifier then drops.
+    #   * A MISSING required tag DOES disqualify. That reverses the "not recorded ≠ no"
+    #     rule ``exclude`` follows, and deliberately: a requirement is the only way to
+    #     register a kind whose primary tag is far too broad to fetch wholesale
+    #     (``natural=tree`` is ~4000 objects in a hiking box, of which ~70 are named).
+    #     The conservative direction is the opposite one here — without the requirement
+    #     the kind is unusable, not merely imprecise.
+    #   * It therefore MUST reach the query, unlike ``exclude``. A required kind gets its
+    #     OWN Overpass clause (see :func:`required_selectors`) rather than joining the
+    #     merged one for its key, because merging would fetch every bare ``natural=tree``
+    #     into every snapshot — the density this field exists to avoid.
+    require: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 # The registry. Every entry is fetched on EVERY area query (see overpass.build_query),
@@ -111,8 +130,32 @@ POI_KINDS: dict[str, PoiKind] = {
     "archaeology": PoiKind(
         "historic", ("archaeological_site",), "archaeological site", "archaeological sites"
     ),
+    # Šumava's old border stones are the bulk of these (463 of the 508 measured across
+    # four CZ regions, against 36 in Krkonoše and 9 in Moravský kras). Registered anyway,
+    # and placed before `rock` on purpose: an object carrying both `historic=boundary_stone`
+    # and `natural=stone` is a boundary stone first. Measured overlap is 0, so this is a
+    # rule for the future rather than a fix for today.
+    "boundary_stone": PoiKind(
+        "historic", ("boundary_stone",), "boundary stone", "boundary stones"
+    ),
+    # Sparse (14 objects over the four regions) but unmistakable as a destination. It sits
+    # ahead of `museum`, which decides the 2 measured mill-museums in its favour: a
+    # watermill running as a museum is still what you walked there for.
+    "mill": PoiKind(
+        "man_made", ("windmill", "watermill"), "mill", "windmills & watermills"
+    ),
+    # `man_made`, NOT `historic`: measured over the same four regions, `man_made=adit`
+    # returns 93 objects and `man_made=mineshaft` 7, while `historic=mine` returns 2 and
+    # `historic=mine_shaft`/`historic=adit` return 0 apiece. The concept is real in OSM;
+    # it just does not live where the tag name suggests.
+    "mine": PoiKind(
+        "man_made", ("adit", "mineshaft"), "mine entrance", "mine entrances & adits"
+    ),
     "peak": PoiKind("natural", ("peak",), "peak", "summits"),
     "rock": PoiKind("natural", ("rock", "arch", "stone"), "rock", "rock formations"),
+    # Karst závrty — 85 in Moravský kras and 37 in Český ráj, none in Šumava. Next to
+    # `cave` because they are the same landscape read from above.
+    "sinkhole": PoiKind("natural", ("sinkhole",), "sinkhole", "sinkholes"),
     "cave": PoiKind("natural", ("cave_entrance",), "cave", "caves"),
     "spring": PoiKind("natural", ("spring",), "spring", "springs"),
     # Separate from `spring` because the tag KEY differs (amenity, not natural), which
@@ -143,7 +186,32 @@ POI_KINDS: dict[str, PoiKind] = {
             ),
         ),
     ),
+    # The one kind with a `require`, and the reason that field exists. `natural=tree`
+    # alone measured 4044 objects across four CZ hiking regions — street trees, orchard
+    # rows, garden specimens — against 72 carrying a `name`. Fetching the tag wholesale
+    # would multiply every snapshot's POI count several times over to find them.
+    #
+    # "named", not "protected". `denotation=natural_monument` (the formal *památný strom*)
+    # was the alternative and is NOT the same population: 65 objects, of which only 24
+    # also carry a name. So it would drop 48 named trees while adding 41 that render as
+    # nameless pins in a listing or a GPX waypoint — an inventory entry you cannot
+    # identify is not much of an entry. The plural says exactly what was selected for.
+    #
+    # Registry order was checked against the ground data rather than assumed, and it
+    # comes out right: the only measured collision is 3 objects tagged `natural=tree`
+    # AND `historic=wayside_shrine` — trees with a shrine mounted on them ("Panna Maria",
+    # "sv. Kryštof"). `shrine` is earlier here, so they classify as shrines, which is what
+    # they are: the NAME belongs to the shrine, not to the tree. Hence a live listing over
+    # Moravský kras returns 21 named trees where the raw tag count is 24, and the missing
+    # 3 are not missing.
+    "tree": PoiKind(
+        "natural", ("tree",), "named tree", "named trees", require=(("name", ()),)
+    ),
     "museum": PoiKind("tourism", ("museum",), "museum", "museums"),
+    # Statues, sculptures and trailside installations. The densest thing added here (383
+    # objects), and — surprisingly — with a measured overlap of ZERO against every
+    # historic kind, so it competes with nothing already registered.
+    "artwork": PoiKind("tourism", ("artwork",), "artwork", "sculptures & artwork"),
     "hut": PoiKind(
         "tourism", ("alpine_hut", "wilderness_hut"), "mountain hut", "mountain huts"
     ),
@@ -167,9 +235,21 @@ POI_KINDS: dict[str, PoiKind] = {
         ),
     ),
     "picnic": PoiKind("tourism", ("picnic_site",), "picnic site", "picnic sites"),
+    # The ONLY kind added here on a tag key the query did not already carry, so it is
+    # the only one that lengthens the Overpass query by a whole statement rather than by
+    # a few characters of regex. Worth it at 121 measured objects (ohniště are mapped
+    # densely in Moravský kras and Krkonoše); noted so the next `leisure=*` candidate is
+    # weighed as a free rider on this clause rather than as another new one.
+    "firepit": PoiKind("leisure", ("firepit",), "fire pit", "fire pits"),
+    "camp": PoiKind("tourism", ("camp_site",), "campsite", "campsites"),
     "refreshment": PoiKind(
         "amenity", ("pub", "restaurant", "cafe"), "pub/restaurant", "pubs & restaurants"
     ),
+    # Last in the table, which is also last in classification precedence: an object that
+    # is a campsite *and* has toilets tagged on the same element (1 measured) is a
+    # campsite. Nobody plans a walk to a toilet, but knowing there is one on the route is
+    # the same kind of fact as `drinking_water`, which is why it is registered at all.
+    "toilets": PoiKind("amenity", ("toilets",), "toilets", "public toilets"),
 }
 
 
@@ -200,30 +280,72 @@ def kind_label(kind: str, *, plural: bool = False) -> str:
 
 
 def selectors_by_key() -> dict[str, tuple[str, ...]]:
-    """``tag key -> every accepted value`` across the registry, de-duplicated and
-    sorted — the exact set ``overpass.build_query`` turns into one regex per key.
+    """``tag key -> every accepted value`` for the kinds fetched by a MERGED clause —
+    the exact set ``overpass.build_query`` turns into one regex per key.
 
     Derived from :data:`POI_KINDS`, never written out by hand, so a kind added to the
     registry is fetched automatically and can't become classifiable-but-unfetchable.
+
+    Kinds carrying a ``require`` are deliberately absent here and covered by
+    :func:`required_selectors` instead; together the two cover the registry exactly, and
+    ``test_poi.py`` pins that partition. Merging a required kind into its key's regex
+    would fetch its unfiltered primary tag — every ``natural=tree`` rather than the named
+    ones — which is the whole reason the field exists.
     """
     by_key: dict[str, set[str]] = {}
     for spec in POI_KINDS.values():
+        if spec.require:
+            continue
         by_key.setdefault(spec.key, set()).update(spec.values)
     return {key: tuple(sorted(values)) for key, values in sorted(by_key.items())}
+
+
+def required_selectors() -> list[tuple[str, tuple[str, ...], tuple[tuple[str, tuple[str, ...]], ...]]]:
+    """``(key, values, require)`` for every kind needing its own filtered clause.
+
+    One entry per KIND rather than per key, because the required tags differ per kind and
+    two of them sharing a key could not be merged into one regex without losing which
+    requirement belongs to which. There are few of these by construction — a requirement
+    is what you reach for when a primary tag is too broad to fetch whole — so the extra
+    statements are cheap.
+
+    The caller renders the Overpass text (``overpass._poi_clauses``), exactly as it does
+    for :func:`selectors_by_key`; this side owns the data so the query and
+    :func:`classify` keep reading one table.
+    """
+    return [
+        (spec.key, spec.values, spec.require)
+        for spec in POI_KINDS.values()
+        if spec.require
+    ]
+
+
+def _has_tag(tags: dict, key: str, values: tuple[str, ...]) -> bool:
+    """Does ``tags`` satisfy one ``(key, values)`` requirement?
+
+    Empty ``values`` means presence alone, tested as membership rather than truthiness so
+    it matches Overpass's bare ``["key"]`` filter exactly — an element tagged ``name=``
+    is fetched by the query, and must therefore also classify, or the round-trip the
+    registry is built on has a hole in it.
+    """
+    if key not in tags:
+        return False
+    return True if not values else tags.get(key) in values
 
 
 def classify(tags: dict) -> str | None:
     """The registered kind an OSM element belongs to, or ``None``.
 
-    The inverse of :func:`selectors_by_key` over the SAME table, so anything the query
-    fetches is classifiable *or explicitly excluded*, and anything classifiable is
-    fetched. First match wins; kinds keyed on different tags can't collide, and within a
-    key the registered value sets are disjoint.
+    The inverse of :func:`selectors_by_key` + :func:`required_selectors` over the SAME
+    table, so anything the query fetches is classifiable *or explicitly excluded*, and
+    anything classifiable is fetched. First match wins; kinds keyed on different tags
+    can't collide, and within a key the registered value sets are disjoint.
 
-    A kind's ``exclude`` list is checked after its primary tag matches, and a hit falls
-    through to the REMAINING kinds rather than returning ``None`` — an object can carry
-    two registered primary tags, and disqualifying it from one must not cost it the
-    other (a communication tower that is also ``tourism=museum`` is a museum).
+    A kind's ``exclude`` and ``require`` lists are both checked after its primary tag
+    matches, and a failure falls through to the REMAINING kinds rather than returning
+    ``None`` — an object can carry two registered primary tags, and disqualifying it from
+    one must not cost it the other (a communication tower that is also ``tourism=museum``
+    is a museum; an unnamed tree that is also a ``natural=monument`` keeps the second).
     """
     if not tags:
         return None
@@ -232,6 +354,8 @@ def classify(tags: dict) -> str | None:
             continue
         if any(tags.get(k) in vals for k, vals in spec.exclude):
             continue  # fetched, but not what this kind promises
+        if any(not _has_tag(tags, k, vals) for k, vals in spec.require):
+            continue  # never fetched under this kind: its clause carries the filter
         return kind
     return None
 

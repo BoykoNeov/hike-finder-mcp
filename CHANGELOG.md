@@ -6,6 +6,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Nine more POI kinds**, taking `--poi` / `--to-poi` / `--show-pois` from 19 to 28:
+  `boundary_stone`, `mill` (windmills & watermills), `mine` (mine entrances & adits),
+  `sinkhole`, `tree` (named trees), `artwork` (sculptures & artwork), `firepit`, `camp`
+  and `toilets`. Every frontend picks them up automatically — the CLI list, the web
+  dropdown and the MCP tool schemas are all derived from the registry.
+  Which kinds these are was decided by **counting them in OSM**, not by intuition:
+  `out count;` over four Czech hiking regions (Český ráj, Krkonoše, Moravský kras,
+  Šumava). That is also why some obvious-sounding candidates are absent — `monastery`
+  returns 1–2 objects across all four regions, and `historic=mine`/`mine_shaft`/`adit`
+  return 2/0/0 while `man_made=adit` returns 93, so the mining concept is registered
+  where the data actually is.
+  **This widens the Overpass query, so it invalidates the Overpass cache** (the query
+  text is the cache key) — the first search after upgrading refetches. Eight of the nine
+  only widen an existing regex; `firepit` adds one new `leisure` statement.
+- **`PoiKind.require`** — a kind can now demand a secondary tag, which is what makes
+  `tree` possible: bare `natural=tree` is 4044 objects across those four regions (street
+  trees, orchard rows) against 72 carrying a name. A required kind gets its own Overpass
+  clause and is kept out of the merged one for its key, so the broad tag is never fetched
+  wholesale. It is the mirror of the existing `exclude` deny-list and inverts its rules —
+  a *missing* required tag disqualifies (where a missing denied tag never does), and it
+  must reach the query (where a deny-list must not, to stay cache-neutral).
+
+### Changed
+
+- **A snapshot downloaded before this release will report no objects for the nine new
+  kinds** — objects are sorted into kinds at download time. Unlike a pre-POI snapshot,
+  which says outright that it cannot know, one saved between two registry versions cannot
+  tell the difference between "none here" and "never looked". Re-download the area
+  (`--download`) if a kind you expect comes back empty. Noted in README and GUIDE.
+
 ## [0.4.0] - 2026-08-10
 
 ### Added
