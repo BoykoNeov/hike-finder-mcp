@@ -268,7 +268,11 @@ def test_a_ferrata_filter_on_an_unreadable_area_says_so_rather_than_returning_no
     here" — a safety claim nobody made, and the exact inversion the ferrata feature
     spends its comments preventing.
     """
-    status, body = _get(server + "/api/hikes?area=webtest&ferrata=false&near_misses=false")
+    # No `near_misses` — the page's default is "auto", and this must be pinned on the
+    # path the browser actually takes. Ferrata is not relaxed by the near-miss pass in
+    # either direction (a route is cabled or it is not; there is no tolerance that would
+    # mean anything), so the list really is empty and the notice really is all there is.
+    status, body = _get(server + "/api/hikes?area=webtest&ferrata=false")
     assert status == 200 and body["hikes"] == []
     assert [n["kind"] for n in body["notices"]] == ["ferrata_gap"]
     msg = body["notices"][0]["message"]
@@ -291,7 +295,7 @@ def test_the_two_ferrata_flags_get_different_answers_from_the_same_file(server):
     _, avoiding = _get(server + "/api/hikes?area=webtagged&ferrata=false")
     assert len(avoiding["hikes"]) == 1 and avoiding["notices"] == []
 
-    _, finding = _get(server + "/api/hikes?area=webtagged&ferrata=true&near_misses=false")
+    _, finding = _get(server + "/api/hikes?area=webtagged&ferrata=true")
     assert finding["hikes"] == []
     assert [n["kind"] for n in finding["notices"]] == ["ferrata_gap"]
     msg = finding["notices"][0]["message"]

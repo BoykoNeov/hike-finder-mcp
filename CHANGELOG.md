@@ -30,6 +30,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in HANDOFF.
 - **`--show-ferrata` / MCP `list_ferrata`** — list an area's cabled lines themselves, no
   routes drawn, no elevation looked up (the `--show-pois` counterpart, one Overpass call).
+  Like that mode it **names the flags it ignores** rather than swallowing them, and
+  errors on the point-based ones. `--gpx`/`--geojson` are on the ignored list rather
+  than wired up: `FerrataLine` carries a start point, not the cabled line's geometry, so
+  exporting means widening that record and adding a *line* exporter (`pois_to_gpx`
+  writes waypoints). Booked in HANDOFF as the feature it is.
 - **`route=via_ferrata` relations are fetched** and returned only by `--ferrata`. They
   live in their own `AreaData` list, so a cabled climb cannot reach an ordinary result
   list or be stitched into a `--compose-loops` synthetic loop.
@@ -42,6 +47,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`--list-areas` no longer tells you to re-download an area that has nothing to find.**
+  It read the POI *count* and nothing else, so an area saved by 0.5.0 — one that records
+  which kinds it was classified against and genuinely holds none of them — printed "no
+  POIs (re-download for `--poi`)". That is the exact lie the kind record was added to
+  retire, surviving in the one place it had not reached. No record still means the file
+  predates points of interest (wording unchanged); a record with nothing in it now reads
+  as empty ground.
 - **A loop's gain/loss is no longer reported from a line that never closes.** `circular`
   is decided on the member ways' vertex graph (circuit rank), but gain rides on the
   *stitched* line, and `stitch_ways` greedily drops members it cannot chain. When the two

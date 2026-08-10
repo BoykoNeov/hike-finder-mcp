@@ -568,9 +568,6 @@ async function showPois(area, status){
   const results = document.getElementById('results');
   status.textContent = area ? ('Reading “' + area + '” offline…') : 'Looking…';
   results.innerHTML = '';
-  // The browse mode words its own coverage gap into the status line; a notice left over
-  // from a previous hike search would sit there describing a search nobody is looking at.
-  clearNotices();
   markers.clearLayers(); routeLines.clearLayers(); poiMarkers.clearLayers();
   try {
     const resp = await fetch('/api/poi-list?' + params.toString());
@@ -628,6 +625,10 @@ async function search(){
   const mode = modeName();
   const area = document.getElementById('area').value;
   const status = document.getElementById('status');
+  // Cleared FIRST, ahead of the mode guards below and of the browse dispatch: several
+  // of those return early ("drop your point first"), and a caveat left standing would
+  // describe a search nobody is looking at.
+  clearNotices();
   if (mode === 'pois'){ await showPois(area, status); return; }
   const params = new URLSearchParams();
   if (mode === 'around'){
@@ -682,7 +683,6 @@ async function search(){
   status.textContent = area ? ('Searching “' + area + '” offline…') : 'Searching…';
   results.innerHTML = '';
   markers.clearLayers(); routeLines.clearLayers(); poiMarkers.clearLayers();
-  clearNotices();
   try {
     const resp = await fetch('/api/hikes?' + params.toString());
     const data = await resp.json();

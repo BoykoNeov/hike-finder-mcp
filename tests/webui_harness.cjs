@@ -73,13 +73,21 @@ const els = {};
 function el(id) {
   if (els[id]) return els[id];
   const e = {
-    id, value: '', textContent: '', innerHTML: '', checked: false, disabled: false,
+    id, value: '', textContent: '', checked: false, disabled: false,
     length: 0, style: {}, className: '', selectedOptions: [], _children: [],
     _listeners: {},
     addEventListener(ev, fn){ (this._listeners[ev] = this._listeners[ev] || []).push(fn); },
     appendChild(c){ this._children.push(c); this.length = this._children.length; },
     click(){ (this._listeners.click || []).forEach(f => f()); if (this.onclick) this.onclick(); },
   };
+  // The page empties a list with `innerHTML = ''`, so the stub has to DROP the children
+  // — otherwise a stale card answers for a fresh one, and "this search rendered nothing"
+  // is unobservable. (Call sites here still reset `_children` by hand; harmless now.)
+  let html = '';
+  Object.defineProperty(e, 'innerHTML', {
+    get(){ return html; },
+    set(v){ html = v; if (v === ''){ e._children.length = 0; e.length = 0; } },
+  });
   els[id] = e;
   return e;
 }
@@ -524,6 +532,17 @@ const fire = (ev, latlng) => (handlers[ev] || []).forEach(f => f({ latlng }));
         el('results')._children.length === 1, el('results')._children.length);
   check('the status line still reports what did come back',
         /1 match\(es\)/.test(el('status').textContent), el('status').textContent);
+
+  // A mode guard that returns early ("drop your point first") must still clear it: a
+  // caveat left standing would describe a search nobody is looking at. Which is why
+  // `clearNotices()` runs ahead of those guards rather than beside the fetch.
+  el('mode').value = 'around';
+  updateMode();                 // also clears the picked point, so search() returns early
+  await search();
+  check('an early-returning mode guard clears the last search’s caveat',
+        el('notices')._children.length === 0, el('notices')._children.length);
+  el('mode').value = 'area';
+  updateMode();
 
   // The other kind: it REPLACES the empty-result advice rather than joining it. Saying
   // both would put "nothing is mapped here" and "widen the map" on screen at once.
