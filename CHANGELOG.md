@@ -30,13 +30,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a *missing* required tag disqualifies (where a missing denied tag never does), and it
   must reach the query (where a deny-list must not, to stay cache-neutral).
 
+- **A snapshot now records which POI kinds it was classified against**, and the tool diffs
+  that against the registry when it loads one. Objects are sorted into kinds at download
+  time, so an area saved by an older build can only return an empty list for a kind added
+  since — and an empty list reads as "there are none here", a different claim from "this
+  file never looked". Asking such an area now names the kinds it predates instead of
+  answering: *"this downloaded area predates the kind `tree` — it was never sorted into
+  it… that is a fact about the file, not the landscape."* It is said whether or not the
+  result was empty, because a `--poi ruins,tree` listing that returns the ruins otherwise
+  reads as the whole answer.
+  `--list-areas`, the MCP `list_areas` tool and the web UI's downloaded-area panel show
+  the same thing up front (*"2 kind(s) newer than it"*), so a stale area is visible before
+  it is searched rather than after. `--download` closes the gap.
+  The mechanism is the registry's own kind set, stored and compared as a **set** — not a
+  snapshot version number, which would be a second source of truth about the registry
+  that could disagree with it.
+  Three states are kept apart because collapsing any two of them is a different lie: an
+  area that predates points of interest entirely (says so outright, as before), one that
+  predates specific kinds (names them), and one saved **between** the arrival of points of
+  interest and this record, which holds objects but cannot say which kinds it looked for
+  (says exactly that, and cannot do better). One re-download settles the last case for
+  good. The snapshot format is unchanged otherwise and the version is not bumped — an
+  older file simply loads without the key, which is what puts it in the third state.
+
 ### Changed
 
 - **A snapshot downloaded before this release will report no objects for the nine new
-  kinds** — objects are sorted into kinds at download time. Unlike a pre-POI snapshot,
-  which says outright that it cannot know, one saved between two registry versions cannot
-  tell the difference between "none here" and "never looked". Re-download the area
-  (`--download`) if a kind you expect comes back empty. Noted in README and GUIDE.
+  kinds** — objects are sorted into kinds at download time. It will now *say* so rather
+  than returning a confident empty list (see the kind-set record above), but the fix is
+  still to re-download the area (`--download`). Noted in README and GUIDE.
 
 ## [0.4.0] - 2026-08-10
 

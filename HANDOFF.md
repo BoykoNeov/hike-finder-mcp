@@ -409,6 +409,18 @@ thing is validated live against real OSM. Highlights:
   (`"tree" not in selectors_by_key()["natural"]`) so a refactor cannot quietly start
   pulling 4000 street trees into every snapshot — the one regression here that would make
   results *more* complete and entirely useless.
+- **A snapshot records the POI kind set it was classified against** (unreleased, since
+  v0.4.0) — the honesty gap the nine kinds opened, closed with the mechanism this file
+  had already named as the right one. `AreaData.poi_kinds` is stamped in `parse_area`,
+  round-trips through the snapshot, and is diffed against the registry on load by
+  `poi.unrecorded_kinds`; `search.snapshot_poi_gap` turns that into the one of four
+  states every frontend words. So an older area asked for a `tree` says it predates the
+  kind rather than returning a confident empty list, `--list-areas` (and the web panel,
+  and MCP `list_areas`) flags how far behind a file is *before* it is searched, and
+  "looked for all 28, found none" became expressible for the first time. Offline-pinned
+  throughout — see the Known-limitations entry for the four states, the "never gate on
+  emptiness" rule that a first draft got wrong, and why the on-disk key is written
+  conditionally where `transit`'s is not.
 - **Downloaded-area inventory + drawn-box selection** (`--list-areas`, MCP `list_areas`, web
   "Already downloaded" / "Draw a box") — live-verified for the CLI/HTTP paths. The web UI's
   *browser* logic is covered by `tests/test_web_js.py`, which runs the page's real script under
@@ -511,19 +523,53 @@ skip without the `mcp` extra).
   because `classify` runs upstream in `parse_area`. Re-download to reclassify. That is the
   surface/tracktype precedent (nothing *filters* on ungathered data), not a staleness bug,
   and it needs no version field.
-- **Adding a KIND is strictly worse than adding an exclusion on that last point, and this
-  is the one honesty gap this batch leaves open.** An exclusion makes a stale snapshot
-  over-report by a few objects. A new kind makes it answer `--show-pois --poi tree` with a
-  confident **empty list** for a question the file never asked — which reads as "there are
-  no named trees here", exactly the `transit_access` failure mode the tri-state exists to
-  prevent. The existing staleness signal cannot catch it: `stale` is `not snap.area.pois`,
-  i.e. "this file predates POIs entirely", and a v0.4.0 snapshot has plenty of POIs — just
-  none of these nine kinds. A per-kind version field in the snapshot would close it
-  properly and is deliberately NOT built: it is a second source of truth about the registry,
-  and the registry is meant to be the only one. So it is **documented instead**, in README
-  and GUIDE where `--show-pois --area` lives ("re-download after upgrading"). If the
-  registry keeps growing, revisit — the honest mechanism would be storing the registry's
-  kind set in the snapshot and diffing it on load, which is one set, not a version scheme.
+- **Adding a KIND is strictly worse than adding an exclusion on that last point — which
+  is why a snapshot now records the kind set it was classified against.** An exclusion
+  makes a stale snapshot over-report by a few objects. A new kind made it answer
+  `--show-pois --poi tree` with a confident **empty list** for a question the file never
+  asked — "there are no named trees here", exactly the `transit_access` failure mode the
+  tri-state exists to prevent. The old staleness signal could not catch it: `stale` was
+  `not snap.area.pois`, i.e. "this file predates POIs entirely", and a v0.4.0 snapshot has
+  plenty of POIs — just none of these nine kinds. This file previously argued the fix was
+  documentation, and named the mechanism it would take if the registry kept growing; the
+  registry then grew by nine in one release, so it was built. What it is NOT is a version
+  number: `AreaData.poi_kinds` stores the **set** (`poi.all_kinds()`, stamped in
+  `parse_area` where `classify` runs, so it cannot describe a different registry than the
+  one that sorted the objects), and `poi.unrecorded_kinds` diffs it on load. A version
+  scheme would be a second source of truth about the registry; a set is the registry.
+  Four states, kept apart because collapsing any two is a differently-shaped lie —
+  `search.snapshot_poi_gap` is the one function that decides which holds, and all three
+  frontends plus both offline entry points route through it:
+  - `"none"` — no objects *and* no kind record: predates POIs outright (the old signal,
+    unchanged, and still its own wording).
+  - `"missing"` — records a kind set, and the asked-for kinds are not in it. Names them.
+  - `"unknown"` — has objects, records no kind set (saved between the POI feature and
+    this one). It cannot say which questions it was asked, and neither can we: inferring
+    coverage from *which kinds appear in the data* is circular, since absence there is
+    precisely the ambiguity being resolved.
+  - `"ok"` — everything asked for was looked for. This state is what the record buys and
+    it did not exist before: "looked for all 28, found none" was previously
+    indistinguishable from a pre-POI file and was reported as one.
+  **Nothing is gated on the result being empty, and that was a real bug in the first
+  draft.** Hiding the caveat behind a non-empty result looks like noise-suppression and
+  is not: `--poi ruins,tree` against a 19-kind file returns the ruins and goes quiet,
+  while `tree` — the half nobody may have answered — disappears behind the half that was.
+  A non-empty result proves only that *some* requested kind was classified. The pre-POI
+  and `transit_access` warnings already fire on the filter being active rather than on
+  the result being empty; this matches them. (Note `find_hikes` does not relax
+  `poi_kinds` for near-misses either, so an empty route list is not the only shape the
+  failure takes.)
+  On disk the key is written **conditionally**, unlike `transit`: both are tri-state, but
+  a snapshot is only ever *written* from a live parse, which always sets `transit`,
+  whereas an `AreaData` with `poi_kinds=None` is reachable — load an old file and save it
+  again. Writing `[]` for it would upgrade "cannot say" into "positively covered
+  nothing", a stronger claim than the file supports. `SNAPSHOT_VERSION` stays 1: the key
+  is additive, and an older file loading without it is exactly what puts it in
+  `"unknown"`. The whole thing is offline-pinned in `test_poi_listing.py` (the three-way
+  diff, the round-trip incl. the legacy file that must not gain a key, the "announced
+  even when other kinds returned objects" case, and the new `"ok"` state), with frontend
+  cases in `test_cli.py` / `test_web.py` / `test_server.py` and four browser-side checks
+  in `webui_harness.cjs`.
 - **Adding a POI kind widens every Overpass query** and invalidates the Overpass cache (the
   query text is the cache key), which is the price of the single-query-shape design. Weigh a
   new kind's density before adding it: `amenity=restaurant` in a city bbox is hundreds of

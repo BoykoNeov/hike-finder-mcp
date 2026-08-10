@@ -211,7 +211,7 @@ def _now_iso() -> str:
 
 
 def _area_to_json(area: AreaData) -> dict:
-    return {
+    out = {
         "routes": [
             {
                 "id": r.get("id"),
@@ -270,6 +270,21 @@ def _area_to_json(area: AreaData) -> dict:
             for t in (area.transit or [])
         ],
     }
+    # WHICH kinds the "pois" list above was sorted into (overpass.AreaData.poi_kinds).
+    # The key is written even when the area holds NO POIs — that pairing ("looked for all
+    # of them, found none") is a real answer about the landscape, and is exactly what an
+    # absent key cannot express.
+    #
+    # Unlike "transit" just above, the key is written CONDITIONALLY. Both fields are
+    # tri-state, but transit can rely on the fact that a snapshot is only ever written
+    # from a live parse (which always sets a list), whereas an AreaData with
+    # `poi_kinds=None` is reachable here: load an old file and save it again. Writing
+    # `[]` for it would upgrade "this file cannot say which kinds it covers" into "it
+    # positively covered none" — a stronger claim than the file supports, which is the
+    # one thing this whole field exists to stop.
+    if area.poi_kinds is not None:
+        out["poi_kinds"] = list(area.poi_kinds)
+    return out
 
 
 def _area_from_json(d: dict) -> AreaData:
@@ -308,6 +323,12 @@ def _area_from_json(d: dict) -> AreaData:
         area.pois.append(
             {"coord": (c[0], c[1]), "kind": p.get("kind"), "name": p.get("name")}
         )
+    # Same presence detection as `transit` below, and for the same reason: a file without
+    # the key was written by a build that did not record its registry, so it cannot say
+    # which kinds it covers — distinct from a file that recorded a (possibly short) list.
+    # `poi.unrecorded_kinds` turns the three states into the three things to tell a user.
+    if "poi_kinds" in d:
+        area.poi_kinds = tuple(str(k) for k in (d.get("poi_kinds") or ()))
     # Transit is the one field whose ABSENCE is meaningful, so it is read with a `None`
     # default rather than `[]`: a file without the key predates the feature and cannot
     # answer a transit question, while a file WITH an empty list positively recorded
@@ -442,6 +463,15 @@ def list_snapshots() -> list[dict]:
                 # Absent in pre-POI snapshots — 0 here is what the UI turns into
                 # "re-download to search this area for churches/ruins".
                 "pois": len(area.get("pois", [])),
+                # The kind set this area was classified against, or `None` when the file
+                # does not record one. Carried raw (not diffed against the registry) so
+                # the inventory keeps reporting what the FILE says and one place —
+                # `poi.unrecorded_kinds` — owns the comparison for every frontend.
+                "poi_kinds": (
+                    [str(k) for k in (area.get("poi_kinds") or [])]
+                    if "poi_kinds" in area
+                    else None
+                ),
                 "bytes": size,
             }
         )

@@ -52,6 +52,8 @@ from .search import (
     routes_to_poi,
     search_hikes,
     search_snapshot,
+    snapshot_kinds_missing_message,
+    snapshot_poi_gap,
 )
 from .snapshot import list_snapshots, load_snapshot, save_snapshot, snapshot_path
 
@@ -759,7 +761,9 @@ async def _call_list_pois(arguments: dict) -> list[TextContent]:
     """The browse mode: what objects are in this area, with no route to any of them."""
     kinds = normalise_kinds(arguments.get("kinds"))  # empty = every registered kind
     area_path = arguments.get("area")
-    stale = False
+    # Which of the four coverage cases the source is in (see search.snapshot_poi_gap).
+    # A live listing is always "ok" — the fetch just happened against this build.
+    gap_state, gap_kinds = "ok", ()
     if area_path:
         # A path wins; otherwise fall back to the NAMED snapshot directory, so the name an
         # LLM just read out of list_areas works here verbatim instead of raising a bare
@@ -778,7 +782,7 @@ async def _call_list_pois(arguments: dict) -> list[TextContent]:
         # Read BEFORE the listing: an empty result from a pre-POI snapshot is not an
         # answer about the landscape, and an LLM client will report it as one unless the
         # difference is spelled out in the text it gets back.
-        stale = not snap.area.pois
+        gap_state, gap_kinds = snapshot_poi_gap(snap, kinds)
         places = await asyncio.to_thread(list_snapshot_pois, snap, kinds)
     else:
         if [k for k in ("south", "west", "north", "east") if k not in arguments]:
@@ -790,11 +794,23 @@ async def _call_list_pois(arguments: dict) -> list[TextContent]:
         places = await asyncio.to_thread(list_area_pois, bbox, kinds, CFG)
 
     if not places:
-        if stale:
+        if gap_state == "none":
             return [TextContent(type="text", text=(
                 f"That downloaded area carries no points of interest — it was saved before "
                 f"the feature existed. Re-download it with download_area to browse and "
                 f"export them offline."
+            ))]
+        if gap_state == "missing":
+            return [TextContent(type="text", text=(
+                f"{snapshot_kinds_missing_message(gap_kinds or ())} Re-download it with "
+                f"download_area. Do NOT report this as 'there are none there' — nobody "
+                f"looked."
+            ))]
+        if gap_state == "unknown":
+            return [TextContent(type="text", text=(
+                f"That downloaded area does not record which kinds it was saved with, so "
+                f"this empty result cannot be told apart from a kind nobody looked for. "
+                f"Re-download it with download_area before concluding there are none there."
             ))]
         listed = ", ".join(kinds) if kinds else "any registered kind"
         return [TextContent(type="text", text=(
@@ -802,6 +818,17 @@ async def _call_list_pois(arguments: dict) -> list[TextContent]:
             f"`kinds` for all of them, or look at a wider area. (A miss means nothing of that "
             f"kind is MAPPED in OSM there, not that nothing is there.)"
         ))]
+
+    # A NON-empty listing can still be missing whole kinds: ask for ruins and trees
+    # against a file that never looked for trees and the ruins come back looking like the
+    # complete answer. The caveat rides on the text formats below (the machine formats
+    # carry the objects themselves, and inventing a wrapper object for them would change
+    # a documented export shape over a caveat).
+    caveat = (
+        snapshot_kinds_missing_message(gap_kinds or ()) + "\n"
+        if gap_state == "missing"
+        else ""
+    )
 
     fmt = arguments.get("format") or "text"
     if fmt == "gpx":
@@ -813,7 +840,7 @@ async def _call_list_pois(arguments: dict) -> list[TextContent]:
             [p.to_dict() for p in places], ensure_ascii=False, indent=2
         ))]
     body = "\n".join(format_poi(p) for p in places)
-    return [TextContent(type="text", text=f"{format_poi_summary(places)}\n{body}")]
+    return [TextContent(type="text", text=f"{caveat}{format_poi_summary(places)}\n{body}")]
 
 
 async def _call_list_areas(arguments: dict) -> list[TextContent]:

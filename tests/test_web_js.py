@@ -43,9 +43,19 @@ def test_web_ui_javascript_behaves(tmp_path):
     page = tmp_path / "page.js"
     page.write_text(_page_script(), encoding="utf-8")
 
+    # `encoding=` is not decoration on either call: the page is full of Czech names, em
+    # dashes and curly quotes, and a FAILING check echoes the offending HTML back. Under
+    # Windows' default cp1252 that decode raises, so the harness's own report would come
+    # back as a UnicodeDecodeError instead of as the assertion it is meant to be — a test
+    # that hides its result the moment it has one worth showing.
+    #
     # Syntax first, so a parse error reports as one rather than as a runtime mess.
     syntax = subprocess.run(
-        ["node", "--check", str(page)], capture_output=True, text=True
+        ["node", "--check", str(page)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     assert syntax.returncode == 0, syntax.stderr
 
@@ -53,6 +63,8 @@ def test_web_ui_javascript_behaves(tmp_path):
         ["node", str(HARNESS), str(page)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr

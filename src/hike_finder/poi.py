@@ -382,6 +382,45 @@ def normalise_kinds(kinds) -> tuple[str, ...]:
     return tuple(out)
 
 
+def all_kinds() -> tuple[str, ...]:
+    """Every registered kind, in registry order — the set a fetch is classified against.
+
+    This is what an area records about itself (``overpass.AreaData.poi_kinds``) so a
+    snapshot searched by a later build can say which questions it was never asked.
+    Derived from the table like everything else here, so it cannot fall behind it.
+    """
+    return tuple(POI_KINDS)
+
+
+def unrecorded_kinds(recorded: tuple[str, ...] | None, requested=()) -> tuple[str, ...] | None:
+    """Which of ``requested`` an area was never classified against — the honest diff.
+
+    Three answers, and they are three because collapsing any pair of them is the exact
+    failure this function exists to prevent:
+
+    * ``()`` — every requested kind was looked for. An empty result is about the
+      landscape, and a frontend should say so plainly.
+    * a non-empty tuple — those kinds postdate the download. The area can only return
+      nothing for them, and that nothing is about the FILE, not the terrain.
+    * ``None`` — the area does not record its kind set at all (it predates this field).
+      Coverage is unknown: it looked for *some* kinds and cannot say which. Callers must
+      not turn this into "it looked for all of them" (a confident empty list for a
+      question never asked) nor into "it looked for none" (a warning on every browse of
+      a perfectly good older file). The rule that keeps it useful and quiet is to say it
+      only when the result is actually empty — see ``search.list_snapshot_pois``.
+
+    ``requested`` empty expands to the whole registry, matching ``select_pois``'s
+    convention that a browse with no kinds is a browse of everything (and NOT
+    ``route_pois``'s, where ``()`` matches nothing — the two differ by a result set, so
+    the expansion is spelled out at both call sites rather than assumed).
+    """
+    if recorded is None:
+        return None
+    want = normalise_kinds(requested) or all_kinds()
+    known = set(recorded)
+    return tuple(k for k in want if k not in known)
+
+
 @dataclass(frozen=True)
 class PoiHit:
     """A registered object a route passes, with the measured distance to it."""

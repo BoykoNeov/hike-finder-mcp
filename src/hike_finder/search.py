@@ -271,7 +271,15 @@ def _measure_composed(
     # never match a POI filter, and "a 12 km loop past a ruin" is exactly the query this
     # mode exists for.
     syn_area = AreaData(
-        routes=syn_routes, parking=area.parking, lifts=area.lifts, pois=area.pois
+        routes=syn_routes,
+        parking=area.parking,
+        lifts=area.lifts,
+        pois=area.pois,
+        # …and the kind set they were classified against, or the synthetic area would
+        # claim not to know its own coverage while holding the very objects that prove
+        # it. Nothing downstream of `find_hikes` reads it today; carrying it keeps the
+        # field a property of the POI list rather than of one constructor.
+        poi_kinds=area.poi_kinds,
     )
     hikes = find_hikes(
         syn_area,
@@ -1142,6 +1150,87 @@ _SNAPSHOT_NO_POIS = (
 )
 
 
+def snapshot_poi_gap(snapshot: AreaSnapshot, kinds=()) -> tuple[str, tuple[str, ...] | None]:
+    """How far a saved area can answer a question about ``kinds`` — one place decides.
+
+    Returns ``(state, kinds)`` where *state* is one of:
+
+    * ``"none"`` — the file predates points of interest entirely and carries no kind
+      record either. It cannot answer anything; the second element is ``None``.
+    * ``"missing"`` — it recorded which kinds it was classified against, and the named
+      ones are not among them. They postdate the download and can only come back empty,
+      which is a fact about the FILE.
+    * ``"unknown"`` — it has objects but no kind record (saved between the POI feature
+      and this one). Coverage is unverifiable, and that is worth saying whenever such a
+      file is asked a POI question at all. Gating it on "only if the result came back
+      empty" was tried and is subtly wrong: ``--poi ruins,tree`` against an unrecorded
+      file returns the ruins and stays quiet, while ``tree`` — the kind that may never
+      have been looked for — is exactly the half of the question nobody answered. A
+      non-empty result proves only that SOME requested kind was classified. It is also
+      the precedent already set here: the pre-POI and ``transit_access`` warnings fire on
+      the filter being active, not on the result being empty.
+    * ``"ok"`` — every requested kind was looked for. An empty result is about the
+      landscape, and should read that way.
+
+    The three frontends and both offline entry points all route through this, so "which
+    of these four things is true of this file" is answered once. Splitting it per caller
+    is how the *live* and *offline* paths would start disagreeing about the same file —
+    the drift the shared ``poi.select_pois`` call already rules out for the listing
+    itself.
+    """
+    area = snapshot.area
+    if area.poi_kinds is None and not area.pois:
+        return "none", None
+    unrecorded = _poi.unrecorded_kinds(area.poi_kinds, kinds)
+    if unrecorded is None:
+        return "unknown", None
+    if unrecorded:
+        return "missing", unrecorded
+    return "ok", ()
+
+
+def snapshot_kinds_missing_message(gap: tuple[str, ...]) -> str:
+    """The one sentence every frontend says about kinds a saved area postdates.
+
+    Shared rather than reworded per frontend: the CLI, the web UI and the MCP server are
+    all answering the same question about the same file, and three phrasings of "this is
+    about the file, not the terrain" is three chances for one of them to imply otherwise.
+    """
+    named = ", ".join(gap)
+    is_one = len(gap) == 1
+    return (
+        f"this downloaded area predates the "
+        f"{'kind' if is_one else 'kinds'} {named} — it was never sorted into "
+        f"{'it' if is_one else 'them'}, so {'it' if is_one else 'they'} can only come "
+        f"back empty. That is a fact about the file, not the landscape: re-download the "
+        f"area to ask it about {'this kind' if is_one else 'these kinds'}."
+    )
+
+
+_SNAPSHOT_KINDS_UNKNOWN = (
+    "poi: this snapshot does not record which kinds it was downloaded with, so an empty "
+    "result cannot be told apart from a kind that was never looked for — re-download the "
+    "area (--download) if you expected something here"
+)
+
+
+def _warn_poi_gap(snapshot: AreaSnapshot, kinds=()) -> None:
+    """Log the one thing worth saying about a saved area's POI coverage, if any.
+
+    Nothing here is gated on whether the caller's result was empty. A non-empty result
+    proves that *some* requested kind was classified, not all of them, so hiding the
+    caveat behind one is how ``--poi ruins,tree`` comes back looking complete when the
+    file never held a tree (see :func:`snapshot_poi_gap`).
+    """
+    state, gap = snapshot_poi_gap(snapshot, kinds)
+    if state == "none":
+        _log.warning(_SNAPSHOT_NO_POIS)
+    elif state == "missing":
+        _log.warning("poi: %s", snapshot_kinds_missing_message(gap or ()))
+    elif state == "unknown":
+        _log.warning(_SNAPSHOT_KINDS_UNKNOWN)
+
+
 def list_area_pois(
     bbox: Bbox,
     kinds=(),
@@ -1190,11 +1279,22 @@ def list_snapshot_pois(snapshot: AreaSnapshot, kinds=()) -> tuple[_poi.PoiPlace,
     the *filter*; the listing repeats it rather than inheriting it, because a browse never
     goes through ``search_snapshot`` and would otherwise print a confident empty list for
     a file that simply cannot know.
+
+    The same hazard has a *finer* form the emptiness check cannot see: a file downloaded
+    when the registry held 19 kinds carries plenty of POIs and none of the nine added
+    after it, so a browse for one of those returns a confident empty list from a question
+    the download never asked. ``snapshot_poi_gap`` is what tells the two apart — the file
+    records the kind set it was classified against, and the diff is taken against the
+    registry rather than guessed from which kinds happen to appear in the data (absence
+    there is exactly the ambiguity being resolved, so reading it as evidence would be
+    circular).
     """
-    if not snapshot.area.pois:
+    if snapshot_poi_gap(snapshot, kinds)[0] == "none":
         _log.warning(_SNAPSHOT_NO_POIS)
         return ()
-    return _poi.select_pois(snapshot.area.pois, kinds)
+    places = _poi.select_pois(snapshot.area.pois, kinds)
+    _warn_poi_gap(snapshot, kinds)
+    return places
 
 
 def search_snapshot(
@@ -1219,13 +1319,21 @@ def search_snapshot(
     # A snapshot downloaded before POIs existed carries none, so a POI filter would
     # match nothing — and "no churches here" must never be confused with "this file
     # doesn't know about churches". Say which it is, loudly, before returning empty.
-    if criteria.poi_kinds and not snapshot.area.pois:
+    if criteria.poi_kinds and snapshot_poi_gap(snapshot, criteria.poi_kinds)[0] == "none":
         _log.warning(
             "poi: this snapshot carries no points of interest (it predates the feature) "
             "— re-download the area to search it for %s offline; for now the filter can "
             "only return nothing",
             ", ".join(criteria.poi_kinds),
         )
+    elif criteria.poi_kinds:
+        # The finer gaps: the file HAS points of interest but was classified against an
+        # older registry (or records no registry at all), so a filter on a kind added
+        # since matches nothing for a reason that is about the file, not the terrain.
+        # Said BEFORE the search, like the two warnings around it, and not gated on the
+        # result — `find_hikes` does not relax `poi_kinds` for near-misses either, so an
+        # empty result is not the only shape this failure takes (see `_warn_poi_gap`).
+        _warn_poi_gap(snapshot, criteria.poi_kinds)
     # Same hazard, sharper: an unanswerable transit filter would otherwise return a
     # confident verdict. `find_hikes` already drops every route whose transit is
     # unknown, so the result is empty either way — this is what stops that emptiness

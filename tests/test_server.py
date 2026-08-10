@@ -722,14 +722,30 @@ _BROWSE_POIS = [
 ]
 
 
-def _browse_snapshot(path, pois):
+_CURRENT_REGISTRY = object()  # "stamp whatever this build knows" — NOT `None`, which is
+                              # itself a meaningful value here (a file that records nothing)
+
+
+def _browse_snapshot(path, pois, *, poi_kinds=_CURRENT_REGISTRY):
     from hike_finder.overpass import AreaData
+    from hike_finder.poi import all_kinds
     from hike_finder.snapshot import AreaSnapshot, save_snapshot
 
     save_snapshot(
         AreaSnapshot(
             bbox=(50.72, 15.58, 50.78, 15.68),
-            area=AreaData(pois=list(pois)),
+            area=AreaData(
+                pois=list(pois),
+                # A real download stamps the registry it classified against (parse_area
+                # does it). Default to the current one so a fixture stands for a
+                # freshly-downloaded area; pass a SHORTER tuple to stand for one saved
+                # by an older build, and `None` for one saved before the field existed.
+                poi_kinds=(
+                    all_kinds()
+                    if poi_kinds is _CURRENT_REGISTRY
+                    else (None if poi_kinds is None else tuple(poi_kinds))
+                ),
+            ),
             elevations={},
             sample_interval_m=25.0,
         ),
@@ -802,9 +818,33 @@ def test_list_pois_separates_empty_from_cannot_know(tmp_path):
     assert "not that nothing is there" in nothing.content[0].text
 
     old = tmp_path / "old.json"
-    _browse_snapshot(old, [])
+    # Neither objects nor a kind record — the file predates points of interest outright.
+    _browse_snapshot(old, [], poi_kinds=None)
     stale = _call("list_pois", {"area": str(old)})
     assert "saved before the feature existed" in stale.content[0].text
+
+
+def test_list_pois_tells_an_llm_a_kind_was_never_looked_for(tmp_path):
+    """The case an LLM client will otherwise report as fact.
+
+    A file saved by an older build holds plenty of objects and never looked for a tree.
+    Both shapes matter: the empty answer must not read as "there are none there", and the
+    NON-empty one (ask for ruins and trees, get ruins) must not read as the whole answer.
+    """
+    from hike_finder.poi import all_kinds
+
+    path = tmp_path / "older.json"
+    _browse_snapshot(path, _BROWSE_POIS, poi_kinds=[k for k in all_kinds() if k != "tree"])
+
+    empty = _call("list_pois", {"area": str(path), "kinds": ["tree"]})
+    assert not empty.is_error
+    assert "predates the kind tree" in empty.content[0].text
+    assert "nobody looked" in empty.content[0].text
+    assert "Nothing of that kind" not in empty.content[0].text
+
+    partial = _call("list_pois", {"area": str(path), "kinds": ["ruins", "tree"]})
+    assert "predates the kind tree" in partial.content[0].text
+    assert "1 ruin" in partial.content[0].text   # the objects it does carry, still listed
 
 
 def test_list_pois_accepts_a_bare_area_name(tmp_path, monkeypatch):

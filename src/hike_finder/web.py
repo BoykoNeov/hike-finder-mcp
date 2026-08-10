@@ -29,7 +29,7 @@ from .export import (
 )
 from .filters import Criteria
 from .format import format_poi_summary, hike_to_dict
-from .poi import kind_labels, normalise_kinds
+from .poi import kind_labels, normalise_kinds, unrecorded_kinds
 from .search import (
     compose_loops,
     compose_loops_around,
@@ -41,8 +41,14 @@ from .search import (
     routes_to_poi,
     search_hikes,
     search_snapshot,
+    snapshot_kinds_missing_message,
+    snapshot_poi_gap,
 )
 from .snapshot import list_snapshots, load_snapshot, save_snapshot, snapshot_path
+
+# What a live listing (and every error path) reports about POI coverage: the fetch just
+# happened against this build's registry, so nothing is missing and nothing is unknown.
+_GAP_OK = {"state": "ok", "kinds": [], "message": ""}
 
 INDEX_HTML = """<!doctype html>
 <html lang="en">
@@ -442,8 +448,19 @@ function renderAreaList(areas){
     el.className = 'area' + (a.name === chosen ? ' on' : '');
     // An area downloaded before points of interest existed can't answer a "must pass"
     // search, and that must not read as "there are no churches here".
-    const stale = !a.pois
-      ? '<div class="warn">no points of interest — re-download to use “Must pass”</div>' : '';
+    // Three cases, not one: no POIs at all, POIs but whole KINDS newer than the file,
+    // and a file that doesn't record which kinds it holds. Only the first was visible
+    // before, and the second is the one a growing registry keeps creating.
+    let stale = '';
+    if (!a.pois){
+      stale = '<div class="warn">no points of interest — re-download to use “Must pass”</div>';
+    } else if (a.poi_kinds_missing === null || a.poi_kinds_missing === undefined){
+      stale = '<div class="warn">kinds not recorded — an empty result here may mean'
+        + ' nobody looked; re-download to be sure</div>';
+    } else if (a.poi_kinds_missing.length){
+      stale = '<div class="warn">predates ' + a.poi_kinds_missing.length + ' kind(s) ('
+        + esc(a.poi_kinds_missing.join(', ')) + ') — re-download to search for them</div>';
+    }
     el.innerHTML = '<div class="an">' + esc(a.name) + '</div>'
       + '<div class="ad">' + a.routes + ' routes &middot; ' + a.samples + ' elevation samples'
       + (a.pois ? (' &middot; ' + a.pois + ' places of interest') : '')
@@ -543,11 +560,22 @@ async function showPois(area, status){
     if (!resp.ok || data.error){ status.textContent = 'Error: ' + (data.error || resp.status); return; }
     const list = data.pois || [];
     renderPois(list);
+    const gap = data.area_gap || {state: 'ok', kinds: [], message: ''};
     if (!list.length && data.stale_area){
       // "This area has no ruins" and "this file was saved before the feature existed"
       // are different answers with different fixes — never let the second read as the first.
       status.textContent = 'This downloaded area carries no points of interest — it was '
         + 'saved before the feature existed. Download it again to browse and export them offline.';
+    } else if (gap.state === 'missing'){
+      // Said whether or not the list is empty: a listing of ruins from a file that never
+      // looked for trees is not the answer to "ruins and trees", and printed bare it
+      // reads as one.
+      status.textContent = gap.message
+        + (list.length ? ' Showing what it does carry: ' + data.summary : '');
+    } else if (!list.length && gap.state === 'unknown'){
+      status.textContent = 'This downloaded area does not record which kinds it was saved '
+        + 'with, so an empty result cannot be told apart from a kind nobody looked for. '
+        + 'Download it again if you expected something here.';
     } else if (!list.length){
       status.textContent = 'Nothing of that kind is mapped here — pick other kinds (or none, '
         + 'for all of them), or look at a wider area. (A miss means nothing of that kind is '
@@ -944,8 +972,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def _areas(self) -> None:
         """"What have I already downloaded?" — one entry per named snapshot, with its
-        bbox so the map can outline the covered ground, not merely name it."""
-        self._json(200, list_snapshots())
+        bbox so the map can outline the covered ground, not merely name it.
+
+        Each entry is enriched with ``poi_kinds_missing``: how many registered kinds
+        postdate that file (``null`` when it does not record a kind set at all). The diff
+        is taken HERE rather than in the browser because ``poi.unrecorded_kinds`` is the
+        one place that owns it — JS re-deriving it from ``/api/pois`` would be a second
+        implementation of the comparison, free to disagree with the CLI's.
+        """
+        areas = list_snapshots()
+        for a in areas:
+            recorded = a.get("poi_kinds")
+            behind = unrecorded_kinds(tuple(recorded) if recorded is not None else None)
+            a["poi_kinds_missing"] = None if behind is None else list(behind)
+        self._json(200, areas)
 
     def _download(self, qs: dict) -> None:
         name = _str(qs, "name")
@@ -1021,33 +1061,52 @@ class Handler(BaseHTTPRequestHandler):
         in the area I downloaded" is half of what the mode is for — so it gets its own
         resolver rather than an exception carved into the other one's rules.
 
-        Returns ``(places, stale_area, None)`` or ``(None, False, (status, {...}))``.
-        ``stale_area`` marks a snapshot saved before POIs existed, so the UI can say "this
-        file can't know" instead of "there is nothing here".
+        Returns ``(places, gap, None)`` or ``(None, _GAP_OK, (status, {...}))``, where
+        *gap* is the ``(state, kinds)`` pair from ``search.snapshot_poi_gap`` rendered as
+        a dict for JSON. It tells the UI which of the four things is true of the source —
+        that it predates points of interest entirely, that it predates the named kinds,
+        that it cannot say, or that the answer is about the landscape — so an empty
+        listing is never shown as "there is nothing here" when nobody looked. A live
+        listing is always ``ok``: the fetch just happened against this build's registry.
         """
         try:
             kinds = _poi_kinds(qs, "show_poi")
         except ValueError as e:
-            return None, False, (400, {"error": str(e)})
+            return None, _GAP_OK, (400, {"error": str(e)})
         area_name = _str(qs, "area")
         if area_name:
             path = snapshot_path(area_name)
             if path is None or not path.is_file():
-                return None, False, (404, {"error": f"no saved area named {area_name!r}"})
+                return None, _GAP_OK, (404, {"error": f"no saved area named {area_name!r}"})
             try:
                 snap = load_snapshot(path)
             except (OSError, ValueError) as e:
-                return None, False, (500, {"error": f"could not read area: {e}"})
-            return list_snapshot_pois(snap, kinds), not snap.area.pois, None
+                return None, _GAP_OK, (500, {"error": f"could not read area: {e}"})
+            state, gap_kinds = snapshot_poi_gap(snap, kinds)
+            return (
+                list_snapshot_pois(snap, kinds),
+                {
+                    "state": state,
+                    "kinds": list(gap_kinds or ()),
+                    # Pre-worded here rather than in JS for the same reason the CLI and the
+                    # MCP server share it: one sentence, three frontends.
+                    "message": (
+                        snapshot_kinds_missing_message(gap_kinds or ())
+                        if state == "missing"
+                        else ""
+                    ),
+                },
+                None,
+            )
         bbox, err = self._bbox(qs)
         if err is not None:
-            return None, False, err
+            return None, _GAP_OK, err
         try:
             return list_area_pois(
                 bbox, kinds, _cfg_for(qs), user_agent=_str(qs, "user_agent")
-            ), False, None
+            ), _GAP_OK, None
         except Exception as e:  # noqa: BLE001 — surface any fetch/HTTP failure to the UI
-            return None, False, _fetch_error(e)
+            return None, _GAP_OK, _fetch_error(e)
 
     def _poi_list(self, qs: dict) -> None:
         """``/api/poi-list`` — the objects themselves, as JSON.
@@ -1058,14 +1117,19 @@ class Handler(BaseHTTPRequestHandler):
         differently) and whether an empty result came from a snapshot that predates the
         feature.
         """
-        places, stale, err = self._resolve_pois(qs)
+        places, gap, err = self._resolve_pois(qs)
         if err is not None:
             self._json(*err)
             return
         self._json(200, {
             "pois": [p.to_dict() for p in places],
             "summary": format_poi_summary(places),
-            "stale_area": stale,
+            # The original boolean, kept as-is: it means exactly what it always meant
+            # ("this file predates points of interest entirely"), and `area_gap` beside it
+            # carries the finer cases. Widening `stale_area` to cover a file that merely
+            # predates some KINDS would silently change what an existing reader is told.
+            "stale_area": gap["state"] == "none",
+            "area_gap": gap,
         })
 
     def _resolve_hikes(self, qs: dict):

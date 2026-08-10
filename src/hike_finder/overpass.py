@@ -81,6 +81,13 @@ class AreaData:
     # empty so every AreaData built before this feature — including a pre-existing
     # snapshot — loads unchanged and simply matches no POI filter.
     pois: list[dict] = field(default_factory=list)
+    # WHICH kinds the above was classified against (`poi.all_kinds()` at fetch time), so
+    # a saved area searched by a later build can distinguish "no named trees here" from
+    # "nobody looked for trees". `None` — like `transit`, and for the same reason — means
+    # the area does not record it, which is a third answer and not a synonym for either.
+    # An empty `pois` list under a FULL kind set is a real answer about the landscape;
+    # that is the whole distinction this field buys. A live fetch always sets it.
+    poi_kinds: tuple[str, ...] | None = None
 
 
 def _tag_filter(key: str, values: tuple[str, ...]) -> str:
@@ -201,8 +208,11 @@ def parse_area(elements: list[dict]) -> AreaData:
     so it lives here, isolated and unit-tested without a live endpoint.
     """
     # A live parse always KNOWS the transit answer, even when it is "none here" — so
-    # the list starts empty rather than at the not-recorded `None` default.
-    area = AreaData(transit=[])
+    # the list starts empty rather than at the not-recorded `None` default. The POI kind
+    # set is stamped here for the same reason and in the same breath: this function IS
+    # where `poi.classify` runs, so the registry it was classified against is exactly the
+    # one this build has. Recording it anywhere else would be a second source of truth.
+    area = AreaData(transit=[], poi_kinds=_poi.all_kinds())
     # FIRST: the tag-only member-way records from `way(r); out tags;`, keyed by way id
     # so the relation branch below can join them onto its members. They must also be
     # skipped by the feature branches — a member way carrying, say, `tourism=viewpoint`

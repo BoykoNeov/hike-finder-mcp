@@ -97,9 +97,26 @@ const drainTimers = () => { while (pendingTimers.length) pendingTimers.shift()()
 let fetched = [];
 const AREAS = [
   { name: 'krkonose', bbox: [50.70, 15.55, 50.80, 15.70], created_at: '2026-08-09T12:07:51+00:00',
-    routes: 12, samples: 3198, places: 0, pois: 280, bytes: 225925 },
+    routes: 12, samples: 3198, places: 0, pois: 280, bytes: 225925, poi_kinds_missing: [] },
   { name: 'oldarea',  bbox: [49.90, 13.90, 50.20, 14.20], created_at: '2025-01-02T08:00:00+00:00',
-    routes: 4, samples: 900, places: 0, pois: 0, bytes: 40000 },
+    routes: 4, samples: 900, places: 0, pois: 0, bytes: 40000, poi_kinds_missing: null },
+];
+// The four things a saved file can say about its POI coverage, fed straight to the card
+// renderer rather than added to AREAS — the startup checks above count the areas, and
+// padding that list to exercise a renderer would weaken them into "some number of areas".
+const CARD_AREAS = [
+  // Records the current registry: nothing to warn about, and a warning here would be the
+  // kind that never turns off.
+  { ...AREAS[0] },
+  // Full of objects, but two kinds postdate it.
+  { name: 'oldkinds', bbox: [50.50, 15.09, 50.62, 15.28], created_at: '2026-02-01T08:00:00+00:00',
+    routes: 9, samples: 2100, places: 0, pois: 140, bytes: 120000,
+    poi_kinds_missing: ['tree', 'mill'] },
+  // Full of objects and records NO kind set — it cannot say which questions it was asked.
+  { name: 'unrecorded', bbox: [50.10, 14.10, 50.20, 14.20], created_at: '2025-06-01T08:00:00+00:00',
+    routes: 6, samples: 1500, places: 0, pois: 90, bytes: 90000, poi_kinds_missing: null },
+  // No objects at all: predates points of interest outright.
+  { ...AREAS[1] },
 ];
 const POI_KINDS = [{ kind: 'church', label: 'churches & chapels' },
                    { kind: 'ruins', label: 'ruins' },
@@ -127,12 +144,37 @@ const POI_LIST = {
   ],
   summary: '2 objects: 1 church, 1 ruin',
   stale_area: false,
+  area_gap: { state: 'ok', kinds: [], message: '' },
 };
-const POI_LIST_STALE = { pois: [], summary: 'no points of interest', stale_area: true };
+const POI_LIST_STALE = {
+  pois: [], summary: 'no points of interest', stale_area: true,
+  area_gap: { state: 'none', kinds: [], message: '' },
+};
+// The finer gap, in its two shapes. `stale_area` is FALSE in both: these files are full
+// of objects, they simply never looked for the kind being asked about. The empty one is
+// the obvious case; the non-empty one is the dangerous case, where half an answer comes
+// back and would read as the whole one.
+const GAP_MISSING = {
+  state: 'missing', kinds: ['tree'],
+  message: 'This downloaded area predates the kind tree — it was never sorted into it, '
+    + 'so it can only come back empty. That is a fact about the file, not the landscape: '
+    + 're-download the area to ask it about this kind.',
+};
+const POI_LIST_MISSING_EMPTY = {
+  pois: [], summary: 'no points of interest', stale_area: false, area_gap: GAP_MISSING,
+};
+const POI_LIST_MISSING_PARTIAL = {
+  pois: [{ kind: 'ruins', label: 'ruin', name: 'Nístějka', lat: 50.7301, lon: 15.6001 }],
+  summary: '1 object: 1 ruin', stale_area: false, area_gap: GAP_MISSING,
+};
 global.fetch = async (url) => {
   fetched.push(url);
+  const poiList = /area=oldarea/.test(url) ? POI_LIST_STALE
+                : !/area=oldkinds/.test(url) ? POI_LIST
+                : /show_poi=ruins/.test(url) ? POI_LIST_MISSING_PARTIAL
+                : POI_LIST_MISSING_EMPTY;
   const body = url.startsWith('/api/areas') ? AREAS
-             : url.startsWith('/api/poi-list') ? (/area=oldarea/.test(url) ? POI_LIST_STALE : POI_LIST)
+             : url.startsWith('/api/poi-list') ? poiList
              : url.startsWith('/api/pois') ? POI_KINDS
              : url.startsWith('/api/quota') ? { enabled: false }
              : /[?&]to_poi=/.test(url) ? TO_POI_HIKES
@@ -387,6 +429,47 @@ const fire = (ev, latlng) => (handlers[ev] || []).forEach(f => f({ latlng }));
         /^\/api\/gpx\?.*pois=true/.test(global.window.location), global.window.location);
   check('the export targets the same area', /area=oldarea/.test(global.window.location),
         global.window.location);
+
+  // 12. The finer coverage gap: a file FULL of objects that never looked for the kind
+  // being asked about. `stale_area` is false there, so the pre-POI branch above cannot
+  // cover it — which is exactly why `area_gap` exists beside it.
+  el('area').value = 'oldkinds';
+  el('show_poi').selectedOptions = [{ value: 'castle' }];
+  el('results')._children.length = 0;
+  await search();          // no `show_poi=ruins` in the canned reply => the empty shape
+  check('a kind newer than the area is reported as a fact about the file',
+        /predates the kind tree/.test(el('status').textContent), el('status').textContent);
+  check('and never as "nothing of that kind is mapped here"',
+        !/mapped in OSM here/.test(el('status').textContent), el('status').textContent);
+
+  el('show_poi').selectedOptions = [{ value: 'ruins' }];
+  el('results')._children.length = 0;
+  await search();          // the partial shape: objects came back AND a kind is missing
+  check('the gap is still reported when some objects did come back',
+        /predates the kind tree/.test(el('status').textContent), el('status').textContent);
+  check('and the objects it does carry are still shown and summarised',
+        /1 object: 1 ruin/.test(el('status').textContent) &&
+        el('results')._children.length === 1,
+        [el('status').textContent, el('results')._children.length]);
+
+  // 13. The saved-area cards. Each coverage state gets its own warning, and the current
+  // one gets none — a warning that never turns off is just noise.
+  // The stub's `appendChild` pushes onto `_children`, and the page clears the list with
+  // `innerHTML = ''` — which the stub does not translate into dropping them. So reset it
+  // by hand, or `cards` silently holds every card rendered since startup and the indices
+  // below point at the wrong areas.
+  el('areas_list')._children.length = 0;
+  renderAreaList(CARD_AREAS);
+  const cards = el('areas_list')._children.map(c => c.innerHTML);
+  check('a current area carries no coverage warning',
+        !/re-download/.test(cards[0]), cards[0]);
+  check('an area behind the registry names how many kinds and which',
+        /predates 2 kind\(s\)/.test(cards[1]) && /tree, mill/.test(cards[1]), cards[1]);
+  check('an area that records no kind set says exactly that',
+        /kinds not recorded/.test(cards[2]), cards[2]);
+  check('and the pre-POI wording is reserved for a file with no objects at all',
+        !/no points of interest/.test(cards[1]) && /no points of interest/.test(cards[3]),
+        [cards[1], cards[3]]);
 
   console.log('PASS ' + ok.length + ' / FAIL ' + fail.length);
   fail.forEach(f => console.log('  FAIL: ' + f));

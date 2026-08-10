@@ -35,9 +35,11 @@ from hike_finder.poi import (
     POI_KINDS,
     PoiHit,
     PoiPlace,
+    all_kinds,
     count_by_kind,
     kind_label,
     select_pois,
+    unrecorded_kinds,
 )
 from hike_finder.snapshot import AreaSnapshot, load_snapshot, save_snapshot
 
@@ -54,8 +56,24 @@ RAW_POIS = [
 ]
 
 
-def _area(pois=None) -> AreaData:
-    return AreaData(pois=[dict(p) for p in (pois if pois is not None else RAW_POIS)])
+_CURRENT_REGISTRY = object()  # NOT `None`: `None` is itself a meaningful kind-set value
+
+
+def _area(pois=None, *, poi_kinds=_CURRENT_REGISTRY) -> AreaData:
+    """An area as a download leaves it: POIs plus the kind set they were sorted into.
+
+    ``poi_kinds`` is what makes a fixture stand for one build or another — the current
+    registry by default (what ``parse_area`` stamps), a shorter tuple for an area saved
+    by an older build, ``None`` for one saved before the field existed.
+    """
+    return AreaData(
+        pois=[dict(p) for p in (pois if pois is not None else RAW_POIS)],
+        poi_kinds=(
+            all_kinds()
+            if poi_kinds is _CURRENT_REGISTRY
+            else (None if poi_kinds is None else tuple(poi_kinds))
+        ),
+    )
 
 
 # --------------------------------------------------------------------------- selection
@@ -279,7 +297,13 @@ def test_pre_poi_snapshot_says_it_cannot_know(tmp_path, caplog):
     """"No ruins here" vs "this file predates the feature" are different answers."""
     path = tmp_path / "old.json"
     save_snapshot(
-        AreaSnapshot(bbox=BBOX, area=AreaData(), elevations={}, sample_interval_m=25.0), path
+        AreaSnapshot(
+            bbox=BBOX,
+            area=AreaData(),  # no objects AND no kind record: predates POIs outright
+            elevations={},
+            sample_interval_m=25.0,
+        ),
+        path,
     )
     with caplog.at_level(logging.WARNING):
         assert S.list_snapshot_pois(load_snapshot(path), ()) == ()
@@ -296,3 +320,162 @@ def test_snapshot_with_pois_but_none_of_that_kind_is_not_flagged_stale(tmp_path,
     with caplog.at_level(logging.WARNING):
         assert S.list_snapshot_pois(load_snapshot(path), ("cave",)) == ()
     assert "predates the feature" not in caplog.text
+    # Nor may it hedge: this file states the kind set it was sorted into, `cave` is in it,
+    # so the empty answer is about the landscape and must read that way.
+    assert "does not record which kinds" not in caplog.text
+
+
+# --------------------------------------------------------------- the kind-set diff
+#
+# The gap the nine v0.5.0 kinds opened, and the one an emptiness check cannot see: a file
+# downloaded against a 19-kind registry is FULL of objects and holds none of the nine
+# added after it, so asking it for a `tree` returns a confident empty list for a question
+# the download never asked. The snapshot therefore records the kind set it was classified
+# against, and `poi.unrecorded_kinds` diffs it against the registry. Four states, and the
+# tests below exist because collapsing any two of them is a lie with a different shape.
+
+
+def test_unrecorded_kinds_separates_covered_missing_and_unrecorded():
+    """The three answers, at the source. `()` and `None` are NOT interchangeable."""
+    # Covered: the file looked for what is being asked.
+    assert unrecorded_kinds(all_kinds(), ("cave", "ruins")) == ()
+    # Missing: named, so a caller can say WHICH questions this file never asked.
+    older = tuple(k for k in all_kinds() if k not in ("tree", "mill"))
+    assert unrecorded_kinds(older, ("ruins", "tree", "mill")) == ("tree", "mill")
+    # Unrecorded: `None` in, `None` out — "cannot say", which is not "covers nothing"
+    # (that would warn on every browse of a good older file) and not "covers everything"
+    # (a confident empty list for a question never asked).
+    assert unrecorded_kinds(None, ("tree",)) is None
+    # An empty request expands to the whole registry, matching `select_pois`'s convention
+    # — the opposite of `route_pois`'s, so it is pinned rather than assumed. The result
+    # keeps REGISTRY order (not the caller's, not sorted), so a frontend listing the gap
+    # names it in the same order as the `--list-pois` menu the user just read.
+    assert unrecorded_kinds(older) == tuple(
+        k for k in all_kinds() if k in ("tree", "mill")
+    )
+    assert set(unrecorded_kinds(older)) == {"tree", "mill"}
+
+
+def test_a_parsed_area_stamps_the_registry_it_was_classified_against():
+    """The record has to come from where `classify` runs, or it is a second source of
+    truth free to disagree with the objects it describes."""
+    from hike_finder.overpass import parse_area
+
+    area = parse_area([])
+    assert area.poi_kinds == all_kinds()
+    # And an area nobody parsed says so, rather than inheriting the current registry.
+    assert AreaData().poi_kinds is None
+
+
+def test_the_kind_set_round_trips_and_a_legacy_file_stays_unrecorded(tmp_path):
+    """Three files, three answers on load — including the one that must NOT be invented."""
+    from hike_finder.snapshot import snapshot_from_json, snapshot_to_json
+
+    path = tmp_path / "current.json"
+    save_snapshot(
+        AreaSnapshot(bbox=BBOX, area=_area(), elevations={}, sample_interval_m=25.0), path
+    )
+    assert load_snapshot(path).area.poi_kinds == all_kinds()
+
+    # A file written by an older build: the key is there but shorter.
+    older = tuple(k for k in all_kinds() if k != "tree")
+    p2 = tmp_path / "older.json"
+    save_snapshot(
+        AreaSnapshot(
+            bbox=BBOX, area=_area(poi_kinds=older), elevations={}, sample_interval_m=25.0
+        ),
+        p2,
+    )
+    assert load_snapshot(p2).area.poi_kinds == older
+
+    # A file written before the key existed. Loading must NOT fabricate a set, and
+    # re-saving it must not either: writing `[]` would upgrade "cannot say" into
+    # "positively covered nothing", a stronger claim than the file supports.
+    legacy = snapshot_to_json(
+        AreaSnapshot(bbox=BBOX, area=_area(), elevations={}, sample_interval_m=25.0)
+    )
+    legacy["area"].pop("poi_kinds")
+    reloaded = snapshot_from_json(legacy)
+    assert reloaded.area.poi_kinds is None
+    assert "poi_kinds" not in snapshot_to_json(reloaded)["area"]
+
+
+def test_a_kind_newer_than_the_snapshot_is_named_not_reported_as_absent(tmp_path, caplog):
+    """The whole point: an empty `tree` listing from a 19-kind file is about the FILE."""
+    older = tuple(k for k in all_kinds() if k not in ("tree", "mill"))
+    path = tmp_path / "older.json"
+    save_snapshot(
+        AreaSnapshot(
+            bbox=BBOX, area=_area(poi_kinds=older), elevations={}, sample_interval_m=25.0
+        ),
+        path,
+    )
+    with caplog.at_level(logging.WARNING):
+        assert S.list_snapshot_pois(load_snapshot(path), ("tree",)) == ()
+    assert "tree" in caplog.text and "re-download" in caplog.text
+    # It must not fall back to the pre-POI wording: this file has plenty of objects.
+    assert "predates the feature" not in caplog.text
+
+
+def test_a_missing_kind_is_announced_even_when_other_kinds_returned_objects(tmp_path, caplog):
+    """A non-empty list is the sneaky case — ruins come back, trees were never looked
+    for, and printed bare the ruins read as the whole answer to "ruins and trees"."""
+    older = tuple(k for k in all_kinds() if k != "tree")
+    path = tmp_path / "older.json"
+    save_snapshot(
+        AreaSnapshot(
+            bbox=BBOX, area=_area(poi_kinds=older), elevations={}, sample_interval_m=25.0
+        ),
+        path,
+    )
+    with caplog.at_level(logging.WARNING):
+        places = S.list_snapshot_pois(load_snapshot(path), ("ruins", "tree"))
+    assert [p.kind for p in places] == ["ruins"]     # the objects it does carry
+    assert "tree" in caplog.text                      # and the question it never asked
+
+
+def test_an_unrecorded_kind_set_hedges_even_when_objects_came_back(tmp_path, caplog):
+    """A file saved between the POI feature and this one cannot vouch for any kind, and
+    a non-empty result does NOT discharge that.
+
+    Gating the hedge on emptiness was the first design and it has a hole worth keeping a
+    test on: ask an unrecorded file for ``ruins,tree``, get the ruins, and the half of
+    the question nobody may have asked disappears behind the half that was answered. A
+    non-empty result proves only that SOME requested kind was classified. The pre-POI and
+    ``transit_access`` warnings already fire on the filter being active rather than on
+    the result being empty; this matches them.
+    """
+    path = tmp_path / "unrecorded.json"
+    save_snapshot(
+        AreaSnapshot(
+            bbox=BBOX, area=_area(poi_kinds=None), elevations={}, sample_interval_m=25.0
+        ),
+        path,
+    )
+    snap = load_snapshot(path)
+    with caplog.at_level(logging.WARNING):
+        assert S.list_snapshot_pois(snap, ("cave",)) == ()
+    assert "does not record which kinds" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        places = S.list_snapshot_pois(snap, ("ruins", "tree"))
+    assert [p.kind for p in places] == ["ruins"]        # one half of the question…
+    assert "does not record which kinds" in caplog.text  # …and the caveat on the other
+
+
+def test_an_empty_area_that_recorded_its_kinds_is_a_real_answer(tmp_path, caplog):
+    """The state the record buys: "looked for all 28, found none" — a fact about the
+    landscape. Before the field this was indistinguishable from a pre-POI file, so it
+    was reported as one and sent the user off to re-download for nothing."""
+    path = tmp_path / "empty.json"
+    save_snapshot(
+        AreaSnapshot(
+            bbox=BBOX, area=_area([]), elevations={}, sample_interval_m=25.0
+        ),
+        path,
+    )
+    with caplog.at_level(logging.WARNING):
+        assert S.list_snapshot_pois(load_snapshot(path), ()) == ()
+    assert caplog.text == ""
+    assert S.snapshot_poi_gap(load_snapshot(path), ()) == ("ok", ())

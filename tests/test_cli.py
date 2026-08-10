@@ -11,6 +11,7 @@ from hike_finder.elevation.base import ElevationProvider
 from hike_finder.filters import Criteria, Hike, find_hikes
 from hike_finder.format import format_hike, hike_to_dict
 from hike_finder.overpass import AreaData
+from hike_finder.poi import all_kinds
 from hike_finder.snapshot import AreaSnapshot, RecordingElevationProvider, save_snapshot
 
 
@@ -356,12 +357,28 @@ def test_to_poi_validation_rejects_the_wrong_combinations(capsys):
 # --------------------------------------------------------- --show-pois (browse, no routes)
 
 
-def _poi_snapshot(path, pois):
-    """A minimal snapshot carrying only POIs — the browse needs no routes at all."""
+_CURRENT_REGISTRY = object()  # "stamp whatever this build knows" — NOT `None`, which is
+                              # itself a meaningful value here (a file that records nothing)
+
+
+def _poi_snapshot(path, pois, *, poi_kinds=_CURRENT_REGISTRY):
+    """A minimal snapshot carrying only POIs — the browse needs no routes at all.
+
+    ``poi_kinds`` stands in for which build downloaded it: the current registry by
+    default (a fresh download, as ``parse_area`` stamps it), a shorter tuple for an area
+    saved by an older build, ``None`` for one saved before the field existed at all.
+    """
     save_snapshot(
         AreaSnapshot(
             bbox=(50.72, 15.58, 50.78, 15.68),
-            area=AreaData(pois=list(pois)),
+            area=AreaData(
+                pois=list(pois),
+                poi_kinds=(
+                    all_kinds()
+                    if poi_kinds is _CURRENT_REGISTRY
+                    else (None if poi_kinds is None else tuple(poi_kinds))
+                ),
+            ),
             elevations={},
             sample_interval_m=25.0,
         ),
@@ -428,11 +445,56 @@ def test_show_pois_empty_names_the_lever(tmp_path, capsys):
 def test_show_pois_distinguishes_a_pre_poi_snapshot(tmp_path, capsys):
     """An old snapshot cannot answer — that must not read as "no ruins here"."""
     path = tmp_path / "old.json"
-    _poi_snapshot(path, [])
+    # No objects AND no kind record: the file predates the feature entirely, which is a
+    # different claim from the "kinds not recorded" case below it (that one HAS objects).
+    _poi_snapshot(path, [], poi_kinds=None)
     assert run(_parse("--show-pois", "--area", str(path))) == 0
     out = capsys.readouterr().out
     assert "saved before the feature existed" in out
     assert "pick other --poi kinds" not in out
+
+
+def test_show_pois_names_kinds_the_area_predates(tmp_path, capsys):
+    """An area saved by an older build is full of objects and never looked for a tree.
+    Asking it for one must not print the "nothing of that kind is mapped" line."""
+    path = tmp_path / "older.json"
+    _poi_snapshot(path, _DEMO_POIS, poi_kinds=[k for k in all_kinds() if k != "tree"])
+    assert run(_parse("--show-pois", "--area", str(path), "--poi", "tree")) == 0
+    cap = capsys.readouterr()
+    assert "predates the kind tree" in cap.err
+    assert "fact about the file, not the landscape" in cap.err
+
+    # And it is said even when the listing is NOT empty: the ruins come back, the tree
+    # question was never asked, and printed bare the ruins read as the whole answer.
+    assert run(_parse("--show-pois", "--area", str(path), "--poi", "ruins,tree")) == 0
+    cap = capsys.readouterr()
+    assert "1 object: 1 ruin" in cap.out
+    assert "predates the kind tree" in cap.err
+
+
+def test_list_areas_says_how_far_behind_the_registry_a_file_is(tmp_path, capsys, monkeypatch):
+    """The inventory is where an area is picked, so it is the cheapest place to find out
+    the file is behind — before a search returns a confident empty list from it."""
+    monkeypatch.setenv("HIKE_SNAPSHOT_DIR", str(tmp_path))
+    _poi_snapshot(tmp_path / "current.json", _DEMO_POIS)
+    _poi_snapshot(
+        tmp_path / "older.json", _DEMO_POIS, poi_kinds=[k for k in all_kinds() if k != "tree"]
+    )
+    _poi_snapshot(tmp_path / "unrecorded.json", _DEMO_POIS, poi_kinds=None)
+    assert run(_parse("--list-areas")) == 0
+    out = capsys.readouterr().out
+    # Each area prints over TWO lines (name + bbox, then the counts), so an entry is the
+    # header line plus the one after it — matching only the first would look at the bbox.
+    rows = out.splitlines()
+    lines = {}
+    for name in ("current", "older", "unrecorded"):
+        i = next(i for i, line in enumerate(rows) if line.strip().startswith(name))
+        lines[name] = "\n".join(rows[i:i + 2])
+    # The current file says nothing beyond its count — a warning that never turns off is
+    # noise, and this is the state everything is meant to end up in.
+    assert "newer than it" not in lines["current"] and "not recorded" not in lines["current"]
+    assert "1 kind(s) newer than it" in lines["older"]
+    assert "kinds not recorded" in lines["unrecorded"]
 
 
 def test_show_pois_rejects_the_wrong_combinations(capsys):

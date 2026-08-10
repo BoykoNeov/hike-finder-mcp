@@ -18,6 +18,7 @@ from hike_finder import web
 from hike_finder.elevation.base import ElevationProvider
 from hike_finder.filters import Criteria, find_hikes
 from hike_finder.overpass import AreaData
+from hike_finder.poi import all_kinds
 from hike_finder.snapshot import (
     AreaSnapshot,
     RecordingElevationProvider,
@@ -47,10 +48,14 @@ class _Ramp(ElevationProvider):
         return [(lat - 50.0) * 20000.0 for lat, _ in points]
 
 
-def _make_snapshot(path, pois=None):
+def _make_snapshot(path, pois=None, poi_kinds=None):
+    """A snapshot for the HTTP tests. ``poi_kinds`` is the registry the area records
+    having been classified against — ``None`` (the default) stands for a file saved
+    before that field existed, which is what the pre-POI fixture needs to be."""
     area = AreaData(
         routes=[{"id": 7, "name": "WebNorth", "ways": [[(50.0, 14.0), (50.05, 14.0)]], "tags": {}}],
         pois=list(pois or []),
+        poi_kinds=None if poi_kinds is None else tuple(poi_kinds),
     )
     rec = RecordingElevationProvider(_Ramp())
     bbox = (49.9, 13.9, 50.2, 14.2)
@@ -70,6 +75,14 @@ def server(tmp_path, monkeypatch):
             {"coord": (50.0250, 14.0015), "kind": "ruins", "name": "Zřícenina"},
             {"coord": (50.0300, 14.0500), "kind": "church", "name": "Faraway"},
         ],
+        poi_kinds=all_kinds(),   # a fresh download: it vouches for every current kind
+    )
+    # A third area saved by an OLDER build: same objects, but it never looked for two of
+    # the kinds this build knows. Asking it about them must not read as "none there".
+    _make_snapshot(
+        tmp_path / "weboldkinds.json",
+        pois=[{"coord": (50.0250, 14.0015), "kind": "ruins", "name": "Zřícenina"}],
+        poi_kinds=[k for k in all_kinds() if k not in ("tree", "mill")],
     )
     srv = ThreadingHTTPServer(("127.0.0.1", 0), web.Handler)
     t = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -430,6 +443,52 @@ def test_poi_list_flags_a_pre_poi_area(server):
     """`webtest` was saved with no POIs — the UI must be able to say "can't know"."""
     _, body = _get(server + "/api/poi-list?area=webtest")
     assert body["pois"] == [] and body["stale_area"] is True
+    assert body["area_gap"]["state"] == "none"
+
+
+def test_poi_list_names_the_kinds_an_older_area_predates(server):
+    """The finer gap over HTTP: `weboldkinds` is full of objects and never looked for a
+    tree, so an empty tree listing is about the FILE. `stale_area` stays False — it means
+    what it always meant ("predates points of interest entirely"), and widening it would
+    change what an existing reader is told."""
+    _, body = _get(server + "/api/poi-list?area=weboldkinds&show_poi=tree")
+    assert body["pois"] == []
+    assert body["stale_area"] is False
+    assert body["area_gap"]["state"] == "missing"
+    assert body["area_gap"]["kinds"] == ["tree"]
+    assert "re-download" in body["area_gap"]["message"].lower()
+
+    # And it is reported even when the listing is NOT empty: half an answer printed bare
+    # reads as the whole one.
+    _, both = _get(server + "/api/poi-list?area=weboldkinds&show_poi=ruins&show_poi=tree")
+    assert [p["kind"] for p in both["pois"]] == ["ruins"]
+    assert both["area_gap"]["kinds"] == ["tree"]
+
+
+def test_poi_list_says_when_an_area_cannot_vouch_for_its_kinds(server):
+    """`webpoi`'s sibling case: a file with objects but NO kind record at all. It cannot
+    say which questions it was asked, which is a third answer, not a synonym for either
+    "covered" or "predates the feature"."""
+    _, body = _get(server + "/api/poi-list?area=webpoi&show_poi=cave")
+    assert body["area_gap"]["state"] == "ok"      # webpoi records the current registry
+    # `webtest` has neither objects nor a record, so it is "none", not "unknown" — the
+    # two are distinguished by whether the file holds anything at all.
+    _, old = _get(server + "/api/poi-list?area=webtest&show_poi=cave")
+    assert old["area_gap"]["state"] == "none"
+
+
+def test_areas_reports_how_far_behind_the_registry_each_file_is(server):
+    """The inventory is where someone picks an area, so it is the cheapest place to
+    learn a file is behind. The diff is taken server-side, by the one function that owns
+    it — JS re-deriving it from /api/pois would be free to disagree with the CLI."""
+    _, areas = _get(server + "/api/areas")
+    by_name = {a["name"]: a for a in areas}
+    assert by_name["webpoi"]["poi_kinds_missing"] == []           # current
+    # Registry order, the one order every POI listing in the project uses.
+    assert by_name["weboldkinds"]["poi_kinds_missing"] == [
+        k for k in all_kinds() if k in ("tree", "mill")
+    ]
+    assert by_name["webtest"]["poi_kinds_missing"] is None        # records nothing
 
 
 def test_poi_list_pairs_with_a_saved_area_where_routing_may_not(server):

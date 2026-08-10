@@ -173,14 +173,20 @@ area I already have" half, which needs **no network whatsoever**. Either way not
 measured, because nothing is walked: it makes **one Overpass call, builds no elevation
 provider, and spends nothing from the daily API quota**.
 
-> **A snapshot only knows the kinds that existed when you downloaded it.** Objects are
-> sorted into kinds at download time, so asking an older `--area` for a kind added since
-> returns an empty list — and an empty list here reads as "there are none", which is a
-> different claim from "this file never looked". A snapshot saved before *any* POI support
-> says so outright, but one saved between two registry versions cannot tell.
-> **Re-download the area after upgrading** (`--download`) if a kind you expect comes back
-> empty. The kinds added since 0.4.0 are `boundary_stone`, `mill`, `mine`, `sinkhole`,
-> `tree`, `artwork`, `firepit`, `camp` and `toilets`.
+> **A snapshot only knows the kinds that existed when you downloaded it — and it says so.**
+> Objects are sorted into kinds at download time, so asking an older `--area` for a kind
+> added since can only return an empty list. An empty list reads as "there are none",
+> which is a different claim from "this file never looked", so every snapshot **records
+> the kind set it was classified against** and the tool diffs it against the registry on
+> load: ask an older area for a `tree` and it names the kinds it predates instead of
+> answering. `--list-areas` shows the same thing up front (*"2 kind(s) newer than it"*), as
+> does the web UI's downloaded-area list. Re-download (`--download`) to close the gap.
+>
+> One case it can only hedge about: an area saved **between** the arrival of points of
+> interest and this mechanism holds objects but no record of which kinds it looked for.
+> Such a file reports *"does not record which kinds it was saved with"* whenever it is
+> asked a POI question — it cannot do better, and guessing would be the confident empty
+> list this all exists to prevent. Re-downloading it once fixes it for good.
 
 `--gpx` / `--geojson` export the listing as **waypoints** (a GPX `<wpt>` per object, a
 GeoJSON `Point` per object) rather than tracks — load them into OsmAnd / Komoot / mapy.cz /
@@ -253,7 +259,8 @@ tracks the *named* snapshot directory (`HIKE_SNAPSHOT_DIR`, where the web UI dow
 a file you wrote with `--download some/path.json` isn't registered anywhere — search it
 with `--area some/path.json`. An area downloaded before points of interest existed reports
 `0 POIs` and is flagged for re-download, so a `--poi` search against it can't be mistaken
-for "there is nothing of that kind here".
+for "there is nothing of that kind here"; an area that merely predates some *kinds* is
+flagged too, with how many and which.
 
 **Drawing the area.** In the web UI, **Draw a box** lets you drag an exact rectangle rather
 than relying on however the map is panned; it shows the size in km before you spend a query

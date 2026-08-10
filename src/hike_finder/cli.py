@@ -23,7 +23,7 @@ from .elevation import api_quota_snapshot
 from .export import hikes_to_geojson, hikes_to_gpx, pois_to_geojson, pois_to_gpx
 from .filters import Criteria
 from .format import format_hike, format_poi, format_poi_summary, hike_to_dict
-from .poi import kind_labels, normalise_kinds
+from .poi import kind_labels, normalise_kinds, unrecorded_kinds
 from .search import (
     compose_loops,
     compose_loops_around,
@@ -35,6 +35,8 @@ from .search import (
     routes_to_poi,
     search_hikes,
     search_snapshot,
+    snapshot_kinds_missing_message,
+    snapshot_poi_gap,
 )
 from .snapshot import (
     default_snapshot_dir,
@@ -480,15 +482,36 @@ def _show_pois(args: argparse.Namespace, cfg) -> int:
             print(err, file=sys.stderr)
             return 1
         places = list_snapshot_pois(snap, kinds)
-        if not snap.area.pois:
-            # "This area has no ruins" and "this file predates the feature and cannot
-            # say" are different answers with different fixes, and only one of them is
-            # about the landscape. --list-areas already flags such a snapshot; this is
-            # the same distinction at the point where it would otherwise be lost.
+        # "This area has no ruins" and "this file cannot say" are different answers with
+        # different fixes, and only one of them is about the landscape. --list-areas
+        # already flags such a snapshot; this is the same distinction at the point where
+        # it would otherwise be lost. `snapshot_poi_gap` owns which of the four cases
+        # holds, so the CLI only decides how to word it.
+        state, gap = snapshot_poi_gap(snap, kinds)
+        if state == "none":
             empty_msg = (
                 f"This downloaded area carries no points of interest — it was saved "
                 f"before the feature existed. Re-download it to browse and export them "
                 f"offline (hike-finder --bbox … --download {args.area})."
+            )
+        elif state == "missing":
+            # Said even when the listing is NON-empty: asking for ruins and trees against
+            # a file that never looked for trees returns a list of ruins, and printed
+            # bare it reads as the whole answer.
+            print(
+                f"note: {snapshot_kinds_missing_message(gap or ())} "
+                f"(hike-finder --bbox … --download {args.area})",
+                file=sys.stderr,
+            )
+            # `empty_msg` deliberately stays at _SHOW_POI_EMPTY: the note above already
+            # names the kinds nobody looked for, and it prints whether or not the listing
+            # came back empty.
+        elif state == "unknown":
+            empty_msg = (
+                f"This downloaded area does not record which kinds it was saved with, so "
+                f"an empty result here cannot be told apart from a kind nobody looked "
+                f"for. Re-download it if you expected something "
+                f"(hike-finder --bbox … --download {args.area})."
             )
     else:
         if not args.bbox:
@@ -552,6 +575,16 @@ def _print_areas(as_json: bool) -> int:
         # An older snapshot has no POIs, so say so here rather than letting a --poi
         # search against it look like "there are no churches in Krkonoše".
         poi = f"{a['pois']} POIs" if a.get("pois") else "no POIs (re-download for --poi)"
+        # The finer version of the same point: a file can be full of POIs and still
+        # predate whole kinds. The inventory is where someone decides which area to
+        # search, so it is the cheapest place to learn the file is behind the registry.
+        recorded = a.get("poi_kinds")
+        if a.get("pois"):
+            behind = unrecorded_kinds(tuple(recorded) if recorded is not None else None)
+            if behind is None:
+                poi += ", kinds not recorded"
+            elif behind:
+                poi += f", {len(behind)} kind(s) newer than it"
         names = f", {a['places']} baked names" if a.get("places") else ""
         print(
             f"  {a['name']:<20} {where}\n"

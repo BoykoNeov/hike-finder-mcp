@@ -207,7 +207,8 @@ chips · OSM relation id) **and** as a **pin** on the map at the route's start.
 - The **"Already downloaded"** list shows every area you have saved for offline
   searching, and each one is outlined on the map. Click one to search it offline —
   no network, no API calls. An entry warning *"no points of interest"* was saved
-  before that feature existed: re-download it to use **Must pass** there.
+  before that feature existed: re-download it to use **Must pass** there. *"predates
+  N kind(s)"* is the milder version — it has objects, just not those kinds.
 - **No results?** The map area is genuinely empty for your filters — zoom out, or
   relax a filter (loops especially are sparse; see the troubleshooting section).
 - The **`elevation API: x/1000`** tail is your daily-quota gauge (only shown when
@@ -508,7 +509,10 @@ this area?" without guesswork: each entry shows its route/sample/POI counts, fil
 download date, and every one is **outlined on the map** so you can see the ground it
 covers. Click an entry to select it (and frame it); click again to go back to the live map.
 An entry warning *"no points of interest"* predates that feature — re-download it before
-using **Must pass** there, or the filter can only come back empty.
+using **Must pass** there, or the filter can only come back empty. Two finer warnings sit
+beside it: *"predates N kind(s) (…)"* on an area saved before those kinds were registered,
+and *"kinds not recorded"* on one that cannot say which it holds. Both mean the same fix —
+re-download — and both exist so an empty result is never mistaken for an empty landscape.
 
 The same inventory is available outside the browser:
 
@@ -748,6 +752,16 @@ buttons then export exactly what you're looking at.
 > existed carries none. The listing says *"saved before the feature existed — re-download
 > it"* rather than reporting an empty landscape, because "there are no ruins here" and
 > "this file can't tell you" are different answers with different fixes.
+>
+> The same applies one level down, and it is the case you are more likely to meet: the
+> registry grows, so an area downloaded a few versions ago may hold objects and still have
+> never looked for a kind you are asking about. Every snapshot records **which kinds it was
+> classified against**, so instead of an empty list you get *"this downloaded area predates
+> the kind tree — it was never sorted into it… that is a fact about the file, not the
+> landscape"*. It is said even when other kinds you asked for did come back, since half an
+> answer printed bare reads as the whole one. An area saved *between* the arrival of points
+> of interest and this record can only say it does not know which kinds it holds; one
+> re-download settles it.
 
 ---
 
