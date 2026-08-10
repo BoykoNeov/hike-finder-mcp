@@ -1337,20 +1337,35 @@ def area_ferrata_readable(area: AreaData) -> bool:
     return any(r.get("way_tags") for r in area.routes)
 
 
-def ferrata_unrecorded_message() -> str:
+def ferrata_unrecorded_message(*, avoidance_works: bool = True) -> str:
     """Said when a saved area is asked to FIND ferrata it never fetched.
 
     The closing promise — that avoidance still works — is only true because this message
     is reached solely via :func:`ferrata_gap_message`, which has already established that
     the file carries member-way tags. Said unconditionally it would be a lie on the
     oldest files, which carry neither (measured: `ceskyraj.json` is exactly such a file).
+
+    ``avoidance_works=False`` drops that closing sentence, and exists for the ONE file the
+    readable check waves through vacuously: an area holding no route relations at all has
+    no member ways either, so there is nothing for avoidance to be measured from. The
+    promise there is not false the way `ceskyraj`'s was — nothing would be silently
+    dropped — but it is empty, and an "it still works" said about a file with nothing in
+    it is the kind of sentence a client repeats as reassurance. The rest of the message is
+    NOT dropped with it: `route=via_ferrata` relations are not hiking routes, so a
+    re-download of an area with no hiking routes can still turn up cabled climbs, which is
+    exactly what `no_routes_message` does not cover.
     """
+    promise = (
+        " AVOIDING them still works on this file, since that is measured from the member "
+        "ways it already has."
+        if avoidance_works
+        else ""
+    )
     return (
         "ferrata: this downloaded area predates cabled-route fetching — it holds no "
         "via ferrata relations or ways, so a search for them can only come back empty. "
         "That is a fact about the file, not the terrain: re-download the area to search "
-        "it for ferrata. AVOIDING them still works on this file, since that is measured "
-        "from the member ways it already has."
+        f"it for ferrata.{promise}"
     )
 
 
@@ -1379,11 +1394,19 @@ def ferrata_gap_message(area: AreaData, *, finding: bool) -> str | None:
 
     ``finding`` distinguishes the two flags: `--ferrata` needs the fetched objects,
     `--no-ferrata` does not.
+
+    The `avoidance_works` argument closes the one hole the ordering leaves open. An area
+    with no route relations passes the readable check *vacuously* (by design — see
+    :func:`area_ferrata_readable`), so it reaches the unrecorded message without ever
+    having been shown to carry member-way tags, and collects a promise about measuring
+    something it holds none of. Surfaced by reading an MCP reply, where this is the one
+    place the two sentences land in a single paragraph: the CLI splits them across streams
+    and the web UI across boxes.
     """
     if not area_ferrata_readable(area):
         return ferrata_unreadable_message()
     if finding and not area_records_ferrata(area):
-        return ferrata_unrecorded_message()
+        return ferrata_unrecorded_message(avoidance_works=bool(area.routes))
     return None
 
 

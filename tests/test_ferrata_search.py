@@ -423,6 +423,36 @@ def test_a_file_with_member_tags_but_no_ferrata_objects_gets_the_other_message()
     assert ferrata_gap_message(area, finding=False) is None
 
 
+def test_an_area_with_no_routes_is_not_promised_that_avoidance_works_either():
+    """The hole the ordering leaves open, and the sibling of the test two above.
+
+    A file with no route relations passes `area_ferrata_readable` VACUOUSLY (deliberately
+    — `no_routes_message` owns that case), so it reaches the unrecorded message without
+    ever having been shown to hold member-way tags, and it holds none: there are no member
+    ways at all. Unlike `ceskyraj`'s version of this bug the promise is empty rather than
+    false — nothing gets silently dropped — but "avoiding still works on this file" said
+    about a file with nothing in it is read as reassurance.
+
+    The rest of the sentence stays, and that is the half worth keeping: `route=via_ferrata`
+    relations are not hiking routes, so re-downloading an area with no hiking routes can
+    still turn up cabled climbs. `no_routes_message` says nothing about that.
+    """
+    area = AreaData(routes=[])
+    msg = ferrata_gap_message(area, finding=True)
+    assert "predates cabled-route fetching" in msg
+    assert "still" not in msg          # ...i.e. never the "avoidance works anyway" promise
+    # Asked to AVOID, the same file has nothing to disclaim at all.
+    assert ferrata_gap_message(area, finding=False) is None
+    # And a file that DOES carry member ways still gets the promise — the complement, or
+    # this would just be a deletion.
+    with_routes = parse_area([
+        _relation(1, "hiking", members=(("100", 46.5, 800),)),
+        {"type": "way", "id": 100, "tags": {"highway": "path"}},
+    ])
+    with_routes.ferrata_routes = with_routes.ferrata_ways = None
+    assert "still works on this file" in ferrata_gap_message(with_routes, finding=True)
+
+
 def test_a_current_file_has_nothing_to_apologise_for():
     area = parse_area([
         _relation(1, "hiking", members=(("100", 46.5, 800),)),

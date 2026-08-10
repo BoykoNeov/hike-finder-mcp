@@ -571,6 +571,23 @@ thing is validated live against real OSM. Highlights:
   yields no caveat (`area_ferrata_readable` is vacuously true with no routes) so
   `no_routes` stands alone — the complement falls out of the predicates rather than being
   arranged, and is pinned as such.
+  **Putting those two sentences in one paragraph exposed a wording bug the other two
+  frontends had been hiding**, and it is the second instance of the same defect this
+  feature has produced. `ferrata_unrecorded_message` ended by promising that avoidance
+  still works "from the member ways it already has" — and the ordering in
+  `ferrata_gap_message` guarantees that only for a file shown to CARRY member-way tags,
+  which a routeless file never was: it passes the readable check *vacuously*, by design.
+  So the promise landed on a file with no member ways at all. Milder than the `ceskyraj`
+  original (empty rather than false — nothing is silently dropped) and invisible where the
+  CLI splits the two across streams and the web UI across boxes, but "it still works" said
+  about a file with nothing in it is read as reassurance. `ferrata_unrecorded_message`
+  takes `avoidance_works=` now and `ferrata_gap_message` passes `bool(area.routes)`. The
+  rest of the sentence stays, deliberately: `route=via_ferrata` relations are **not**
+  hiking routes, so re-downloading an area with no hiking routes can still turn up cabled
+  climbs, and `no_routes_message` says nothing about that. The general lesson is about
+  *channels*, not wording — **a message pair that three frontends render in three places
+  is only proof-read where they land together**, and until this reply existed nothing put
+  them together.
   **Verified over real stdio** (a `python -m hike_finder.server` subprocess, OS pipes,
   JSON-RPC — offline, on hand-built snapshots, so no Overpass and no elevation API), all
   twelve cases across four files: unreadable + `ferrata=false` → the **unreadable**

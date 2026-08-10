@@ -28,6 +28,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fetch always parses the tags and its query text differs, so there is no gap to report.
   Verified over a real stdio subprocess on hand-built snapshots (no network), twelve
   cases, both directions of every flag — including the silences.
+- **A downloaded area with no hiking routes is no longer promised that ferrata avoidance
+  "still works" on it.** The sentence is measured from member-way tags, and such a file
+  has no member ways at all — it reached the promise only because the readable check waves
+  a routeless area through vacuously (deliberately; the "no route relations are mapped
+  here" message owns that case). Empty rather than false, unlike the older file that
+  motivated the wording, but it reads as reassurance. The rest of the message stays:
+  `route=via_ferrata` relations are not hiking routes, so re-downloading an area with no
+  hiking routes can still turn up cabled climbs. Affects all three frontends, which share
+  the sentence. Found by reading an MCP reply — the one place the two sentences land in a
+  single paragraph.
 
 ## [0.6.0] - 2026-08-10
 

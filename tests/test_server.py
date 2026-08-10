@@ -1052,6 +1052,12 @@ def test_no_routes_and_the_ferrata_gap_are_both_said_when_both_are_true(tmp_path
     assert "predates cabled-route fetching" in both
     assert "No hiking route relations are mapped in that area" in both
     assert "No matching hikes found in that area." not in both   # no_routes outranks it
+    # Reading this reply is what turned up a wording bug the CLI and the web UI had been
+    # hiding by splitting the two sentences across streams and boxes: the unrecorded
+    # message used to end by promising that avoidance still works "from the member ways it
+    # already has", on a file that has no member ways at all. Fixed in
+    # search.ferrata_unrecorded_message; pinned at the source in test_ferrata_search.py.
+    assert "still works on this file" not in both
 
     # The complement falls out rather than being arranged: asked to AVOID cable, the same
     # file has nothing to disclaim — there are no routes to be unable to read — and
