@@ -517,11 +517,23 @@ thing is validated live against real OSM. Highlights:
   sentence, and the search that produced it already showed one).
   Offline pins: seven HTTP cases in `test_web.py` (the envelope shape itself, so the
   `_hikes` unwrapping helper cannot tunnel a shape change past the suite; both ferrata
-  sentences; both quiet directions; `no_routes` offline and live) and eight browser-side
+  sentences; both quiet directions; `no_routes` offline and live) and ten browser-side
   checks in `webui_harness.cjs` — including the one the server cannot currently produce
   and the browser must still honour: **a gap notice rendered while routes are listed**.
+  The ferrata cases are pinned at the page's DEFAULT `near_misses` ("auto"), not the
+  explicit `false` they were first written with, and the near-miss pass does not relax
+  `ferrata` in either direction (checked live and stated in `Criteria.accepts_geometry`)
+  — so the empty list really is empty and the notice really is all there is.
   The real browser was NOT driven (no extension available in that session); the node
   harness runs the page's own script, which is this repo's standing substitute.
+  **`clearNotices()` runs ahead of every mode guard**, not beside the fetch: several
+  guards return early ("drop your point first") and a caveat left standing describes a
+  search nobody is looking at. And the harness could not have caught that as first
+  written — its DOM stub kept `_children` when the page set `innerHTML = ''`, so "this
+  search rendered nothing" was unobservable and every call site reset the list by hand.
+  The stub drains on empty now. That is the same class of defect as the deferred
+  `setTimeout` this harness already documents: **a stub that is more forgiving than the
+  DOM hides exactly the bugs the harness exists to catch.**
 - **All three frontends validated live**, including the MCP server over real stdio.
 - **Repo hygiene**: MIT license, CHANGELOG, complete pyproject, and CI across Linux 3.10–3.14 +
   Windows; v0.1.0, v0.2.0, v0.3.0, v0.3.1 and v0.4.0 tagged + GitHub-released. **CI being green is a
