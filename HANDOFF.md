@@ -274,9 +274,20 @@ thing is validated live against real OSM. Highlights:
   So the `--routes 1` answer really was not the nearest, and the mode never claimed it was.
   The hedge stays armed at `--routes 5` as well (farthest 1.2 km vs a 0.4 km bound), which is
   the same honest recursion the radius bound shows — nothing outside the pool is ever assumed
-  away. Both bounds have now fired live and both have been shown to point at something real,
-  and `test_the_cheap_pass_admits_when_it_may_have_dropped_a_nearer_one` still pins the
-  branch offline.
+  away.
+  **And it goes quiet, which is what makes it a certificate rather than noise** — the same
+  two-directions test the radius bound had to pass. Density is what flips it: the identical
+  `--to-poi peak --routes 1` from Špindlerův Mlýn at `--to-poi-radius 5000` puts **21**
+  summits in radius (so the pool of 10 is armed and `excluded_crow_m` = 3627 m is the
+  *binding* bound, well inside the 5 km radius) and answers Kozí hřbety at 1.83 km — under
+  the bound, so **no hedge is printed at all**. Note the near miss in setting this up: at the
+  default 3 km radius the same start has only 6 summits in range, so the pool never fills,
+  `excluded_crow_m` is infinite and the *radius* is the binding bound again. A quiet run only
+  demonstrates the cheap-pass bound when ≥11 candidates are in radius — count them
+  (`--show-pois --poi peak`) before claiming which bound went quiet.
+  Both bounds have now fired live, both have been shown to point at something real, and both
+  have been shown to switch off; `test_the_cheap_pass_admits_when_it_may_have_dropped_a
+  _nearer_one` still pins the branch offline.
 
   Export round-tripped: 1 track / 143 trkpt / **143 `<ele>`** (the faithfulness gate passed) plus
   a single start `<wpt>`, diacritics intact; the GeoJSON carries a `destination` property and its
@@ -314,6 +325,12 @@ thing is validated live against real OSM. Highlights:
     prints `surface:mixed (100% known)` — the dominance gate doing its job on real data.
   - **The mid-segment split path is live too**: `--to-poi peak` snapped its start 32 m onto a
     segment (a real `_subpolyline` cut) and the resulting route still reported a breakdown.
+  - **All five synthesised modes were run**, not four: `--around` over Špindl reports a flag
+    on 6 of 8 loops, and `--from`/`--to` on both its routes. Two silences were chased down
+    rather than assumed, and both are the coverage gate to the decimal — the `--from`/`--to`
+    runner-up sits at **49.3 %**, just under the 50 % line, and prints nothing while its
+    5.85 km sibling at 60.1 % prints `surface:asphalt 58%`. A flag that appears on some
+    results and not others is the gate working; check `--json` before reading it as a bug.
 - **Destination filter** (`--poi`, MCP `poi`, web "Must pass") — the registry round-trip, the
   grid-vs-brute-force equivalence, line-not-vertex proximity, the snapshot round-trip, and the
   cheap-pass economy are all unit-tested (`test_poi.py`); the HTTP surface and the loud
@@ -447,11 +464,12 @@ skip without the `mcp` extra).
   the margin held. It *can* return the wrong one — `test_the_cheap_pass_admits_when_it_may_have
   _dropped_a_nearer_one` constructs exactly that, and a live `--to-poi peak --routes 1` over
   Český ráj *did* it (1.21 km answer; the dropped tail held one at 0.43 km) — but never
-  silently. The cheap-pass bound bites hardest on **dense** kinds: `peak` in a rock town puts
-  the 11th-nearest summit 300 m away, so a pool of 10 is nowhere near enough and the hedge
-  fires on essentially every run. Raising `--routes` is the lever that widens the pool
-  (`keep = max(4×N, 10)`); there is no separate knob, by design — the factor exists to keep
-  the Dijkstra count proportional to what was asked for.
+  silently. What decides whether the hedge fires is the **density** of the kind against the
+  pool of 10, not the kind itself: in a rock town the 11th-nearest summit is 300 m out, so
+  the pool is hopeless and the warning is on; in Krkonoše the 11th sits 3.6 km out and the
+  same query goes quiet. Raising `--routes` is the only lever on the pool
+  (`keep = max(4×N, 10)`) — the factor exists to keep the Dijkstra count proportional to
+  what was asked for, so there is no separate knob.
 - **`--to-poi` is live-only, deliberately.** A snapshot carries both routes and POIs, so an
   offline variant is conceivable, but the mode needs a trail graph and the elevation pass, and
   a snapshot's bbox is fixed while this mode derives its own from the start point and the cap.
