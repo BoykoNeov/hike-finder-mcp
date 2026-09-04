@@ -20,6 +20,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   here on the day it is added rather than on the day someone notices one frontend cannot
   ask for it. This project's recurring bug is not a wrong answer; it is a filter that
   reaches the three surfaces on three different days.
+  It found something on its first run: the four MCP point-mode tools (`circular_routes`,
+  `routes_between`, `route_via`, `routes_to_poi`) build their filters with the same
+  `_criteria` as `find_hikes`, so all four apply all ten — but their schemas offer fewer,
+  and nothing in the file says why for any of them. An LLM cannot ask `circular_routes`
+  for a gain range the engine applies and the CLI exposes on the same mode. The test
+  tables every omission and fails if the table and the schemas drift apart in either
+  direction, so closing one is a deliberate change to what the MCP surface advertises.
+  Listed, not fixed — see `HANDOFF.md` under Known limitations.
 - **`py.typed`.** The engine is fully typed now, so `import hike_finder` downstream gets
   those types instead of `Any`.
 
@@ -40,16 +48,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   run time by `routes_to_poi`. It is declared under `TYPE_CHECKING`, so composition still
   imports nothing from `poi.py` — the separation the comment there asks for, now kept by
   the dataclass rather than by a `getattr` with a default.
-
-### Known
-
-- **Four MCP point-mode tools honour filters they do not advertise.** `circular_routes`,
-  `routes_between`, `route_via` and `routes_to_poi` build their filters with the same
-  `_criteria` as `find_hikes`, so all four apply all ten — but their schemas offer fewer,
-  and eight of those omissions have no stated reason (an LLM cannot ask `circular_routes`
-  for a gain range the engine applies and the CLI exposes on the same mode). The parity
-  test tables both the deliberate omissions and the gaps, and fails if either set drifts,
-  so closing one is a deliberate change to what the MCP surface advertises.
 
 ## [0.7.0] - 2026-09-04
 

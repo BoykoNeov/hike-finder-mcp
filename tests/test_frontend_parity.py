@@ -16,8 +16,8 @@ day someone notices one frontend cannot ask for it.
 The MCP half is checked twice on purpose, because the two halves break separately: the
 handler reading the key (``server._criteria``) and the tool schema DECLARING it. A
 filter missing from the schema is honoured by the engine and invisible to the client —
-which is exactly the state four of the point-mode tools are in; see
-``test_point_mode_tools_advertise_the_filters_they_honour`` at the bottom.
+which is exactly the state four of the point-mode tools are in; see ``NOT_ADVERTISED``
+and the test beneath it at the bottom of this file.
 """
 from dataclasses import dataclass, fields
 from urllib.parse import parse_qs
@@ -180,34 +180,23 @@ def test_find_hikes_declares_every_filter_in_its_schema(field):
 #
 # `circular_routes`, `routes_between`, `route_via` and `routes_to_poi` all build their
 # filters with the SAME `server._criteria`, so all four honour all ten filters. Their
-# schemas advertise fewer. Some of those omissions are the filter being meaningless for
-# the mode; the rest are gaps. This table records which is which, so a future change to
-# any of these schemas is a decision rather than an accident.
-DELIBERATELY_ABSENT = {
-    # Every result IS a loop, so the shape filter has nothing to select.
+# schemas advertise fewer, and NOTHING IN `server.py` SAYS WHY for any of them — there is
+# no comment at any of the four schemas explaining an omission. So this is one table, not
+# a "deliberate" set and a "gap" set: sorting them into intent nobody recorded would be
+# this repo's own standing lesson (a label promising what the selector never checked)
+# committed in the test that exists to catch it.
+#
+# Each entry carries how it reads today. The test asserts the table is EXACT, so both
+# drifts fail: a filter quietly dropped from a schema, and a gap quietly closed.
+NOT_ADVERTISED = {
+    # Reads as inapplicable: every result of these modes is a loop / is not one, so the
+    # shape filter has nothing left to select.
     ("circular_routes", "circular"),
-    # Point-to-point between two points you picked yourself: the shape is fixed, and
-    # you already know what is at each end, so the access filters have nothing to add.
     ("routes_between", "circular"),
-    ("routes_between", "car_access"),
-    ("routes_between", "chairlift_access"),
-    ("routes_between", "transit_access"),
     ("route_via", "circular"),
-    ("route_via", "car_access"),
-    ("route_via", "chairlift_access"),
-    ("route_via", "transit_access"),
-    # A route drawn TO an object: it ends at the object, not in a loop, and the far end
-    # is the object rather than somewhere you would arrive by lift or bus.
     ("routes_to_poi", "circular"),
-    ("routes_to_poi", "chairlift_access"),
-    ("routes_to_poi", "transit_access"),
-}
-
-# Known gaps: the handler honours these, the schema does not offer them, and no reason
-# has been given for the difference. The CLI exposes every one of them on the same mode
-# (`--min-gain` works with `--around`). Listed rather than fixed so that closing one is
-# a deliberate change to what the MCP surface advertises; delete the entry when it is.
-UNADVERTISED = {
+    # Reads as a gap. The engine applies these, and the CLI exposes every one of them on
+    # the same mode — `--min-gain` works with `--around`. An LLM simply cannot ask.
     ("circular_routes", "min_gain_m"),
     ("circular_routes", "max_gain_m"),
     ("routes_between", "min_gain_m"),
@@ -216,6 +205,18 @@ UNADVERTISED = {
     ("route_via", "min_gain_m"),
     ("route_via", "max_gain_m"),
     ("routes_to_poi", "min_distance_km"),
+    # Reads as arguable, and is left listed for that reason rather than filed as decided.
+    # You pick the endpoints in these modes, but you pick COORDINATES — whether parking, a
+    # lift or a bus stop is mapped near them is exactly what these filters answer, and
+    # picking a point is not knowing that. `circular_routes` advertises all three.
+    ("routes_between", "car_access"),
+    ("routes_between", "chairlift_access"),
+    ("routes_between", "transit_access"),
+    ("route_via", "car_access"),
+    ("route_via", "chairlift_access"),
+    ("route_via", "transit_access"),
+    ("routes_to_poi", "chairlift_access"),
+    ("routes_to_poi", "transit_access"),
 }
 
 POINT_MODE_TOOLS = ["circular_routes", "routes_between", "route_via", "routes_to_poi"]
@@ -223,11 +224,12 @@ POINT_MODE_TOOLS = ["circular_routes", "routes_between", "route_via", "routes_to
 
 @pytest.mark.parametrize("tool_name", POINT_MODE_TOOLS)
 def test_point_mode_tools_advertise_the_filters_they_honour(tool_name):
-    """Every filter a point-mode tool honours is either advertised or listed above.
+    """What each point-mode tool leaves out of its schema is exactly what is tabled.
 
-    The failure this catches in both directions: a filter quietly dropped from one of
-    these schemas (it lands in neither set), and a gap quietly closed without removing
-    its entry (the stale entry is reported too, so the table cannot rot).
+    Exact rather than one-directional, so both drifts fail: a filter quietly dropped
+    from one of these schemas (it appears in neither the schema nor the table), and one
+    quietly added without deleting its entry (the table would then describe a gap that
+    no longer exists, which is how a table like this rots).
     """
     import asyncio
 
@@ -235,26 +237,11 @@ def test_point_mode_tools_advertise_the_filters_they_honour(tool_name):
     tools = {t.name: t for t in asyncio.run(server.list_tools()).tools}
     props = set(tools[tool_name].input_schema["properties"])
 
-    unexplained = [
-        field
-        for field in CRITERIA_FIELDS
-        if CASES[field].mcp_property not in props
-        and (tool_name, field) not in DELIBERATELY_ABSENT
-        and (tool_name, field) not in UNADVERTISED
-    ]
-    assert not unexplained, (
-        f"{tool_name} honours {unexplained} (via server._criteria) but does not "
-        f"advertise them, and neither table above says why."
-    )
-
-    stale = [
-        field
-        for field in CRITERIA_FIELDS
-        if CASES[field].mcp_property in props
-        and ((tool_name, field) in DELIBERATELY_ABSENT
-             or (tool_name, field) in UNADVERTISED)
-    ]
-    assert not stale, (
-        f"{tool_name} now advertises {stale}; remove those entries from "
-        f"DELIBERATELY_ABSENT / UNADVERTISED."
+    absent = {f for f in CRITERIA_FIELDS if CASES[f].mcp_property not in props}
+    tabled = {f for (tool, f) in NOT_ADVERTISED if tool == tool_name}
+    assert absent == tabled, (
+        f"{tool_name} honours every Criteria field via server._criteria. It now leaves "
+        f"{sorted(absent - tabled)} out of its schema without an entry in "
+        f"NOT_ADVERTISED, and advertises {sorted(tabled - absent)} which is still "
+        f"listed there."
     )

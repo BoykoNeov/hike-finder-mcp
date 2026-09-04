@@ -774,16 +774,21 @@ skip without the `mcp` extra).
 - **Four MCP point-mode tools honour filters they do not advertise.** `circular_routes`,
   `routes_between`, `route_via` and `routes_to_poi` build their filters with the same
   `server._criteria` as `find_hikes`, so all four apply all ten `Criteria` fields — but
-  their `inputSchema`s offer fewer. Some omissions are the filter being meaningless for
-  the mode: a `circular_routes` result IS a loop, so `circular` has nothing to select.
-  Eight are gaps with no stated reason — an LLM cannot ask `circular_routes` for a gain
-  range that the engine applies and that the CLI exposes on the very same mode
-  (`--min-gain` works with `--around`). Both sets are tabled in
-  `tests/test_frontend_parity.py` (`DELIBERATELY_ABSENT` and `UNADVERTISED`) and the test
-  fails on drift in either direction: an omission in neither table, and an entry that has
-  gone stale because the gap was closed. Left listed rather than fixed because closing one
-  changes what the MCP surface advertises to every client, which is a decision, not a
-  cleanup. Adding a property to a schema is additive and cheap when that decision is made.
+  their `inputSchema`s offer fewer. **Nothing in `server.py` says why for any of them** —
+  there is no comment at any of the four schemas explaining an omission, so "deliberate"
+  and "gap" is a reading, not a record, and the table in
+  `tests/test_frontend_parity.py` (`NOT_ADVERTISED`) is one list rather than two.
+  How they read today: four are inapplicable (a `circular_routes` result IS a loop, so
+  `circular` has nothing to select); eight look like plain gaps, where the engine applies
+  the filter and the CLI exposes it on the very same mode (`--min-gain` works with
+  `--around`, but an LLM cannot ask `circular_routes` for a gain range); and eight are
+  arguable — you pick the endpoints in `routes_between`/`route_via`, but you pick
+  COORDINATES, and whether parking or a bus stop is mapped near them is precisely what
+  `car_access`/`transit_access` answer. `circular_routes` advertises all three of those.
+  The test asserts the table is EXACT, so both drifts fail: a filter quietly dropped from
+  a schema, and one quietly added while its entry stays behind to rot. Left listed rather
+  than fixed because closing one changes what the MCP surface advertises to every client,
+  which is a decision, not a cleanup — and an additive, cheap one when it is made.
 
 - **The app is only as good as `route=hiking`/`route=foot` coverage, and that varies by
   region far more than by terrain.** Every mode — area search, `--around`, `--from/--to`,
