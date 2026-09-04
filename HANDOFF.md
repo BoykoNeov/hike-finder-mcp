@@ -752,6 +752,13 @@ skip without the `mcp` extra).
     What is DONE.
   - ~~MCP `find_hikes` cannot take a bare area name~~ — fixed; see "All three area tools
     read an area the same way" under What is DONE.
+  One PREMISE in that fix is unpinned and worth knowing before it is broken. "A point mode
+  never carries a ferrata caveat" is true only because a point mode is always a LIVE
+  fetch. Let one read a saved snapshot — `--around` against a downloaded area is the
+  obvious next feature — and the silence becomes wrong, while
+  `test_a_point_mode_never_carries_a_ferrata_notice` keeps passing and hides it: it
+  asserts the silence, not the reason for it. Whoever adds an offline point mode has to
+  route it through `_area_notices` (or its MCP/CLI equivalents) in the same change.
 - **`--show-ferrata` cannot export.** `--gpx`/`--geojson` are named in its ignored-flags
   note rather than wired up, because `ferrata.FerrataLine` carries only a start point,
   not the cabled line's geometry. Exporting means widening that record and adding a
