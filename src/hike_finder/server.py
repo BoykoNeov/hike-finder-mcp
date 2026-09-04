@@ -238,9 +238,13 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                 "distance band (default 3-15 km) and that come within `radius_m` of the point "
                 "(default 1000 m), each started at the on-loop spot nearest your point.\n\n"
                 "Use this for 'find me a ~10 km loop starting near HERE'. The area is derived "
-                "from the point — no bounding box needed. Combine with car_access / "
-                "chairlift_access to require a parking lot / lift near the loop. Results are "
-                "stitched from several trails and have no single OSM relation id."
+                "from the point — no bounding box needed.\n\n"
+                "Filters (all optional): elevation gain (min/max_gain_m), length "
+                "(min/max_distance_km, which is also the target band the loops are built to), "
+                "car_access / chairlift_access / transit_access (a parking lot / lift / stop "
+                "mapped near the loop), `poi` (loops passing an object of a kind) and "
+                "`ferrata`. Results are stitched from several trails and have no single OSM "
+                "relation id."
             ),
             input_schema={
                 "type": "object",
@@ -255,6 +259,15 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                     },
                     "min_distance_km": {"type": "number"},
                     "max_distance_km": {"type": "number"},
+                    "min_gain_m": {
+                        "type": "number",
+                        "description": "Keep only loops climbing at least this much, metres.",
+                    },
+                    "max_gain_m": {
+                        "type": "number",
+                        "description": "Keep only loops climbing at most this much, metres "
+                        "('a flat one, please').",
+                    },
                     "car_access": {
                         "type": "boolean",
                         "description": "true = require parking mapped near the loop.",
@@ -292,9 +305,13 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                 "onto the nearest marked trail and returns up to `routes` alternatives ordered "
                 "by length (the shortest, then a genuinely different second-shortest, etc.).\n\n"
                 "Use this for 'how do I walk from A to B, and what are my options'. The area is "
-                "derived from the two points — no bounding box needed. `max_distance_km` caps a "
-                "route's length; a point more than ~2 km from any trail is treated as off-network "
-                "and yields no routes. Results are stitched from several trails (no single OSM id)."
+                "derived from the two points — no bounding box needed. A point more than ~2 km "
+                "from any trail is treated as off-network and yields no routes. Results are "
+                "stitched from several trails (no single OSM id).\n\n"
+                "Filters (all optional): elevation gain (min/max_gain_m), length "
+                "(min/max_distance_km), `poi` (routes passing an object of a kind) and "
+                "`ferrata`. They SELECT among the shortest-first alternatives — they do not "
+                "make the search look for a longer or hillier way round."
             ),
             input_schema={
                 "type": "object",
@@ -312,6 +329,20 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                         "description": (
                             "Cap a route's length, km (default: 3x the straight-line gap)."
                         ),
+                    },
+                    "min_distance_km": {
+                        "type": "number",
+                        "description": "Discard routes shorter than this, km. A filter on the "
+                        "shortest-first alternatives, NOT a request for a scenic detour: asking "
+                        "for 10 km between points 2 km apart returns nothing at all.",
+                    },
+                    "min_gain_m": {
+                        "type": "number",
+                        "description": "Discard routes climbing less than this, metres.",
+                    },
+                    "max_gain_m": {
+                        "type": "number",
+                        "description": "Discard routes climbing more than this, metres.",
                     },
                     **_POI_SCHEMA,
                     **_FERRATA_SCHEMA,
@@ -337,7 +368,11 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                 "these places'. The area is derived from the points — no bounding box needed. "
                 "Points are visited in the order given (no reordering). A point more than ~2 km "
                 "from any trail, or a leg crossing a gap in the network, yields no route. Results "
-                "are stitched from several trails (no single OSM id)."
+                "are stitched from several trails (no single OSM id).\n\n"
+                "Filters (all optional): elevation gain (min/max_gain_m), length "
+                "(min/max_distance_km), `poi` and `ferrata`. Only ONE route is drawn through "
+                "your points, so these DISCARD it rather than choosing between alternatives — a "
+                "band the linked route misses returns nothing."
             ),
             input_schema={
                 "type": "object",
@@ -361,10 +396,21 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                             "true = close into a non-retracing circular route (default false)."
                         ),
                     },
-                    "min_distance_km": {"type": "number"},
+                    "min_distance_km": {
+                        "type": "number",
+                        "description": "Drop the linked route if it runs shorter than this, km.",
+                    },
                     "max_distance_km": {
                         "type": "number",
                         "description": "Drop the linked route if it runs longer than this, km.",
+                    },
+                    "min_gain_m": {
+                        "type": "number",
+                        "description": "Drop the linked route if it climbs less than this, metres.",
+                    },
+                    "max_gain_m": {
+                        "type": "number",
+                        "description": "Drop the linked route if it climbs more than this, metres.",
                     },
                     **_POI_SCHEMA,
                     **_FERRATA_SCHEMA,
@@ -427,6 +473,13 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                         "type": "number",
                         "description": "Cap a route's length, km (default: 3x the straight-line "
                         "distance to that destination). It also sizes the fetched area.",
+                    },
+                    "min_distance_km": {
+                        "type": "number",
+                        "description": "Discard routes shorter than this, km — a filter on the "
+                        "nearest-first results, not a search for a farther destination. Unlike "
+                        "max_distance_km it does NOT size the fetched area, so raising it never "
+                        "brings more distant objects into view.",
                     },
                     "min_gain_m": {"type": "number"},
                     "max_gain_m": {"type": "number"},
@@ -729,7 +782,7 @@ async def _call_circular_routes(arguments: dict) -> list[TextContent]:
         _point_empty(
             diagnostics,
             "No circular routes pass within the radius of your point — widen radius_m, the "
-            "min/max_distance_km band, or drop car_access/chairlift_access.",
+            "min/max_distance_km or min/max_gain_m band, or drop car_access/chairlift_access.",
         ),
     )
 
@@ -755,7 +808,7 @@ async def _call_routes_between(arguments: dict) -> list[TextContent]:
             diagnostics,
             "No routes could be drawn between your two points — they may sit on disconnected "
             "trail networks, be off-network (more than ~2 km from any trail), or every route "
-            "exceeds the length cap.",
+            "falls outside the min/max_distance_km or min/max_gain_m band.",
         ),
     )
 
@@ -782,11 +835,12 @@ async def _call_route_via(arguments: dict) -> list[TextContent]:
     )
     empty = (
         "No circular route could be drawn through your points — a point may be off-network "
-        "(more than ~2 km from any trail) or a leg crosses a gap in the network."
+        "(more than ~2 km from any trail), a leg crosses a gap in the network, or the closed "
+        "route falls outside the min/max_distance_km or min/max_gain_m band."
         if loop
         else "No route could be drawn through your points — a point may be off-network (more "
         "than ~2 km from any trail), a leg crosses a gap, or the route falls outside the "
-        "min/max_distance_km band."
+        "min/max_distance_km or min/max_gain_m band."
     )
     return _serialize(hikes, arguments.get("format") or "text", _point_empty(diagnostics, empty))
 
@@ -823,7 +877,8 @@ async def _call_routes_to_poi(arguments: dict) -> list[TextContent]:
             diagnostics,
             "No route could be drawn to an object of that kind — either nothing of it is mapped "
             "within search_radius_m of your point (widen it), the ones found sit off the trail "
-            "network, or every route to them runs past the length cap (raise max_distance_km). "
+            "network, or every route to them falls outside your length band (raise "
+            "max_distance_km, lower min_distance_km). "
             "A miss means nothing of that kind is MAPPED in OSM near your point, not that "
             "nothing is there.",
         ),

@@ -118,7 +118,10 @@ Options, cheapest first:
   gate asserting the table covers every field. The MCP side is checked twice — the
   handler reading the key and the schema declaring it — because those break separately,
   and the schema half is the one that breaks an LLM client. It found eight filters the
-  point-mode tools honour but do not advertise; see `HANDOFF.md`.
+  point-mode tools honour but did not advertise — gain and length, on modes where the CLI
+  has always offered them; those are now in the four schemas, with
+  `tests/test_point_mode_filters.py` checking each mode applies what it promises. The
+  twelve arguable/inapplicable omissions stay listed in `HANDOFF.md`.
 - **One option table (L):** a single declarative list of options (name, type, help,
   which frontends) that generates the argparse arguments, the MCP `inputSchema`, and
   the web parser. `list_tools` shrinks to a loop. This is a refactor of ~800 lines

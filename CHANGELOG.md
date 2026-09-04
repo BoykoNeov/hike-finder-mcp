@@ -27,7 +27,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   for a gain range the engine applies and the CLI exposes on the same mode. The test
   tables every omission and fails if the table and the schemas drift apart in either
   direction, so closing one is a deliberate change to what the MCP surface advertises.
-  Listed, not fixed — see `HANDOFF.md` under Known limitations.
+- **The four MCP point-mode tools now advertise the gain and length filters they always
+  applied.** `circular_routes` and `route_via` gain `min_gain_m`/`max_gain_m`,
+  `routes_between` those plus `min_distance_km`, and `routes_to_poi` `min_distance_km` —
+  the eight omissions the parity test found that were plain oversights rather than
+  decisions. An LLM can now ask `circular_routes` for "a 10 km loop near here with 300-800 m
+  of climbing", which the engine has always honoured and the CLI has always offered on the
+  same mode. Additive: no existing argument changed meaning, and the twelve remaining
+  omissions (the four inapplicable `circular` ones and the eight arguable access ones) are
+  untouched — see `HANDOFF.md` under Known limitations.
+  Two things ride along, because a schema key is not the same as a working filter. Each
+  tool's description now lists what it filters on and says how these filters BEHAVE in that
+  mode: they select among shortest-first alternatives rather than searching for a longer or
+  hillier way round (asking for 10 km between points 2 km apart returns nothing at all), and
+  on `routes_to_poi` `min_distance_km` — unlike `max_distance_km` — does not size the
+  fetched area. And each mode's "nothing found" message now names the new way it can come
+  back empty. `tests/test_point_mode_filters.py` checks all four modes actually apply what
+  they now promise, on hand-built graphs with a deterministic elevation provider: where a
+  mode returns several routes the filter has to SELECT one, which an ignored filter and a
+  broken search would both fail differently.
 - **`py.typed`.** The engine is fully typed now, so `import hike_finder` downstream gets
   those types instead of `Any`.
 
