@@ -106,7 +106,7 @@ def test_routes_between_applies_the_minimum_length(offline):
 # ------------------------------------------------------------------- circular_routes
 #
 # Two separate rings, both passing within 500 m of the picked point between them: LOW is
-# a shallow 0.002° band (~220 m of climb), HIGH a 0.010° one (~1000 m). Both sit inside
+# a shallow 0.002° band (~200 m of climb), HIGH a 0.010° one (~1000 m). Both sit inside
 # the derived box, so the only thing that can tell them apart is the gain filter.
 AROUND = (50.000, 15.015)
 _LOW_RING = [(50.000, 15.000), (50.000, 15.010), (50.002, 15.010), (50.002, 15.000),
@@ -196,3 +196,70 @@ def test_routes_to_poi_applies_the_minimum_length(offline):
         search_radius_m=5000.0,
     )
     assert [h.destination.name for h in hikes] == ["across"]
+
+
+# ------------------------------------------------------- when the climb is not known
+#
+# `_measure_composed` looks elevation up for a whole run in one batch and is all-or-
+# nothing on failure: an exhausted quota degrades EVERY route in the run to "gain n/a".
+# A gain bound then drops all of them (`Criteria.accepts_gain` — unknown gain fails an
+# active bound, it never passes it), which is the right rule and a confusing empty
+# answer, so the four tool descriptions say so. Pinned here because until this change
+# an MCP client could not set a gain bound on three of these modes at all.
+
+
+class _BrokenProvider:
+    """Elevation that always fails — the spent-quota shape, no network."""
+
+    def lookup(self, pts):
+        raise S.ElevationError("elevation budget exhausted")
+
+
+@pytest.fixture
+def offline_without_elevation(monkeypatch):
+    def stub(routes):
+        monkeypatch.setattr(
+            S, "_fetch_area", lambda *a, **k: AreaData(routes=routes, parking=[], lifts=[])
+        )
+        monkeypatch.setattr(S, "_provider", lambda *a, **k: _BrokenProvider())
+        monkeypatch.setattr(S._cache, "from_config", lambda cfg: None)
+
+    return stub
+
+
+def test_routes_still_come_back_without_elevation(offline_without_elevation):
+    """No gain filter: the routes are returned, each carrying an unknown climb rather
+    than a computed-looking zero."""
+    offline_without_elevation(_TWO_WAYS)
+    hikes = S.routes_between(S_PT, T_PT, Criteria(), k=2)
+    assert len(hikes) == 2 and all(h.gain_m is None for h in hikes)
+
+
+def test_an_unknown_climb_fails_a_gain_bound_rather_than_passing_it(
+    offline_without_elevation,
+):
+    """The important direction: `max_gain_m` must not admit a route whose climb nobody
+    measured. "At most 500 m of climbing" answered with unmeasured routes would be the
+    filter promising something it never checked."""
+    offline_without_elevation(_TWO_WAYS)
+    assert S.routes_between(S_PT, T_PT, Criteria(max_gain_m=500.0), k=2) == []
+    assert S.routes_between(S_PT, T_PT, Criteria(min_gain_m=100.0), k=2) == []
+
+
+def test_circular_routes_annotates_a_gain_near_miss(offline):
+    """`near_misses` is offered by circular_routes alone, and pairing it with a gain
+    bound is newly askable over MCP. The low ring climbs ~196 m: 34 m under a 230 m
+    minimum, inside the near-miss tolerance (20 % of the bound), so it comes back FLAGGED
+    and saying by how much — never silently, which would read as a match."""
+    offline(_TWO_RINGS)
+    hikes = S.compose_loops_around(
+        AROUND, Criteria(min_gain_m=230.0, **_BAND), radius_m=500.0, near_miss=True
+    )
+    missed = [h for h in hikes if h.near_miss]
+    assert len(missed) == 1 and missed[0].gain_m < 230.0
+    assert any("230 m minimum" in note for note in missed[0].notes)
+    # And a shortfall too big to call a near miss is simply dropped, not flagged.
+    far_off = S.compose_loops_around(
+        AROUND, Criteria(min_gain_m=500.0, **_BAND), radius_m=500.0, near_miss=True
+    )
+    assert [h.near_miss for h in far_off] == [False]

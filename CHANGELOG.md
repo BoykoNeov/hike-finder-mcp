@@ -45,7 +45,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   back empty. `tests/test_point_mode_filters.py` checks all four modes actually apply what
   they now promise, on hand-built graphs with a deterministic elevation provider: where a
   mode returns several routes the filter has to SELECT one, which an ignored filter and a
-  broken search would both fail differently.
+  broken search would both fail differently. It also pins what a gain bound does when the
+  climb is UNKNOWN: elevation is looked up for a whole run in one batch, so an exhausted
+  budget degrades every synthesised route to "gain n/a", and a gain bound then drops them
+  rather than admitting routes nobody measured as "at most 500 m of climbing". The right
+  rule and a confusing empty answer, so the four descriptions now say it.
 - **`py.typed`.** The engine is fully typed now, so `import hike_finder` downstream gets
   those types instead of `Any`.
 

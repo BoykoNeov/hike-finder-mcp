@@ -243,8 +243,11 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                 "(min/max_distance_km, which is also the target band the loops are built to), "
                 "car_access / chairlift_access / transit_access (a parking lot / lift / stop "
                 "mapped near the loop), `poi` (loops passing an object of a kind) and "
-                "`ferrata`. Results are stitched from several trails and have no single OSM "
-                "relation id."
+                "`ferrata`. A gain bound also drops a route whose climb could not be "
+                "COMPUTED — one exhausted elevation budget degrades a whole run to \"gain "
+                "n/a\" — so an empty answer under min/max_gain_m can mean elevation was "
+                "unavailable, not that nothing qualified. Results are stitched from several "
+                "trails and have no single OSM relation id."
             ),
             input_schema={
                 "type": "object",
@@ -311,7 +314,10 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                 "Filters (all optional): elevation gain (min/max_gain_m), length "
                 "(min/max_distance_km), `poi` (routes passing an object of a kind) and "
                 "`ferrata`. They SELECT among the shortest-first alternatives — they do not "
-                "make the search look for a longer or hillier way round."
+                "make the search look for a longer or hillier way round. A gain bound also "
+                "drops a route whose climb could not be COMPUTED (an exhausted elevation "
+                "budget degrades a whole run to \"gain n/a\"), so an empty answer under "
+                "min/max_gain_m can mean elevation was unavailable."
             ),
             input_schema={
                 "type": "object",
@@ -372,7 +378,10 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                 "Filters (all optional): elevation gain (min/max_gain_m), length "
                 "(min/max_distance_km), `poi` and `ferrata`. Only ONE route is drawn through "
                 "your points, so these DISCARD it rather than choosing between alternatives — a "
-                "band the linked route misses returns nothing."
+                "band the linked route misses returns nothing. A gain bound also discards a "
+                "route whose climb could not be COMPUTED (an exhausted elevation budget "
+                "degrades a whole run to \"gain n/a\"), so an empty answer under "
+                "min/max_gain_m can mean elevation was unavailable."
             ),
             input_schema={
                 "type": "object",
@@ -481,8 +490,17 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                         "max_distance_km it does NOT size the fetched area, so raising it never "
                         "brings more distant objects into view.",
                     },
-                    "min_gain_m": {"type": "number"},
-                    "max_gain_m": {"type": "number"},
+                    "min_gain_m": {
+                        "type": "number",
+                        "description": "Discard routes climbing less than this, metres. A gain "
+                        "bound also discards a route whose climb could not be COMPUTED (an "
+                        "exhausted elevation budget degrades a whole run to \"gain n/a\").",
+                    },
+                    "max_gain_m": {
+                        "type": "number",
+                        "description": "Discard routes climbing more than this, metres — with "
+                        "the same caveat: unknown climb fails the bound rather than passing it.",
+                    },
                     "car_access": {
                         "type": "boolean",
                         "description": "true = require parking mapped near the route's ends.",
