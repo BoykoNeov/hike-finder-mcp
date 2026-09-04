@@ -50,6 +50,12 @@ hike-finder-mcp = "hike_finder.server:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# PEP 561 marker: the engine is fully typed (mypy is clean over `src`), so a
+# downstream import of `hike_finder` gets those types instead of Any. It needs the
+# explicit package-data entry — `packages.find` collects modules, not data files.
+[tool.setuptools.package-data]
+hike_finder = ["py.typed"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]

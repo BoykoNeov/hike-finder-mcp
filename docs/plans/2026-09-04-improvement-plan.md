@@ -72,7 +72,7 @@ in `HANDOFF.md`.
 
 ## Tier 2 — code health (pays for itself on the next feature)
 
-### 2.1 Lint and type baseline in CI (M)
+### 2.1 Lint and type baseline in CI (M) — DONE
 
 Nothing runs a linter or type checker today. Measured on the current tree:
 
@@ -93,6 +93,13 @@ Plan:
 3. Add a `lint` job to `ci.yml` (one Python version is enough). Ship `py.typed` once
    mypy is clean so downstream users of the engine get types.
 
+**Done, all three steps.** Line length 100 as planned; the rule set gained `BLE` and `SLF`
+because the tree already carried `noqa` comments naming them, which `RUF100` would
+otherwise have deleted along with their reasoning. mypy measured 61 at the declared 3.10
+floor (not 51 — a newer mypy), now zero. None was a bug; the six that looked like one are
+written up in `HANDOFF.md`. The lint job is pinned while the test matrix stays floating,
+and that asymmetry is deliberate — see the comment in `ci.yml`.
+
 ### 2.2 The three frontends are wired by hand, three times (L)
 
 The CLI declares 39 flags in `build_parser` (288 lines). `server.py`'s `list_tools`
@@ -106,15 +113,20 @@ What does not exist: anything that checks the three *surfaces* expose the same s
 criteria.
 
 Options, cheapest first:
-- **Parity test only (S):** a test that walks `Criteria`'s fields and asserts each is
-  reachable from the CLI parser, the `find_hikes` input schema, and the web parameter
-  parser. Catches "forgot to wire it in MCP" the day it happens.
+- **Parity test only (S) — DONE:** `tests/test_frontend_parity.py`. One table per
+  `Criteria` field (CLI flag, MCP argument, web query parameter, expected value) plus a
+  gate asserting the table covers every field. The MCP side is checked twice — the
+  handler reading the key and the schema declaring it — because those break separately,
+  and the schema half is the one that breaks an LLM client. It found eight filters the
+  point-mode tools honour but do not advertise; see `HANDOFF.md`.
 - **One option table (L):** a single declarative list of options (name, type, help,
   which frontends) that generates the argparse arguments, the MCP `inputSchema`, and
   the web parser. `list_tools` shrinks to a loop. This is a refactor of ~800 lines
   across three files; the payoff is every future filter being wired once.
 
 Recommendation: do the parity test now; do the table only when the next filter lands.
+The parity test is in. The one option table (L) is still open, and the parity test is
+what would keep it honest if it is ever built.
 
 ### 2.3 Long functions in the frontends (M)
 

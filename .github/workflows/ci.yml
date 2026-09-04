@@ -77,3 +77,40 @@ jobs:
 
       - name: Run test suite
         run: python -m pytest -q
+
+  # Lint and type-check. PINNED, unlike the matrix above, and that asymmetry is the
+  # point: the test jobs float so the Monday cron catches the world moving under us
+  # (which is how mcp 2.0.0 broke this repo on a commit that touched none of it),
+  # while a lint job that picked up new tool versions on their schedule would redden
+  # CI on changes that touched none of THAT. A new ruff rule, or a third-party
+  # annotation that changed shape, is not a defect in the commit being tested. Bump
+  # these on purpose, in their own commit, with the findings fixed in the same one.
+  #
+  # The extras are installed because mypy reads them: without `mcp` the whole of
+  # server.py types as Any, which is where 21 of the original 61 errors lived.
+  lint:
+    name: lint (ruff + mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install pinned tools and the dependencies mypy reads
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ruff==0.15.17 mypy==2.3.0
+          python -m pip install -e "." mcp==2.0.0 rasterio==1.5.0 requests==2.34.2
+
+      # Config for both lives in pyproject.toml: rule set and line length under
+      # [tool.ruff], scope and the 3.10 floor under [tool.mypy].
+      - name: ruff
+        run: ruff check src tests
+
+      - name: mypy
+        run: mypy

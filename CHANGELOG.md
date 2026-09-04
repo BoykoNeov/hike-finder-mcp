@@ -6,6 +6,51 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **CI now lints and type-checks.** Nothing had ever run either over this tree. A `lint`
+  job runs `ruff` (rules `E,F,W,I,B,UP,SIM,C4,RUF,BLE,SLF`, line length 100) and `mypy`
+  over `src`, both at zero findings, with the configuration in `pyproject.toml`. Unlike
+  the test matrix the job is **pinned** — tools and the dependencies mypy reads — because
+  the matrix floats deliberately (that is what the Monday cron is for) while a linter
+  picking up new rules on its own schedule would fail commits that touched none of it.
+- **A parity test across the three frontends** (`tests/test_frontend_parity.py`). One
+  table gives every `Criteria` field its CLI flag, MCP argument and web query parameter,
+  and a gate asserts the table covers every field — so a filter added to the engine fails
+  here on the day it is added rather than on the day someone notices one frontend cannot
+  ask for it. This project's recurring bug is not a wrong answer; it is a filter that
+  reaches the three surfaces on three different days.
+- **`py.typed`.** The engine is fully typed now, so `import hike_finder` downstream gets
+  those types instead of `Any`.
+
+### Fixed
+
+- **`zip` over pairs that must be the same length is now checked** (`strict=True`) at the
+  seams where a mismatch would be silent and wrong: one elevation per point in the cache
+  and the snapshot recorder, and `way_tags` against `ways` when measuring surface — where
+  truncation would attribute one way's surface to another. Both invariants were already
+  stated in prose by the code that maintains them; they are now enforced where they are
+  used.
+- **`Tool(inputSchema=…)` is the wire alias, not the field name.** `mcp.types.Tool`
+  accepts either spelling, so the server ran and every test that read the model back as
+  an object passed. The nine tool definitions now use `input_schema`, and a new test
+  asserts the SERIALISED form still carries `inputSchema` — the only place a client would
+  have seen a difference.
+- **`ComposedLoop.destination` is a declared field** instead of an attribute bolted on at
+  run time by `routes_to_poi`. It is declared under `TYPE_CHECKING`, so composition still
+  imports nothing from `poi.py` — the separation the comment there asks for, now kept by
+  the dataclass rather than by a `getattr` with a default.
+
+### Known
+
+- **Four MCP point-mode tools honour filters they do not advertise.** `circular_routes`,
+  `routes_between`, `route_via` and `routes_to_poi` build their filters with the same
+  `_criteria` as `find_hikes`, so all four apply all ten — but their schemas offer fewer,
+  and eight of those omissions have no stated reason (an LLM cannot ask `circular_routes`
+  for a gain range the engine applies and the CLI exposes on the same mode). The parity
+  test tables both the deliberate omissions and the gaps, and fails if either set drifts,
+  so closing one is a deliberate change to what the MCP surface advertises.
+
 ## [0.7.0] - 2026-09-04
 
 ### Added

@@ -713,6 +713,51 @@ thing is validated live against real OSM. Highlights:
   is not itself a readable file). The `find_hikes` schema now says so too — and the
   `list_pois` schema's "note that `find_hikes(area=…)` takes a path only" is gone, which
   is the kind of sentence that outlives the fact it describes.
+- **Lint and type baseline, enforced in CI.** Nothing had ever run either over this tree.
+  `ruff` (rules `E,F,W,I,B,UP,SIM,C4,RUF,BLE,SLF`, line length 100) and `mypy` over `src`
+  both sit at zero, configured in `pyproject.toml` and run by a `lint` job.
+  Four decisions worth keeping:
+  - **The lint job is PINNED and the test matrix is not, deliberately.** The matrix floats
+    so the Monday cron catches the world moving (that is how mcp 2.0.0 broke this repo on
+    a commit that touched none of it). A linter doing the same would fail commits that
+    touched none of *it* — a new ruff rule is not a defect in the change being tested. The
+    job installs `mcp` and `rasterio` too, because mypy reads them: without `mcp`, all of
+    `server.py` types as `Any`, which is where 21 of the original 61 errors lived.
+  - **`BLE` and `SLF` are in the rule set BECAUSE the tree already carried `noqa: BLE001`
+    and `noqa: SLF001` comments.** Someone reached for those rules before anything
+    enforced them; leaving them unselected would have let `RUF100` delete the reasoning in
+    those comments as dead.
+  - **`zip(strict=)` was decided per site, never blanket-applied** — it is the only rule
+    here that changes runtime behaviour. `strict=True` where a length mismatch violates an
+    invariant the code already states in prose (one elevation per point; `way_tags`
+    parallel to `ways`, which both producers maintain and `clip_routes_to_bbox` rebuilds
+    to keep); `itertools.pairwise` where the zip was only walking successive pairs.
+  - **`web.py` is exempt from the line limit and nothing else.** Two thirds of it is
+    `INDEX_HTML`, the browser page as a string constant, and every long line lives in
+    there. Rewrapping HTML and JS to Python's column is a readability loss in the other
+    language. Extracting the page to its own module would let the rule come back; the
+    per-file-ignore says so.
+  The 61 errors produced no bug. Six looked like one and each turned out to be the checker
+  seeing an invariant stated in prose — the most interesting being
+  `ComposedLoop.destination`, set from outside by `routes_to_poi` and never declared. It
+  is now a field under `TYPE_CHECKING`, so composition still imports nothing from
+  `poi.py`: the separation that file's comment asks for, kept by the dataclass instead of
+  by a `getattr` with a default. One real fragility did surface: `Tool(inputSchema=…)` is
+  the *wire alias*, `input_schema` the field. Both work at construction, so the server ran
+  and every test that read the model back as an object passed. The switch comes with a
+  test that asserts the SERIALISED form still carries `inputSchema`, which is the only
+  place a client would ever have seen the difference.
+- **The three frontends are checked for filter parity** (`tests/test_frontend_parity.py`).
+  One table per `Criteria` field — the CLI flag, the MCP argument, the web query parameter
+  and the value all three must produce — plus a gate asserting the table covers every
+  field, so a new filter fails here on the day it is added instead of on the day someone
+  notices one frontend cannot ask for it. This repo's recurring bug is not a wrong answer;
+  it is a filter reaching the three surfaces on three different days.
+  **The MCP side is checked in two halves because they break separately**: `_criteria`
+  reads a key whether or not the tool schema declares it, so a handler test alone passes
+  on a tool no client can discover the filter on. Verified by deleting `transit_access`
+  from `find_hikes`'s schema — exactly the schema test fails, the handler test does not.
+  That second half found the gap recorded under Known limitations below.
 - **All three frontends validated live**, including the MCP server over real stdio.
 - **Repo hygiene**: MIT license, CHANGELOG, complete pyproject, and CI across Linux 3.10–3.14 +
   Windows; v0.1.0 through v0.7.0 tagged + GitHub-released. **CI being green is a
@@ -725,6 +770,20 @@ Run it: `pytest -q` — the full suite is offline (a few `.sh` launcher cases ne
 skip without the `mcp` extra).
 
 ## Known limitations / TODOs (design notes, not bugs)
+
+- **Four MCP point-mode tools honour filters they do not advertise.** `circular_routes`,
+  `routes_between`, `route_via` and `routes_to_poi` build their filters with the same
+  `server._criteria` as `find_hikes`, so all four apply all ten `Criteria` fields — but
+  their `inputSchema`s offer fewer. Some omissions are the filter being meaningless for
+  the mode: a `circular_routes` result IS a loop, so `circular` has nothing to select.
+  Eight are gaps with no stated reason — an LLM cannot ask `circular_routes` for a gain
+  range that the engine applies and that the CLI exposes on the very same mode
+  (`--min-gain` works with `--around`). Both sets are tabled in
+  `tests/test_frontend_parity.py` (`DELIBERATELY_ABSENT` and `UNADVERTISED`) and the test
+  fails on drift in either direction: an omission in neither table, and an entry that has
+  gone stale because the gap was closed. Left listed rather than fixed because closing one
+  changes what the MCP surface advertises to every client, which is a decision, not a
+  cleanup. Adding a property to a schema is additive and cheap when that decision is made.
 
 - **The app is only as good as `route=hiking`/`route=foot` coverage, and that varies by
   region far more than by terrain.** Every mode — area search, `--around`, `--from/--to`,
@@ -1072,12 +1131,18 @@ skip without the `mcp` extra).
   logic modules.
 - Guard optional-extra deps (rasterio, mcp, numpy) behind `importorskip` in tests — don't
   bare-import them, or a base-install env errors on collection instead of skipping.
+- `ruff check src tests` and `mypy` are both at zero and CI enforces it. Their config is in
+  `pyproject.toml`; every ignore there carries the reason next to it, so widen the rule set
+  by editing that block rather than by sprinkling `noqa` (an unexplained `noqa` naming a
+  non-enabled rule is what `RUF100` deletes).
 
 ## Quick commands
 
 ```bash
 pip install -e .             # CLI + web UI (no LLM); extras: ".[mcp]" ".[local-dem]" ".[dev]"
 pytest -q                    # full offline suite (3 .sh launcher cases need bash; MCP skips without the extra)
+ruff check src tests         # lint (config in pyproject.toml; CI runs this pinned)
+mypy                         # type-check src/ (config in pyproject.toml; zero errors)
 hike-finder --bbox 50.72 15.58 50.74 15.62 --user-agent you@example.com
 hike-finder --list-pois      # the --poi / --to-poi kinds
 hike-finder --list-areas     # what is already downloaded (the NAMED snapshot dir)
