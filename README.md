@@ -858,6 +858,7 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 | `HIKE_COMPOSE_OVERLAP_FRAC` | Compose mode: drop a loop sharing more than this fraction of its length with an already-kept loop (near-duplicate collapse) | `0.6` |
 | `HIKE_COMPOSE_MAX_LOOPS` | Compose mode: max loops returned, ranked by compactness (roundest first); bounds the per-loop elevation cost | `15` |
 | `HIKE_COMPOSE_MIN_COMPACTNESS` | Compose mode: drop a loop below this Polsby–Popper compactness (4πA/P²) — a degenerate thin sliver, not a real loop; `0` disables | `0.05` |
+| `HIKE_ROUTES_MAX_FACTOR` | `--from`/`--to` mode: cap a route's length at this factor × the straight-line separation when no `--max-distance` is given, so the k-shortest search can't wander far on a dense graph | `3.0` |
 | `HIKE_POI_RADIUS_M` | How close a route must pass to a `--poi` object (church, ruin, peak…) to count as reaching it, metres. Measured to the trail line | `250` |
 | `HIKE_POI_SEARCH_RADIUS_M` | `--to-poi` mode: how far from the start to look for destinations, metres. Also sizes the fetched area, so raising it makes the query heavier | `3000` |
 

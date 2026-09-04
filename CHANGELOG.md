@@ -61,7 +61,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the sentence. Found by reading an MCP reply — the one place the two sentences land in a
   single paragraph.
 
-## [0.6.0] - 2026-08-10
+### Removed
+
+- **`requirements.txt`**, which still pinned `mcp>=1.2` as a *core* dependency. Both
+  halves of that were wrong since the 2.x port: the server does not run on 1.x, so
+  anyone who installed from the file got an import failure, and `mcp` is an optional
+  extra, not a core requirement. Nothing referenced the file — not CI, not the
+  launchers, not the README, which has told you `pip install -e ".[dev]"` for several
+  releases — so `pyproject.toml` is now the single place dependencies are declared
+  and cannot drift from a second one again.
+
+### Documentation
+
+- **`stitch_ways`'s docstring pointed at a "robust-ordering TODO" in HANDOFF.md that no
+  longer exists.** What HANDOFF says now is narrower and true: stitching is greedy and
+  drops members it cannot chain, but distance and termini were moved off it long ago, so
+  the remaining riders are the elevation track, the `is_circular` gap fallback, a loop's
+  `start` fallback, and export's faithfulness gate. The docstring says that instead of
+  sending a reader to a missing entry.
+- **`HIKE_ROUTES_MAX_FACTOR` is in the README's environment-variable table.** It was the
+  one setting in `config.py` documented nowhere in the README at all.
 
 ### Added
 

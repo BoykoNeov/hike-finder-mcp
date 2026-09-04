@@ -53,8 +53,20 @@ def stitch_ways(ways: list[list[Coord]]) -> list[Coord]:
 
     OSM relation members are not guaranteed to be ordered or consistently
     oriented. This greedily chains ways by matching endpoints, flipping a way
-    when its tail (not head) is the nearest continuation. Good enough for v1;
-    see HANDOFF.md "Known limitations" for the robust-ordering TODO.
+    when its tail (not head) is the nearest continuation, and silently DROPS
+    any member it cannot chain onto either end of the growing line (a branched
+    or gap-split relation loses whole legs that way).
+
+    What that costs is bounded by what still rides on this line. Distance and
+    termini no longer do — ``total_way_length_m`` sums the members and
+    ``route_termini`` reads the vertex graph, both order-independent, precisely
+    because a dropped member made the line under-count. What remains: the
+    elevation track is sampled along it, ``is_circular``'s start~=end gap
+    fallback and a loop's ``start`` fallback use it, and GPX/GeoJSON export
+    gates on it (a per-point ``<ele>`` track only when the line recovers >=98%
+    of the summed member length, else a raw-ways export with no elevation) —
+    which is how a dropped member surfaces instead of shipping quietly. See
+    HANDOFF.md "Known limitations", the "Way stitching is greedy" entry.
     """
     ways = [w for w in ways if len(w) >= 2]
     if not ways:
