@@ -715,7 +715,7 @@ thing is validated live against real OSM. Highlights:
   is the kind of sentence that outlives the fact it describes.
 - **All three frontends validated live**, including the MCP server over real stdio.
 - **Repo hygiene**: MIT license, CHANGELOG, complete pyproject, and CI across Linux 3.10–3.14 +
-  Windows; v0.1.0 through v0.6.0 tagged + GitHub-released. **CI being green is a
+  Windows; v0.1.0 through v0.7.0 tagged + GitHub-released. **CI being green is a
   per-commit fact, not a standing property of this repo** — check it (`gh run list`) before
   asserting it anywhere, a release body most of all. An unpinned optional extra silently
   falsified this very line for four commits while the sentence sat here unchanged; see the

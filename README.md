@@ -893,6 +893,6 @@ filter, routing *to* the nearest such object, the points-of-interest inventory,
 the downloaded-area inventory, public-transport access, the length-weighted
 surface report, and via ferrata (find / avoid / list) — is **implemented, unit-tested
 (offline), and validated live** across all three frontends (CLI + web + MCP), with
-computed gain cross-checked against the loop invariant (gain ≈ loss). Released as v0.6.0. See
+computed gain cross-checked against the loop invariant (gain ≈ loss). Released as v0.7.0. See
 [`CHANGELOG.md`](CHANGELOG.md) for the per-release breakdown and
 [`HANDOFF.md`](HANDOFF.md) for the architecture and open design notes.
