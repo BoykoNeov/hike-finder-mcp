@@ -45,22 +45,22 @@ from .filters import Criteria
 from .format import format_hike, format_poi, format_poi_summary
 from .poi import POI_KINDS, kind_labels, normalise_kinds
 from .search import (
+    area_has_no_routes,
     area_records_ferrata,
-    ferrata_gap_message,
     compose_loops,
     compose_loops_around,
     download_area,
+    ferrata_gap_message,
     list_area_ferrata,
     list_area_pois,
     list_snapshot_ferrata,
     list_snapshot_pois,
+    no_routes_message,
     route_via,
     routes_between,
     routes_to_poi,
     search_hikes,
     search_snapshot,
-    area_has_no_routes,
-    no_routes_message,
     snapshot_kinds_missing_message,
     snapshot_poi_gap,
 )
@@ -242,7 +242,9 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                     "lon": {"type": "number", "description": "Longitude of the point."},
                     "radius_m": {
                         "type": "number",
-                        "description": "How near a loop must pass to the point, metres (default 1000).",
+                        "description": (
+                            "How near a loop must pass to the point, metres (default 1000)."
+                        ),
                     },
                     "min_distance_km": {"type": "number"},
                     "max_distance_km": {"type": "number"},
@@ -300,7 +302,9 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                     },
                     "max_distance_km": {
                         "type": "number",
-                        "description": "Cap a route's length, km (default: 3x the straight-line gap).",
+                        "description": (
+                            "Cap a route's length, km (default: 3x the straight-line gap)."
+                        ),
                     },
                     **_POI_SCHEMA,
                     **_FERRATA_SCHEMA,
@@ -346,7 +350,9 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                     },
                     "loop": {
                         "type": "boolean",
-                        "description": "true = close into a non-retracing circular route (default false).",
+                        "description": (
+                            "true = close into a non-retracing circular route (default false)."
+                        ),
                     },
                     "min_distance_km": {"type": "number"},
                     "max_distance_km": {
@@ -400,7 +406,9 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                     },
                     "routes": {
                         "type": "integer",
-                        "description": "How many destinations to route to, nearest first (default 3).",
+                        "description": (
+                            "How many destinations to route to, nearest first (default 3)."
+                        ),
                     },
                     "search_radius_m": {
                         "type": "number",
@@ -1014,9 +1022,9 @@ async def _call_list_pois(arguments: dict) -> list[TextContent]:
     if not places:
         if gap_state == "none":
             return [TextContent(type="text", text=(
-                f"That downloaded area carries no points of interest — it was saved before "
-                f"the feature existed. Re-download it with download_area to browse and "
-                f"export them offline."
+                "That downloaded area carries no points of interest — it was saved before "
+                "the feature existed. Re-download it with download_area to browse and "
+                "export them offline."
             ))]
         if gap_state == "missing":
             return [TextContent(type="text", text=(
@@ -1026,9 +1034,9 @@ async def _call_list_pois(arguments: dict) -> list[TextContent]:
             ))]
         if gap_state == "unknown":
             return [TextContent(type="text", text=(
-                f"That downloaded area does not record which kinds it was saved with, so "
-                f"this empty result cannot be told apart from a kind nobody looked for. "
-                f"Re-download it with download_area before concluding there are none there."
+                "That downloaded area does not record which kinds it was saved with, so "
+                "this empty result cannot be told apart from a kind nobody looked for. "
+                "Re-download it with download_area before concluding there are none there."
             ))]
         listed = ", ".join(kinds) if kinds else "any registered kind"
         return [TextContent(type="text", text=(

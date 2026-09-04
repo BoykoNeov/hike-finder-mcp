@@ -47,6 +47,7 @@ never depends on bit-exact float reproduction across two processes.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
@@ -101,7 +102,9 @@ class RecordingElevationProvider(ElevationProvider):
 
     def lookup(self, points: list[Coord]) -> list[float]:
         elevations = self.inner.lookup(points)
-        for pt, elev in zip(points, elevations):
+        # strict: one elevation per point is the provider contract; a short reply here
+        # would silently record the wrong elevation against the remaining points.
+        for pt, elev in zip(points, elevations, strict=True):
             self.samples[pt] = elev
         return elevations
 
@@ -452,10 +455,8 @@ def save_snapshot(snap: AreaSnapshot, path: str | os.PathLike) -> None:
             f.write(payload)
         os.replace(tmp, path)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
 
 

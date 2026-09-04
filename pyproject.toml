@@ -53,3 +53,45 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+# Ruff. Selected over the default set because the extra families each caught something
+# real on the first run (`zip` without `strict`, unsorted imports, collapsible ifs);
+# line length is 100 rather than 88 because 11 354 of the 11 618 source lines already
+# fit under 88 and only 69 exceeded 100 — an 88 limit would have meant rewrapping 859
+# lines of prose to no one's benefit.
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# BLE and SLF are in the set because the tree already carries `noqa: BLE001` and
+# `noqa: SLF001` comments: someone reached for those rules before anything enforced
+# them. Leaving them unselected would make RUF100 call those comments dead and delete
+# the reasoning in them.
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "C4", "RUF", "BLE", "SLF"]
+ignore = [
+    # Ambiguous-unicode. This project is about walking in Europe: Špindlerův Mlýn,
+    # Cortina d'Ampezzo and the ×/– in the design notes are the intended characters,
+    # not homoglyph typos. Every one of the 18 findings was a real place name or a
+    # typographic dash in a comment.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    # needless-bool. Its one site is the pair of gain bounds in `Criteria.accepts_gain`,
+    # which are deliberately spelled identically; folding the second into
+    # `return not (...)` makes two halves of one rule read as two different rules.
+    "SIM103",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# `web.py` is two thirds one string: `INDEX_HTML`, the whole browser page (HTML, CSS and
+# JavaScript) as a module constant. Every long line in the file lives in there, and
+# rewrapping another language's markup to Python's column limit costs readability in that
+# language to buy nothing in this one. The file's actual Python was wrapped by hand and is
+# under the limit; if the page is ever extracted to its own module or a static file, drop
+# this entry and the rule comes back for good.
+"src/hike_finder/web.py" = ["E501"]
+# A test that pins a private helper's behaviour is doing its job — the alternative is
+# promoting internals to the public surface just to test them. The rule stays on for
+# `src`, where reaching into another module's privates is a design smell.
+"tests/*" = ["SLF001"]

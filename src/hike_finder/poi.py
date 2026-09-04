@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from itertools import pairwise
 
 from .geometry import EARTH_RADIUS_M, Coord, haversine_m, project_on_polyline
 
@@ -315,7 +316,9 @@ def selectors_by_key() -> dict[str, tuple[str, ...]]:
     return {key: tuple(sorted(values)) for key, values in sorted(by_key.items())}
 
 
-def required_selectors() -> list[tuple[str, tuple[str, ...], tuple[tuple[str, tuple[str, ...]], ...]]]:
+def required_selectors() -> list[
+    tuple[str, tuple[str, ...], tuple[tuple[str, tuple[str, ...]], ...]]
+]:
     """``(key, values, require)`` for every kind needing its own filtered clause.
 
     One entry per KIND rather than per key, because the required tags differ per kind and
@@ -651,7 +654,7 @@ def _probe_points(line: list[Coord], step_m: float) -> list[Coord]:
     distance finally reported is measured against the real line, below.
     """
     out: list[Coord] = [line[0]]
-    for a, b in zip(line, line[1:]):
+    for a, b in pairwise(line):
         d = haversine_m(a, b)
         if d > step_m:
             for k in range(1, int(d // step_m) + 1):

@@ -108,7 +108,7 @@ def test_order_is_registry_then_name_then_coord():
 
 
 def test_duplicate_objects_are_listed_once():
-    doubled = RAW_POIS + [dict(RAW_POIS[1])]
+    doubled = [*RAW_POIS, dict(RAW_POIS[1])]
     assert len(select_pois(doubled)) == len(RAW_POIS)
 
 
@@ -126,12 +126,12 @@ def test_selection_is_not_clipped_to_any_box():
     returned for the area.
     """
     far = {"coord": (0.0, 0.0), "kind": "ruins", "name": "Way outside the bbox"}
-    got = select_pois(RAW_POIS + [far])
+    got = select_pois([*RAW_POIS, far])
     assert any(p.name == "Way outside the bbox" for p in got)
 
 
 def test_objects_with_no_coordinate_are_skipped():
-    got = select_pois([{"kind": "ruins", "name": "no coord"}] + RAW_POIS)
+    got = select_pois([{"kind": "ruins", "name": "no coord"}, *RAW_POIS])
     assert len(got) == len(RAW_POIS)
 
 

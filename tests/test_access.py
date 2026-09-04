@@ -405,17 +405,17 @@ def test_measure_geometry_lollipop_start_stays_at_stem_tip():
 
 
 def _hike(**kw):
-    base = dict(
-        osm_id=1,
-        name="t",
-        distance_km=5.0,
-        circular=False,
-        car_access=False,
-        chairlift_access=False,
-        start=(50.0, 14.0),
-        gain_m=300.0,
-        loss_m=300.0,
-    )
+    base = {
+        "osm_id": 1,
+        "name": "t",
+        "distance_km": 5.0,
+        "circular": False,
+        "car_access": False,
+        "chairlift_access": False,
+        "start": (50.0, 14.0),
+        "gain_m": 300.0,
+        "loss_m": 300.0,
+    }
     base.update(kw)
     return Hike(**base)
 

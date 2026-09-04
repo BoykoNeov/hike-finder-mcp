@@ -86,8 +86,14 @@ def test_disabled_when_limit_zero(tmp_path):
 
 
 def test_separate_counters_per_endpoint_host(tmp_path):
-    otd = DailyQuota("https://api.opentopodata.org/v1/srtm30m", state_dir=tmp_path, now=_at(2026, 6, 23))
-    oe = DailyQuota("https://api.open-elevation.com/api/v1/lookup", state_dir=tmp_path, now=_at(2026, 6, 23))
+    otd = DailyQuota(
+        "https://api.opentopodata.org/v1/srtm30m", state_dir=tmp_path, now=_at(2026, 6, 23)
+    )
+    oe = DailyQuota(
+        "https://api.open-elevation.com/api/v1/lookup",
+        state_dir=tmp_path,
+        now=_at(2026, 6, 23),
+    )
     otd.record()
     assert otd.snapshot()[0] == 1
     assert oe.snapshot()[0] == 0  # different host -> different file
@@ -100,7 +106,9 @@ def test_threadsafe_concurrent_record(tmp_path):
     per_thread = 50
 
     def worker():
-        q = DailyQuota(DEFAULT_ENDPOINT, daily_limit=10_000, state_dir=tmp_path, now=_at(2026, 6, 23))
+        q = DailyQuota(
+            DEFAULT_ENDPOINT, daily_limit=10_000, state_dir=tmp_path, now=_at(2026, 6, 23)
+        )
         for _ in range(per_thread):
             q.record()
 
@@ -110,7 +118,9 @@ def test_threadsafe_concurrent_record(tmp_path):
     for t in threads:
         t.join()
 
-    final = DailyQuota(DEFAULT_ENDPOINT, daily_limit=10_000, state_dir=tmp_path, now=_at(2026, 6, 23))
+    final = DailyQuota(
+        DEFAULT_ENDPOINT, daily_limit=10_000, state_dir=tmp_path, now=_at(2026, 6, 23)
+    )
     assert final.snapshot() == (4 * per_thread, 10_000)
 
 
@@ -122,9 +132,11 @@ def test_provider_skips_request_when_quota_exhausted(tmp_path):
     prov = ApiElevationProvider(
         endpoint=DEFAULT_ENDPOINT, min_interval_s=0, daily_limit=1, state_dir=str(tmp_path)
     )
-    with patch("hike_finder.elevation.api.requests.post") as post:
-        with pytest.raises(ElevationError):
-            prov.lookup([(0, 0)])
+    with (
+        patch("hike_finder.elevation.api.requests.post") as post,
+        pytest.raises(ElevationError),
+    ):
+        prov.lookup([(0, 0)])
     assert post.call_count == 0
 
 

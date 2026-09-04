@@ -117,7 +117,7 @@ def test_out_of_coverage_returns_fill_when_configured(two_tiles):
 
 
 def test_empty_dir_raises(tmp_path):
-    with pytest.raises(ElevationError, match="no .tif"):
+    with pytest.raises(ElevationError, match=r"no \.tif"):
         LocalDemElevationProvider(str(tmp_path))
 
 
@@ -197,9 +197,10 @@ def test_mixed_batch_preserves_order_and_scatters_fill(two_tiles):
 def test_user_supplied_vrt_is_used(two_tiles):
     # A .vrt in the directory wins over auto-building from the .tif tiles. Build a
     # valid one with the same generator and confirm the provider samples through it.
-    from hike_finder.elevation.local_dem import _build_vrt_doc
     import glob as _glob
     import os as _os
+
+    from hike_finder.elevation.local_dem import _build_vrt_doc
 
     tiles = sorted(_glob.glob(_os.path.join(two_tiles, "*.tif")))
     with open(_os.path.join(two_tiles, "mosaic.vrt"), "w") as f:

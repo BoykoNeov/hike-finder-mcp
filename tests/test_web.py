@@ -74,7 +74,10 @@ def _make_snapshot(path, pois=None, poi_kinds=None, way_tags=None, ferrata=False
     rec = RecordingElevationProvider(_Ramp())
     bbox = (49.9, 13.9, 50.2, 14.2)
     find_hikes(area, rec, Criteria(), bbox=bbox)
-    save_snapshot(AreaSnapshot(bbox=bbox, area=area, elevations=rec.samples, sample_interval_m=25.0), path)
+    save_snapshot(
+        AreaSnapshot(bbox=bbox, area=area, elevations=rec.samples, sample_interval_m=25.0),
+        path,
+    )
 
 
 @pytest.fixture
@@ -518,7 +521,11 @@ def test_to_poi_with_half_a_point_is_a_400_not_a_silent_area_search(server, monk
         web, "search_hikes", lambda *a, **k: (_ for _ in ()).throw(AssertionError("fell through"))
     )
     with pytest.raises(urllib.error.HTTPError) as e:
-        _get(server + "/api/hikes?to_poi_lat=50.73&to_poi=ruins&south=50.7&west=15.5&north=50.8&east=15.7")
+        _get(
+            server
+            + "/api/hikes?to_poi_lat=50.73&to_poi=ruins"
+            + "&south=50.7&west=15.5&north=50.8&east=15.7"
+        )
     assert e.value.code == 400
 
 
@@ -689,7 +696,7 @@ def test_poi_export_streams_waypoints_not_tracks(server):
 
 def test_hike_export_is_unaffected_by_the_new_branch(server):
     """Without `pois`, the export is the route export it always was."""
-    status, headers, body = _get_raw(server + "/api/gpx?area=webtest")
+    _status, headers, body = _get_raw(server + "/api/gpx?area=webtest")
     assert headers["Content-Disposition"] == 'attachment; filename="hikes.gpx"'
     assert "<trk>" in body
 

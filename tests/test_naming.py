@@ -13,14 +13,13 @@ from hike_finder.format import format_hike
 from hike_finder.naming import compose_label, enrich_names, label_endpoints
 from hike_finder.overpass import AreaData
 
-
 # -- label_endpoints --------------------------------------------------------
 
 def _hike(**kw):
-    base = dict(
-        osm_id=1, name="route/1", distance_km=5.0, circular=False,
-        car_access=False, chairlift_access=False, start=(0.0, 0.0),
-    )
+    base = {
+        "osm_id": 1, "name": "route/1", "distance_km": 5.0, "circular": False,
+        "car_access": False, "chairlift_access": False, "start": (0.0, 0.0),
+    }
     base.update(kw)
     return Hike(**base)
 

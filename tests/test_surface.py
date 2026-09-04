@@ -252,7 +252,7 @@ def test_clipping_keeps_way_tags_parallel_to_ways():
 
     assert len(out["way_tags"]) == len(out["ways"])
     # every surviving run still carries ITS OWN way's surface
-    for way, tags in zip(out["ways"], out["way_tags"]):
+    for way, tags in zip(out["ways"], out["way_tags"], strict=True):
         expected = "asphalt" if way[0][0] == 50.0 else "ground"
         assert tags["surface"] == expected
 

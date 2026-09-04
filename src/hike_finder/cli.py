@@ -13,6 +13,7 @@ require, ``--no-circular`` = exclude.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -25,23 +26,22 @@ from .filters import Criteria
 from .format import format_hike, format_poi, format_poi_summary, hike_to_dict
 from .poi import kind_labels, normalise_kinds, unrecorded_kinds
 from .search import (
+    area_has_no_routes,
     area_records_ferrata,
     compose_loops,
     compose_loops_around,
     download_area,
     ferrata_coverage_caveat,
-    ferrata_gap_message,
     list_area_ferrata,
     list_area_pois,
     list_snapshot_ferrata,
     list_snapshot_pois,
+    no_routes_message,
     route_via,
     routes_between,
     routes_to_poi,
     search_hikes,
     search_snapshot,
-    area_has_no_routes,
-    no_routes_message,
     snapshot_kinds_missing_message,
     snapshot_poi_gap,
 )
@@ -94,7 +94,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--chairlift-access",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="--chairlift-access = require a ride-up lift near an endpoint; --no-chairlift-access = exclude.",
+        help="--chairlift-access = require a ride-up lift near an endpoint; --no-chairlift-access "
+        "= exclude.",
     )
     g.add_argument(
         "--transit-access",
@@ -302,7 +303,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("api", "local", "auto"),
         help="Elevation backend, overrides HIKE_ELEVATION_MODE.",
     )
-    o.add_argument("--dem-dir", help="GeoTIFF DEM tile directory for local/auto, overrides HIKE_DEM_DIR.")
+    o.add_argument(
+        "--dem-dir",
+        help="GeoTIFF DEM tile directory for local/auto, overrides HIKE_DEM_DIR.",
+    )
     o.add_argument(
         "--name-places",
         action=argparse.BooleanOptionalAction,
@@ -340,7 +344,9 @@ def build_parser() -> argparse.ArgumentParser:
         "FeatureCollection of route lines carrying the full computed stats).",
     )
 
-    p.add_argument("--json", action="store_true", help="Emit results as JSON instead of text lines.")
+    p.add_argument(
+        "--json", action="store_true", help="Emit results as JSON instead of text lines."
+    )
     return p
 
 
@@ -374,7 +380,9 @@ def build_criteria(args: argparse.Namespace) -> Criteria:
     )
 
 
-def _emit(hikes: list, as_json: bool, empty_msg: str = "No matching hikes found in that area.") -> None:
+def _emit(
+    hikes: list, as_json: bool, empty_msg: str = "No matching hikes found in that area."
+) -> None:
     """Print results: JSON array, or one text line per hike (near-misses flagged)."""
     if as_json:
         print(json.dumps([hike_to_dict(h) for h in hikes], ensure_ascii=False, indent=2))
@@ -556,7 +564,7 @@ def _show_pois(args: argparse.Namespace, cfg) -> int:
                 user_agent=args.user_agent,
                 overpass_url=args.overpass_url,
             )
-        except Exception as e:  # network/HTTP errors surface here
+        except Exception as e:  # noqa: BLE001 — network/HTTP errors surface here
             _fetch_hint(e)
             return 1
 
@@ -646,7 +654,7 @@ def _show_ferrata(args: argparse.Namespace, cfg) -> int:
                 user_agent=args.user_agent,
                 overpass_url=args.overpass_url,
             )
-        except Exception as e:  # network/HTTP errors surface here
+        except Exception as e:  # noqa: BLE001 — network/HTTP errors surface here
             _fetch_hint(e)
             return 1
 
@@ -975,13 +983,13 @@ def run(args: argparse.Namespace) -> int:
         # and exactly as invisible without this, since each empty message below blames a
         # radius, a snap distance or a filter instead.
         diagnostics: dict = {}
-        common = dict(
-            user_agent=args.user_agent,
-            overpass_url=args.overpass_url,
-            elevation_mode=args.elevation_mode,
-            dem_dir=args.dem_dir,
-            diagnostics=diagnostics,
-        )
+        common = {
+            "user_agent": args.user_agent,
+            "overpass_url": args.overpass_url,
+            "elevation_mode": args.elevation_mode,
+            "dem_dir": args.dem_dir,
+            "diagnostics": diagnostics,
+        }
         try:
             if around is not None:
                 hikes = compose_loops_around(
@@ -1050,7 +1058,7 @@ def run(args: argparse.Namespace) -> int:
                     "disconnected trail networks, or every route exceeds the length cap "
                     "(--max-distance)."
                 )
-        except Exception as e:  # network/HTTP/elevation errors surface here
+        except Exception as e:  # noqa: BLE001 — network/HTTP/elevation errors surface here
             _fetch_hint(e)
             return 1
         _quota_line(cfg, used_before)
@@ -1092,7 +1100,10 @@ def run(args: argparse.Namespace) -> int:
         return 0
 
     if not args.bbox:
-        print("error: --bbox is required (or pass --area FILE to search a snapshot).", file=sys.stderr)
+        print(
+            "error: --bbox is required (or pass --area FILE to search a snapshot).",
+            file=sys.stderr,
+        )
         return 2
     bbox = tuple(args.bbox)  # (south, west, north, east)
 
@@ -1111,7 +1122,7 @@ def run(args: argparse.Namespace) -> int:
                 dem_dir=args.dem_dir,
                 name_places=args.name_places,
             )
-        except Exception as e:  # network/HTTP errors surface here
+        except Exception as e:  # noqa: BLE001 — network/HTTP errors surface here
             _fetch_hint(e)
             return 1
         try:
@@ -1136,22 +1147,22 @@ def run(args: argparse.Namespace) -> int:
     # Filled by the search with facts about the fetch that the hikes can't carry — here,
     # whether the area had any route relations at all (see search.area_has_no_routes).
     diagnostics: dict = {}
-    kwargs = dict(
-        cfg=cfg,
-        user_agent=args.user_agent,
-        overpass_url=args.overpass_url,
-        elevation_mode=args.elevation_mode,
-        dem_dir=args.dem_dir,
-        near_miss=near_miss,
-        diagnostics=diagnostics,
-    )
+    kwargs = {
+        "cfg": cfg,
+        "user_agent": args.user_agent,
+        "overpass_url": args.overpass_url,
+        "elevation_mode": args.elevation_mode,
+        "dem_dir": args.dem_dir,
+        "near_miss": near_miss,
+        "diagnostics": diagnostics,
+    }
     # Reverse-geocode naming only applies to ordinary routes — a composed loop is
     # already labelled by its constituent trails ("composed of …"), never route/<id>.
     if not composing:
         kwargs["name_places"] = args.name_places
     try:
         hikes = search(bbox, build_criteria(args), **kwargs)
-    except Exception as e:  # network/HTTP/elevation errors surface here
+    except Exception as e:  # noqa: BLE001 — network/HTTP/elevation errors surface here
         _fetch_hint(e)
         return 1
 
@@ -1190,10 +1201,8 @@ def main(argv: list[str] | None = None) -> None:
     # the summary uses an em-dash. On Windows the console defaults to cp1252, which
     # can't encode them and would crash on print — force UTF-8, degrade if it can't.
     for stream in (sys.stdout, sys.stderr):
-        try:
+        with contextlib.suppress(AttributeError, ValueError):
             stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
     sys.exit(run(build_parser().parse_args(argv)))
 
 

@@ -224,7 +224,8 @@ def test_download_area_warms_and_prunes_over_length(monkeypatch):
     area = AreaData(
         routes=[
             {"id": 1, "name": "Local", "ways": [[(50.0, 14.0), (50.005, 14.0)]], "tags": {}},
-            {"id": 2, "name": "Through", "ways": [[(50.0, 14.0), (50.2, 14.0)]], "tags": {}},  # ~22 km
+            # ~22 km
+            {"id": 2, "name": "Through", "ways": [[(50.0, 14.0), (50.2, 14.0)]], "tags": {}},
         ]
     )
     monkeypatch.setattr(search_mod, "fetch_area", lambda *a, **k: area)

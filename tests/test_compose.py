@@ -201,8 +201,8 @@ def test_sliver_filter_drops_thin_loops_before_collapse_and_reports_count():
 
     on = find_loops(g, min_m=0, max_m=1e9, min_compactness=0.05)  # floor on
     assert [L.refs for L in on.loops] == [("sq",)]               # only the real loop survives
-    assert on.found == 2                                          # both in-band cycles still counted
-    assert on.slivered == 1                                       # and the drop is reported, never silent
+    assert on.found == 2  # both in-band cycles still counted
+    assert on.slivered == 1  # and the drop is reported, never silent
     # The filter runs BEFORE the near-duplicate collapse: `distinct` is the post-collapse
     # kept count, so a sliver removed pre-collapse never reaches it (distinct == 1). Were
     # the filter moved to after collapse, the disjoint sliver would survive into `kept` and

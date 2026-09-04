@@ -43,7 +43,9 @@ def stub_network(monkeypatch):
 
     def run(start, kinds, routes, pois, *, criteria=None, **kwargs):
         monkeypatch.setattr(
-            S, "_fetch_area", lambda *a, **k: AreaData(routes=routes, parking=[], lifts=[], pois=pois)
+            S,
+            "_fetch_area",
+            lambda *a, **k: AreaData(routes=routes, parking=[], lifts=[], pois=pois),
         )
         monkeypatch.setattr(S, "_provider", lambda *a, **k: _FlatProvider())
         monkeypatch.setattr(S._cache, "from_config", lambda cfg: None)
@@ -130,7 +132,9 @@ def test_destination_names_the_route_and_reports_the_gap_it_leaves(stub_network)
 
 
 def test_an_unnamed_destination_still_names_the_route(stub_network):
-    hikes = stub_network(START, ("ruins",), _LOOPLESS, [_poi("ruins", None, (50.0002, 15.0195))], n=1)
+    hikes = stub_network(
+        START, ("ruins",), _LOOPLESS, [_poi("ruins", None, (50.0002, 15.0195))], n=1
+    )
     assert hikes[0].name == "Route to ruin"
 
 
@@ -153,7 +157,9 @@ def test_a_stray_circular_filter_cannot_empty_the_result(stub_network):
 
 def test_nothing_of_that_kind_mapped_is_said_out_loud(stub_network, caplog):
     with caplog.at_level(logging.WARNING, logger="hike_finder.search"):
-        hikes = stub_network(START, ("ruins",), _LOOPLESS, [_poi("church", "kostel", (50.0002, 15.0195))])
+        hikes = stub_network(
+            START, ("ruins",), _LOOPLESS, [_poi("church", "kostel", (50.0002, 15.0195))]
+        )
     assert hikes == []
     assert "is mapped within" in caplog.text
     # The lever, and the honesty note that a miss is about the MAP, not the world.

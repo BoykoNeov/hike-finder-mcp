@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from itertools import pairwise
 from typing import NamedTuple
 
 from .access import _bbox_pad
@@ -428,7 +429,7 @@ def resample_segments(
     }
 
 
-def assemble_loop_series(graph: TrailGraph, loop: "ComposedLoop", per_segment: dict):
+def assemble_loop_series(graph: TrailGraph, loop: ComposedLoop, per_segment: dict):
     """Concatenate per-segment values into one series following the loop's traversal.
 
     Walks ``loop.ordered_segs`` from ``loop.start_node`` exactly as :func:`_assemble`
@@ -459,7 +460,7 @@ def assemble_loop_series(graph: TrailGraph, loop: "ComposedLoop", per_segment: d
     return out
 
 
-def assemble_tag_runs(graph: TrailGraph, route: "ComposedLoop"):
+def assemble_tag_runs(graph: TrailGraph, route: ComposedLoop):
     """``(sub-polyline, tags)`` pairs along a composed route, ready for ``surface``.
 
     The output feeds ``surface.summarise_surface`` / ``summarise_tracktype`` unchanged, so
@@ -655,15 +656,15 @@ def find_loops(
             if new_len > max_m:
                 continue  # prune: a simple cycle only grows from here
             if other == start:
-                key = frozenset(path + [idx])
+                key = frozenset([*path, idx])
                 if len(key) == len(path) + 1 and new_len >= min_m and key not in seen:
                     seen.add(key)
-                    found.append(_assemble(graph, start, path + [idx]))
+                    found.append(_assemble(graph, start, [*path, idx]))
                 continue
             if other in visited or len(path) >= max_segments:
                 continue
             state["exp"] += 1
-            dfs(start, other, path + [idx], new_len, visited | {other})
+            dfs(start, other, [*path, idx], new_len, visited | {other})
 
     for start in sorted(inc):
         dfs(start, start, [], 0.0, {start})
@@ -844,7 +845,7 @@ def snap_points(
             continue
         # Reuse an existing split on this segment at (near) the same position.
         node = None
-        for (ppos, pnode) in splits.get(sid, ()):
+        for (_ppos, pnode) in splits.get(sid, ()):
             if haversine_m(coord, coords[pnode]) <= snap_weld_m:
                 node = pnode
                 break
@@ -868,7 +869,7 @@ def snap_points(
         marks: list[tuple[_Pos, int]] = [((0, 0.0), s.a)]
         marks.extend(sorted(cuts, key=lambda pn: pn[0]))
         marks.append(((last - 1, 1.0), s.b))
-        for (pa, na), (pb, nb) in zip(marks, marks[1:]):
+        for (pa, na), (pb, nb) in pairwise(marks):
             piece, piece_tags = _subpolyline(s.coords, pa, pb, s.step_tags)
             segments.append(
                 Segment(

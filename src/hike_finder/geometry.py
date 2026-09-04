@@ -6,7 +6,7 @@ pipeline you can trust without an external service.
 from __future__ import annotations
 
 import math
-from typing import Iterable
+from itertools import pairwise
 
 # A coordinate is (lat, lon) in degrees.
 Coord = tuple[float, float]
@@ -168,7 +168,7 @@ def _vertex_graph(
     for w in ways:
         if len(w) < 2:
             continue
-        for a, b in zip(w, w[1:]):
+        for a, b in pairwise(w):
             ka, kb = key(a), key(b)
             if ka == kb:
                 continue  # zero-length or sub-weld segment contributes no edge

@@ -371,8 +371,8 @@ def test_inventory_is_empty_but_not_crashing_on_unknown_lists():
 
 
 def _hike(**over):
-    base = dict(osm_id=1, name="R", distance_km=5.0, circular=False, car_access=False,
-                chairlift_access=False, start=(46.5, 12.1), gain_m=100, loss_m=100)
+    base = {"osm_id": 1, "name": "R", "distance_km": 5.0, "circular": False, "car_access": False,
+                "chairlift_access": False, "start": (46.5, 12.1), "gain_m": 100, "loss_m": 100}
     base.update(over)
     return Hike(**base)
 

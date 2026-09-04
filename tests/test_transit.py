@@ -32,7 +32,7 @@ from hike_finder.access import (
 )
 from hike_finder.filters import Criteria, Hike
 from hike_finder.overpass import AreaData, build_query, parse_area
-from hike_finder.snapshot import AreaSnapshot, snapshot_to_json, snapshot_from_json
+from hike_finder.snapshot import AreaSnapshot, snapshot_from_json, snapshot_to_json
 
 # One endpoint, and stops placed north of it at known distances. 1 deg latitude is
 # ~111.2 km, so 0.001 deg is ~111 m — enough to place a stop precisely either side
@@ -207,7 +207,9 @@ def test_snapshot_round_trips_stops_and_keeps_empty_distinct_from_absent():
 
     # An area with no stops saves an EMPTY LIST and loads back as one — a recorded
     # "none here", not a shrug.
-    empty = snapshot_from_json(json.loads(json.dumps(snapshot_to_json(_snapshot(AreaData(transit=[]))))))
+    empty = snapshot_from_json(
+        json.loads(json.dumps(snapshot_to_json(_snapshot(AreaData(transit=[])))))
+    )
     assert empty.area.transit == []
 
 

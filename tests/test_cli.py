@@ -34,7 +34,10 @@ def test_boolean_filters_are_tristate():
     assert b.circular is True and b.car_access is True and b.chairlift_access is True
 
     # negated -> False (exclude)
-    c = _parse("--bbox", "1", "2", "3", "4", "--no-circular", "--no-car-access", "--no-chairlift-access")
+    c = _parse(
+        "--bbox", "1", "2", "3", "4", "--no-circular", "--no-car-access",
+        "--no-chairlift-access",
+    )
     assert c.circular is False and c.car_access is False and c.chairlift_access is False
 
 
@@ -54,11 +57,11 @@ def test_build_criteria_maps_all_fields():
 
 
 def _sample_hike(**over):
-    base = dict(
-        osm_id=42, name="Test loop", distance_km=8.3, circular=True,
-        car_access=True, chairlift_access=True, start=(50.7312, 15.6044),
-        gain_m=540, loss_m=535, lift_type="chair_lift", ref="0001",
-    )
+    base = {
+        "osm_id": 42, "name": "Test loop", "distance_km": 8.3, "circular": True,
+        "car_access": True, "chairlift_access": True, "start": (50.7312, 15.6044),
+        "gain_m": 540, "loss_m": 535, "lift_type": "chair_lift", "ref": "0001",
+    }
     base.update(over)
     return Hike(**base)
 
@@ -136,7 +139,11 @@ class _Ramp(ElevationProvider):
 
 
 def _write_snapshot(path):
-    area = AreaData(routes=[{"id": 1, "name": "North", "ways": [[(50.0, 14.0), (50.05, 14.0)]], "tags": {}}])
+    area = AreaData(
+        routes=[
+            {"id": 1, "name": "North", "ways": [[(50.0, 14.0), (50.05, 14.0)]], "tags": {}}
+        ]
+    )
     rec = RecordingElevationProvider(_Ramp())
     bbox = (49.9, 13.9, 50.2, 14.2)
     find_hikes(area, rec, Criteria(), bbox=bbox)
@@ -155,7 +162,11 @@ def test_run_area_mode_searches_offline(tmp_path, capsys):
 
 
 def test_run_area_and_download_mutually_exclusive(capsys):
-    rc = run(build_parser().parse_args(["--bbox", "1", "2", "3", "4", "--area", "a", "--download", "b"]))
+    rc = run(
+        build_parser().parse_args(
+            ["--bbox", "1", "2", "3", "4", "--area", "a", "--download", "b"]
+        )
+    )
     assert rc == 2
     assert "mutually exclusive" in capsys.readouterr().err
 

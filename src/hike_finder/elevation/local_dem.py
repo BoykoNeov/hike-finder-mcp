@@ -38,7 +38,7 @@ try:
     import rasterio  # type: ignore
 
     _HAVE_RASTERIO = True
-except Exception:  # pragma: no cover - optional heavy dep
+except Exception:  # noqa: BLE001  # pragma: no cover - optional heavy dep
     _HAVE_RASTERIO = False
 
 
@@ -108,8 +108,8 @@ def _build_vrt_doc(tiles: list[str]) -> str:
     maxx = max(m["bounds"].right for m in metas)
     miny = min(m["bounds"].bottom for m in metas)
     maxy = max(m["bounds"].top for m in metas)
-    width = int(round((maxx - minx) / xres))
-    height = int(round((maxy - miny) / yres))
+    width = round((maxx - minx) / xres)
+    height = round((maxy - miny) / yres)
 
     gdtype = _GDAL_DTYPE.get(metas[0]["dtype"], "Float32")
     # One band nodata for the mosaic; each source masks its own sentinel against
@@ -128,8 +128,8 @@ def _build_vrt_doc(tiles: list[str]) -> str:
     if band_nodata is not None:
         ET.SubElement(band, "NoDataValue").text = _fmt(band_nodata)
     for m in metas:
-        dxoff = int(round((m["bounds"].left - minx) / xres))
-        dyoff = int(round((maxy - m["bounds"].top) / yres))
+        dxoff = round((m["bounds"].left - minx) / xres)
+        dyoff = round((maxy - m["bounds"].top) / yres)
         # ComplexSource (vs SimpleSource) so the per-source <NODATA> below is
         # honoured. SourceProperties lets GDAL defer opening the tile until a
         # window is actually read — key to staying memory-flat over a big region.
@@ -202,7 +202,7 @@ class LocalDemElevationProvider(ElevationProvider):
                     out[i] = self._handle_nodata()
             if in_bounds:
                 xy = [c for _, c in in_bounds]
-                for (i, _), sampled in zip(in_bounds, src.sample(xy)):
+                for (i, _), sampled in zip(in_bounds, src.sample(xy), strict=True):
                     val = float(sampled[0])
                     if nodata is not None and val == nodata:
                         val = self._handle_nodata()

@@ -13,17 +13,17 @@ from hike_finder.overpass import AreaData
 
 
 def _hike(**kw):
-    base = dict(
-        osm_id=1,
-        name="t",
-        distance_km=5.0,
-        circular=False,
-        car_access=False,
-        chairlift_access=False,
-        start=(50.0, 14.0),
-        gain_m=300.0,
-        loss_m=300.0,
-    )
+    base = {
+        "osm_id": 1,
+        "name": "t",
+        "distance_km": 5.0,
+        "circular": False,
+        "car_access": False,
+        "chairlift_access": False,
+        "start": (50.0, 14.0),
+        "gain_m": 300.0,
+        "loss_m": 300.0,
+    }
     base.update(kw)
     return Hike(**base)
 
@@ -42,23 +42,31 @@ def test_near_miss_note_gain_below_minimum():
 def test_near_miss_gain_too_far_below_is_dropped():
     # 600 vs an 800 minimum is 200 m short — beyond 20% (160 m) — so NOT a near-miss.
     c = Criteria(min_gain_m=800.0)
-    assert c.near_miss_notes(_hike(gain_m=600.0), gain_frac=0.2, car_radius_m=300, lift_radius_m=400) is None
+    assert c.near_miss_notes(
+        _hike(gain_m=600.0), gain_frac=0.2, car_radius_m=300, lift_radius_m=400
+    ) is None
 
 
 def test_near_miss_note_gain_above_maximum():
     c = Criteria(max_gain_m=500.0)
-    notes = c.near_miss_notes(_hike(gain_m=560.0), gain_frac=0.2, car_radius_m=300, lift_radius_m=400)
+    notes = c.near_miss_notes(
+        _hike(gain_m=560.0), gain_frac=0.2, car_radius_m=300, lift_radius_m=400
+    )
     assert notes == ("gain 560 m — 60 m above the 500 m maximum",)
 
 
 def test_near_miss_unknown_gain_against_active_bound_is_dropped():
     c = Criteria(min_gain_m=500.0)
-    assert c.near_miss_notes(_hike(gain_m=None), gain_frac=0.2, car_radius_m=300, lift_radius_m=400) is None
+    assert c.near_miss_notes(
+        _hike(gain_m=None), gain_frac=0.2, car_radius_m=300, lift_radius_m=400
+    ) is None
 
 
 def test_near_miss_note_distance_below_minimum():
     c = Criteria(min_distance_km=8.0)
-    notes = c.near_miss_notes(_hike(distance_km=7.3), gain_frac=0.2, car_radius_m=300, lift_radius_m=400)
+    notes = c.near_miss_notes(
+        _hike(distance_km=7.3), gain_frac=0.2, car_radius_m=300, lift_radius_m=400
+    )
     assert notes == ("7.3 km — 0.7 km below the 8.0 km minimum",)
 
 
@@ -100,7 +108,11 @@ def test_relaxed_geometry_keeps_exclusion_strict():
     # not a useful near-miss.
     c = Criteria(car_access=False)
     assert c.accepts_geometry_relaxed(
-        _hike(car_access=True), dist_km_margin=2.0, radius_frac=0.5, car_radius_m=300, lift_radius_m=400
+        _hike(car_access=True),
+        dist_km_margin=2.0,
+        radius_frac=0.5,
+        car_radius_m=300,
+        lift_radius_m=400,
     ) is False
 
 
@@ -119,7 +131,12 @@ class _LatRamp(ElevationProvider):
 
 def _north_route(osm_id, lon, extent):
     """A straight south->north way starting at (50.0, lon) reaching 50.0+extent."""
-    return {"id": osm_id, "name": f"r{osm_id}", "ways": [[(50.0, lon), (50.0 + extent, lon)]], "tags": {}}
+    return {
+        "id": osm_id,
+        "name": f"r{osm_id}",
+        "ways": [[(50.0, lon), (50.0 + extent, lon)]],
+        "tags": {},
+    }
 
 
 def _gain_of(route):

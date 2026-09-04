@@ -66,7 +66,7 @@ def cache_path_from_config(cfg) -> Path:
     return base / "cache.sqlite3"
 
 
-def from_config(cfg) -> "Cache | None":
+def from_config(cfg) -> Cache | None:
     """A :class:`Cache` for this config, or ``None`` when caching is disabled
     (``HIKE_CACHE=0`` / ``--no-cache``). ``None`` makes every call site fall straight
     through to the network — the cache is opt-out, on by default."""
@@ -316,7 +316,9 @@ class CachingElevationProvider(ElevationProvider):
         misses = list(dict.fromkeys(p for p in points if p not in cached))
         if misses:
             fetched = self.inner.lookup(misses)  # raises -> propagate, store nothing
-            new = dict(zip(misses, fetched))
+            # strict: the provider contract is one elevation per point. A short reply
+            # would otherwise be cached as a wrong point-to-elevation pairing.
+            new = dict(zip(misses, fetched, strict=True))
             self.cache.put_elevations(self.source, new)
             cached = {**cached, **new}
         return [cached[p] for p in points]

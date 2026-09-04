@@ -1125,7 +1125,10 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:  # noqa: BLE001 — surface any fetch/write failure to the UI
             msg = str(e)
             if "406" in msg:
-                msg += " — fill in the Contact field (the public Overpass server rejects the default User-Agent)."
+                msg += (
+                    " — fill in the Contact field (the public Overpass server rejects "
+                    "the default User-Agent)."
+                )
             self._json(502, {"error": f"download failed: {msg}"})
             return
         self._json(200, {
@@ -1396,14 +1399,14 @@ class Handler(BaseHTTPRequestHandler):
         # Filled by the search with facts about the FETCH the hikes cannot carry — the
         # same out-parameter the CLI and the MCP server read (see search.search_hikes).
         diagnostics = {}
-        kwargs = dict(cfg=cfg, user_agent=ua, near_miss=near_miss, diagnostics=diagnostics)
+        kwargs = {"cfg": cfg, "user_agent": ua, "near_miss": near_miss, "diagnostics": diagnostics}
         # Naming applies only to ordinary routes — composed loops already carry their
         # constituent-trail label, never a route/<id> fallback.
         if not composing:
             kwargs["name_places"] = name_places
         try:
             hikes = search(bbox, criteria, **kwargs)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — surface any fetch/HTTP failure to the UI
             return None, [], _fetch_error(e)
         # No ferrata notice on a live path, and that is not an oversight: a live fetch
         # always parses `ferrata_routes`/`ferrata_ways` and member-way tags, and the

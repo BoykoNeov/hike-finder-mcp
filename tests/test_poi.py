@@ -18,6 +18,7 @@ import json
 import logging
 import math
 import random
+from itertools import pairwise
 
 import pytest
 
@@ -27,9 +28,9 @@ from hike_finder.geometry import haversine_m
 from hike_finder.overpass import AreaData, build_query, parse_area
 from hike_finder.poi import (
     POI_KINDS,
-    _probe_points,
     PoiHit,
     PoiIndex,
+    _probe_points,
     classify,
     kind_labels,
     normalise_kinds,
@@ -39,7 +40,6 @@ from hike_finder.poi import (
 )
 from hike_finder.search import search_snapshot
 from hike_finder.snapshot import AreaSnapshot, snapshot_from_json, snapshot_to_json
-
 
 # --------------------------------------------------------------------------- registry
 
@@ -433,7 +433,7 @@ def test_probe_points_never_leave_a_gap_wider_than_the_step():
     """The candidate stage rests on this: no point of the line is far from a probe."""
     line = [(50.0, 14.0), (50.05, 14.0), (50.05, 14.08)]
     probes = _probe_points(line, 250.0)
-    gaps = [haversine_m(a, b) for a, b in zip(probes, probes[1:])]
+    gaps = [haversine_m(a, b) for a, b in pairwise(probes)]
     # Interpolation is linear in lat/lon while the gap is measured great-circle, so a
     # long edge overshoots by a hair. Irrelevant in practice: the candidate lookup uses
     # 1.5x the radius, i.e. 125 m of slack against a ~0.01 m discrepancy.
@@ -603,9 +603,9 @@ def test_index_cell_sizing_is_sane():
     # Two points one cell apart must be at least one radius apart on the ground —
     # checked at the WORST (highest) latitude the index was built for, where east-west
     # cells are narrowest.
-    dlon = index._dlon  # noqa: SLF001 — pinning the sizing invariant is the point
-    dlat = index._dlat  # noqa: SLF001
+    dlon = index._dlon
+    dlat = index._dlat
     assert haversine_m((50.75, 15.6), (50.75, 15.6 + dlon)) >= radius
     assert haversine_m((50.7, 15.6), (50.7 + dlat, 15.6)) >= radius
     # And the reference cosine came from the worst-case latitude, not the mean.
-    assert index._cos_ref == pytest.approx(math.cos(math.radians(50.75)))  # noqa: SLF001
+    assert index._cos_ref == pytest.approx(math.cos(math.radians(50.75)))

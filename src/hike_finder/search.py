@@ -26,6 +26,7 @@ import logging
 import math
 from collections import Counter
 from dataclasses import replace
+from itertools import pairwise
 
 from . import cache as _cache
 from . import config as _config
@@ -50,7 +51,7 @@ from .filters import Criteria, Hike, find_hikes
 from .geocode import DEFAULT_NOMINATIM_URL, NominatimGeocoder
 from .geometry import Coord, haversine_m
 from .naming import enrich_names
-from .overpass import AreaData, DEFAULT_OVERPASS_URL, build_query, fetch_area
+from .overpass import DEFAULT_OVERPASS_URL, AreaData, build_query, fetch_area
 from .snapshot import (
     AreaSnapshot,
     RecordingElevationProvider,
@@ -256,7 +257,7 @@ def _measure_composed(
         all_elev = provider.lookup(flat) if flat else []
         seg_elev = {sid: all_elev[lo:hi] for sid, (lo, hi) in spans.items()}
     except ElevationError:
-        seg_elev = {sid: None for sid in used_segs}
+        seg_elev = dict.fromkeys(used_segs)
 
     # Wrap each route as a synthetic route and run the SAME engine. The negative id keys the
     # route back to its provenance after find_hikes (which preserves osm_id per Hike). Each
@@ -449,7 +450,9 @@ def _compose_from_graph(
     requires each loop to pass within ``radius_m`` of the picked point; car/lift ``criteria``
     add further anchors, AND-ed, exactly as before.
     """
-    min_km = criteria.min_distance_km if criteria.min_distance_km is not None else cfg.compose_min_km
+    min_km = (
+        criteria.min_distance_km if criteria.min_distance_km is not None else cfg.compose_min_km
+    )
     max_km = (
         criteria.max_distance_km
         if criteria.max_distance_km is not None
@@ -781,7 +784,7 @@ def route_via(
     # edge-disjoint where the network allows; a leg with no disjoint alternative falls back to
     # reusing them (a retrace on that leg), which the overlap report below surfaces. Open routes
     # take the plain shortest path per leg (consecutive legs may share a junction stub — fine).
-    legs = list(zip(nodes, nodes[1:]))
+    legs = list(pairwise(nodes))
     if loop:
         legs.append((nodes[-1], nodes[0]))
     ordered: list[int] = []
@@ -789,7 +792,11 @@ def route_via(
     for li, (u, v) in enumerate(legs, start=1):
         if u == v:
             continue  # two consecutive points snapped to the same trail vertex — empty leg
-        res = _dijkstra(graph, u, v, removed_edges=frozenset(used)) if loop else _dijkstra(graph, u, v)
+        res = (
+            _dijkstra(graph, u, v, removed_edges=frozenset(used))
+            if loop
+            else _dijkstra(graph, u, v)
+        )
         if res is None and loop:
             res = _dijkstra(graph, u, v)  # no disjoint path for this leg — allow a retrace
         if res is None:
@@ -802,7 +809,9 @@ def route_via(
         ordered.extend(segs)
         used.update(segs)
     if not ordered:
-        _log.warning("route via: all your points snapped to the same trail vertex — nothing to route")
+        _log.warning(
+            "route via: all your points snapped to the same trail vertex — nothing to route"
+        )
         return []
 
     # Retrace report: how much of the trail covered is walked more than once (0 = a clean
@@ -1028,7 +1037,8 @@ def routes_to_poi(
     # tree with its own path reconstruction.
     found: list[tuple[float, float, dict, list[int]]] = []  # (trail_m, snap_m, poi, segs)
     off_network = unreachable = too_far = at_start = 0
-    for (crow_m, p), (node, snap_d) in zip(candidates, poi_snaps):
+    # strict: `poi_snaps` is `snapped[1:]` over exactly these candidates' coordinates.
+    for (crow_m, p), (node, snap_d) in zip(candidates, poi_snaps, strict=True):
         if node < 0 or snap_d > max_snap_m:
             off_network += 1
             continue
@@ -1106,7 +1116,7 @@ def routes_to_poi(
 
     start_coord = graph.coords[src]
     routes = []
-    for length_m, snap_d, p, segs in chosen:
+    for _length_m, snap_d, p, segs in chosen:
         route = _assemble(graph, src, segs)
         # Render the route from where you picked, not from the assembled line's head.
         route.anchor = start_coord

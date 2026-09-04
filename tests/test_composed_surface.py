@@ -46,11 +46,7 @@ _W, _E = 15.000, 15.008
 _SLIVERS = [
     [(_S, _W + 0.002 * i), (_S, _W + 0.002 * (i + 1))] for i in range(4)
 ]
-_SQUARE_WAYS = _SLIVERS + [
-    [(_S, _E), (_N, _E)],
-    [(_N, _E), (_N, _W)],
-    [(_N, _W), (_S, _W)],
-]
+_SQUARE_WAYS = [*_SLIVERS, [(_S, _E), (_N, _E)], [(_N, _E), (_N, _W)], [(_N, _W), (_S, _W)]]
 _SQUARE_TAGS = [
     {"surface": "asphalt"}, {"surface": "asphalt"},
     {"surface": "asphalt"}, {"surface": "asphalt"},

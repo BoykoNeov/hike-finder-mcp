@@ -14,7 +14,6 @@ from datetime import datetime, timedelta, timezone
 from hike_finder.cache import Cache, CachingGeocoder
 from hike_finder.geocode import NominatimGeocoder, _parse_place
 
-
 # --------------------------------------------------------------- _parse_place (pure)
 
 def test_parse_place_prefers_most_specific_settlement():

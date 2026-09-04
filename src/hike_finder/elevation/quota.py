@@ -24,6 +24,7 @@ degrading to ``n/a`` slightly early or late — nothing breaks.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
@@ -99,10 +100,8 @@ class DailyQuota:
                 json.dump({"date": date, "count": count}, f)
             os.replace(tmp, self.path)
         except BaseException:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp)
-            except OSError:
-                pass
             raise
 
     def _current(self) -> int:

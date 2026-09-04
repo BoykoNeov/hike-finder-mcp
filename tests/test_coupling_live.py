@@ -23,7 +23,7 @@ from pathlib import Path
 
 from hike_finder.access import matched_access_points, route_endpoints
 from hike_finder.filters import _route_start, measure_geometry
-from hike_finder.geometry import haversine_m, route_termini, stitch_ways
+from hike_finder.geometry import haversine_m, route_termini
 from hike_finder.overpass import parse_area
 
 FIXTURE = Path(__file__).parent / "fixtures" / "spindl_area.json"
@@ -128,7 +128,8 @@ def test_coupling_actually_moves_starts_across_the_area():
         aps = matched_access_points(
             endpoints, area.parking, area.lifts, car_radius_m=CAR_R, lift_radius_m=LIFT_R
         )
-        if termini and aps:
-            if haversine_m(_route_start(line, termini, aps), _route_start(line, termini, ())) > 1.0:
-                moved += 1
+        if termini and aps and haversine_m(
+            _route_start(line, termini, aps), _route_start(line, termini, ())
+        ) > 1.0:
+            moved += 1
     assert moved >= 5  # observed 10 of 14 coupled routes on 2026-06-24

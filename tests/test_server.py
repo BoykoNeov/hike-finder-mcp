@@ -35,13 +35,12 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("mcp")  # the MCP server is an optional extra; skip if absent
+from dataclasses import replace
+
 import anyio
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import get_default_environment, stdio_client
 from mcp.shared.memory import create_client_server_memory_streams
-
-from dataclasses import replace
-
 
 from hike_finder import server
 from hike_finder.filters import Criteria, Hike
@@ -427,7 +426,7 @@ def test_unknown_tool_is_an_error(monkeypatch):
         async with create_connected_server_and_client_session(server.app) as session:
             try:
                 await session.call_tool("does_not_exist", {})
-            except Exception as exc:  # MCPError
+            except Exception as exc:  # noqa: BLE001 — MCPError
                 return exc
             return None
 
@@ -497,12 +496,11 @@ def test_real_stdio_transport_lists_the_tool():
     )
 
     async def _impl():
-        async with stdio_client(params) as (read, write):
-            async with ClientSession(
-                read, write, read_timeout_seconds=30
-            ) as session:
-                await session.initialize()
-                return await session.list_tools()
+        async with stdio_client(params) as (read, write), ClientSession(
+            read, write, read_timeout_seconds=30
+        ) as session:
+            await session.initialize()
+            return await session.list_tools()
 
     result = asyncio.run(asyncio.wait_for(_impl(), timeout=60))
     assert {t.name for t in result.tools} == {
@@ -763,7 +761,9 @@ def test_list_pois_advertises_the_browse():
     # Nothing is required: a live listing needs the corners, an offline one needs `area`
     # — validated in call_tool, like find_hikes.
     assert schema["required"] == []
-    assert set(schema["properties"]) >= {"south", "west", "north", "east", "area", "kinds", "format"}
+    assert set(schema["properties"]) >= {
+        "south", "west", "north", "east", "area", "kinds", "format",
+    }
     assert "ruins" in schema["properties"]["kinds"]["items"]["enum"]
     # The description has to keep the three POI questions apart, or an LLM client will
     # reach for the wrong one.

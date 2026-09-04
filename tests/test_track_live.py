@@ -54,7 +54,9 @@ def test_track_recorded_iff_stitch_is_faithful_on_every_real_route():
     # when the stitch covered all member ways. No clean route loses its profile; no
     # fragmented route exports a track missing legs.
     for rid, hike, faithful in _measured_hikes():
-        assert bool(hike.track) == faithful, f"{rid} {hike.name}: track={bool(hike.track)} faithful={faithful}"
+        assert bool(hike.track) == faithful, (
+            f"{rid} {hike.name}: track={bool(hike.track)} faithful={faithful}"
+        )
 
 
 def test_gate_fires_on_exactly_the_two_fragmented_relations():
@@ -83,7 +85,7 @@ def test_gpx_and_geojson_output_match_the_gate_per_route():
     by_name = {t.find("g:name", GPX_NS).text: t for t in root.findall("g:trk", GPX_NS)}
     gj = json.loads(hikes_to_geojson(hikes))
 
-    for hike, feat in zip(hikes, gj["features"]):
+    for hike, feat in zip(hikes, gj["features"], strict=True):
         name = hike.place_name or hike.name or "hike"
         trk = by_name["~ " + name] if ("~ " + name) in by_name else by_name.get(name)
         assert trk is not None, name

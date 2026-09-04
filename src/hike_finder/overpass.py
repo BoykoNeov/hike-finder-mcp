@@ -37,9 +37,9 @@ from importlib.metadata import PackageNotFoundError, version
 
 import requests
 
-from .access import RIDE_UP_AERIALWAYS, classify_transit, transit_selectors_by_key
 from . import ferrata as _ferrata
 from . import poi as _poi
+from .access import RIDE_UP_AERIALWAYS, classify_transit, transit_selectors_by_key
 
 Coord = tuple[float, float]
 

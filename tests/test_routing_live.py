@@ -71,7 +71,8 @@ def test_around_finds_loops_near_the_point_each_started_there(monkeypatch):
     for h in hikes:
         assert h.composed is True and h.composed_of
         assert h.circular is True
-        assert h.gain_m is not None and abs(h.gain_m - h.loss_m) <= 0.2 * max(h.gain_m, h.loss_m) + 5
+        assert h.gain_m is not None
+        assert abs(h.gain_m - h.loss_m) <= 0.2 * max(h.gain_m, h.loss_m) + 5
         assert haversine_m(h.start, point) <= 500.0   # started near where you pointed
 
 
@@ -103,7 +104,9 @@ def test_routes_between_two_points_on_a_loop_returns_both_arcs(monkeypatch):
     hikes = S.routes_between(start, finish, Criteria(), k=2)
     assert 1 <= len(hikes) <= 2
     # Shortest first.
-    assert [round(h.distance_km, 6) for h in hikes] == sorted(round(h.distance_km, 6) for h in hikes)
+    assert [round(h.distance_km, 6) for h in hikes] == sorted(
+        round(h.distance_km, 6) for h in hikes
+    )
     for h in hikes:
         assert h.composed is True                     # synthesised, no single OSM id
         assert h.circular is False                    # a point-to-point route, not a loop

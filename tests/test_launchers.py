@@ -110,12 +110,11 @@ def test_mcp_launcher_keeps_stdout_clean(suffix):
     )
 
     async def _impl():
-        async with stdio_client(params) as (read, write):
-            async with ClientSession(
-                read, write, read_timeout_seconds=30
-            ) as session:
-                await session.initialize()
-                return await session.list_tools()
+        async with stdio_client(params) as (read, write), ClientSession(
+            read, write, read_timeout_seconds=30
+        ) as session:
+            await session.initialize()
+            return await session.list_tools()
 
     result = asyncio.run(asyncio.wait_for(_impl(), timeout=60))
     assert {t.name for t in result.tools} == {

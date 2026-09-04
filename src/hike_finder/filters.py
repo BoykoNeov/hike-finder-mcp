@@ -196,24 +196,26 @@ class Criteria:
             return False
         if self.chairlift_access is not None and h.chairlift_access != self.chairlift_access:
             return False
-        if self.transit_access is not None:
-            # Unknown fails an active filter — the same rule `accepts_gain` applies to a
-            # route with no measured gain. A pre-transit snapshot yields None here, and
-            # dropping the route is the honest answer: we cannot say either way, so the
-            # search comes back empty (and says why) instead of returning routes labelled
-            # with an access verdict nothing ever measured.
-            if h.transit_access is None or h.transit_access != self.transit_access:
-                return False
+        # Unknown fails an active filter — the same rule `accepts_gain` applies to a
+        # route with no measured gain. A pre-transit snapshot yields None here, and
+        # dropping the route is the honest answer: we cannot say either way, so the
+        # search comes back empty (and says why) instead of returning routes labelled
+        # with an access verdict nothing ever measured.
+        if self.transit_access is not None and (
+            h.transit_access is None or h.transit_access != self.transit_access
+        ):
+            return False
         if self.poi_kinds and not h.pois:
             return False
-        if self.ferrata is not None:
-            # Unknown fails an active filter, the `transit_access` rule — and here it is
-            # the only defensible reading in BOTH directions. Asked to find ferrata, a
-            # route nobody could examine is not evidence of one; asked to avoid them, it
-            # is not evidence of safety either, and "probably fine" is not a claim this
-            # project makes about cable. The caller warns when this empties a search.
-            if h.ferrata is None or h.ferrata.present != self.ferrata:
-                return False
+        # Unknown fails an active filter, the `transit_access` rule — and here it is
+        # the only defensible reading in BOTH directions. Asked to find ferrata, a
+        # route nobody could examine is not evidence of one; asked to avoid them, it
+        # is not evidence of safety either, and "probably fine" is not a claim this
+        # project makes about cable. The caller warns when this empties a search.
+        if self.ferrata is not None and (
+            h.ferrata is None or h.ferrata.present != self.ferrata
+        ):
+            return False
         return True
 
     def accepts_gain(self, h: Hike) -> bool:
@@ -255,9 +257,15 @@ class Criteria:
           - an *excluded* access (``False``) stays strict — "almost excluded" is not
             a useful near-miss.
         """
-        if self.max_distance_km is not None and h.distance_km > self.max_distance_km + dist_km_margin:
+        if (
+            self.max_distance_km is not None
+            and h.distance_km > self.max_distance_km + dist_km_margin
+        ):
             return False
-        if self.min_distance_km is not None and h.distance_km < self.min_distance_km - dist_km_margin:
+        if (
+            self.min_distance_km is not None
+            and h.distance_km < self.min_distance_km - dist_km_margin
+        ):
             return False
         if self.circular is not None and h.circular != self.circular:
             return False
@@ -283,13 +291,14 @@ class Criteria:
             return False
         if self.poi_kinds and not h.pois:
             return False
-        if self.ferrata is not None:
-            # NOT relaxed, in either direction, and unlike distance or an access radius
-            # there is no tolerance that would even mean anything: a route is cabled or
-            # it is not. Reusing the strict test keeps a near-miss search from surfacing
-            # a ferrata as "close to what you asked for" when you asked to avoid one.
-            if h.ferrata is None or h.ferrata.present != self.ferrata:
-                return False
+        # NOT relaxed, in either direction, and unlike distance or an access radius
+        # there is no tolerance that would even mean anything: a route is cabled or
+        # it is not. Reusing the strict test keeps a near-miss search from surfacing
+        # a ferrata as "close to what you asked for" when you asked to avoid one.
+        if self.ferrata is not None and (
+            h.ferrata is None or h.ferrata.present != self.ferrata
+        ):
+            return False
         return True
 
     def near_miss_notes(
@@ -352,7 +361,11 @@ class Criteria:
                 f"nearest parking {round(h.car_distance_m)} m away — "
                 f"just past the {round(car_radius_m)} m limit"
             )
-        if self.chairlift_access is True and not h.chairlift_access and h.lift_distance_m is not None:
+        if (
+            self.chairlift_access is True
+            and not h.chairlift_access
+            and h.lift_distance_m is not None
+        ):
             notes.append(
                 f"nearest lift {round(h.lift_distance_m)} m away — "
                 f"just past the {round(lift_radius_m)} m limit"
@@ -531,7 +544,10 @@ def measure_geometry(
     # summaries stay None rather than claiming a fully untagged route.
     way_tags = route.get("way_tags") or []
     if way_tags:
-        members = list(zip(ways, way_tags))
+        # strict: `way_tags` is parallel to `ways` by construction in BOTH producers
+        # (overpass.parse_area and compose.clip_routes_to_bbox, which rebuilds it).
+        # Truncating instead would attribute one way's surface to another.
+        members = list(zip(ways, way_tags, strict=True))
         surface_summary = summarise_surface(members)
         tracktype_summary = summarise_tracktype(members)
     else:
@@ -716,11 +732,16 @@ def add_elevation(
     # Per-point elevation track for export. Build it only with points aligned 1:1 to
     # the looked-up elevations, and — on the direct path — only when the stitched line
     # didn't drop legs (a presampled composed loop is a single faithful ring).
-    if sampled is not None and len(sampled) >= 2 and len(sampled) == len(elevations):
-        if use_presampled or _stitch_is_faithful(line, hike.ways):
-            hike.track = tuple(
-                (lat, lon, float(ele)) for (lat, lon), ele in zip(sampled, elevations)
-            )
+    if (
+        sampled is not None
+        and len(sampled) >= 2
+        and len(sampled) == len(elevations)
+        and (use_presampled or _stitch_is_faithful(line, hike.ways))
+    ):
+        hike.track = tuple(
+            (lat, lon, float(ele))
+            for (lat, lon), ele in zip(sampled, elevations, strict=True)
+        )
 
 
 def _gain_desc(h: Hike) -> float:

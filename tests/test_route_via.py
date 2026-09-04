@@ -32,7 +32,9 @@ def stub_network(monkeypatch):
     """Return a runner that executes route_via fully offline against `routes`."""
 
     def run(points, routes, *, loop=False, criteria=None):
-        monkeypatch.setattr(S, "_fetch_area", lambda *a, **k: AreaData(routes=routes, parking=[], lifts=[]))
+        monkeypatch.setattr(
+            S, "_fetch_area", lambda *a, **k: AreaData(routes=routes, parking=[], lifts=[])
+        )
         monkeypatch.setattr(S, "_provider", lambda *a, **k: _RisingProvider())
         monkeypatch.setattr(S._cache, "from_config", lambda cfg: None)
         return S.route_via(points, criteria or Criteria(), loop=loop)

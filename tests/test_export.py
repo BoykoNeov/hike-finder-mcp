@@ -30,12 +30,12 @@ GPX_NS = {"g": "http://www.topografix.com/GPX/1/1"}
 
 
 def _hike(**over):
-    base = dict(
-        osm_id=42, name="Test loop", distance_km=8.3, circular=True,
-        car_access=True, chairlift_access=False, start=(50.7312, 15.6044),
-        gain_m=540, loss_m=535, lift_type=None, ref="0001",
-        ways=(((50.0, 14.0), (50.01, 14.02)),),
-    )
+    base = {
+        "osm_id": 42, "name": "Test loop", "distance_km": 8.3, "circular": True,
+        "car_access": True, "chairlift_access": False, "start": (50.7312, 15.6044),
+        "gain_m": 540, "loss_m": 535, "lift_type": None, "ref": "0001",
+        "ways": (((50.0, 14.0), (50.01, 14.02)),),
+    }
     base.update(over)
     return Hike(**base)
 

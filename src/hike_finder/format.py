@@ -115,10 +115,7 @@ def format_hike(h: Hike) -> str:
     ferrata_flag = ferrata_label(h.ferrata)
     if ferrata_flag:
         flags.append(ferrata_flag)
-    if h.gain_m is not None:
-        elev = f"+{h.gain_m} m / -{h.loss_m} m"
-    else:
-        elev = "gain n/a"
+    elev = f"+{h.gain_m} m / -{h.loss_m} m" if h.gain_m is not None else "gain n/a"
     prefix = "~ " if h.near_miss else ""
     suffix = f"  [near miss: {'; '.join(h.notes)}]" if h.near_miss and h.notes else ""
     # What the route actually reaches, nearest first — the answer to "does this one go

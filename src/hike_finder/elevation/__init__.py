@@ -9,23 +9,25 @@ Configure via env (see config.py) or pass explicitly.
 """
 from __future__ import annotations
 
-from .base import Coord, ElevationError, ElevationProvider
+import contextlib
+
 from .api import DEFAULT_ENDPOINT, ApiElevationProvider
+from .base import Coord, ElevationError, ElevationProvider
 from .gain import cumulative_gain_loss
 from .local_dem import LocalDemElevationProvider
 from .quota import DailyQuota
 
 __all__ = [
+    "ApiElevationProvider",
     "Coord",
+    "DailyQuota",
     "ElevationError",
     "ElevationProvider",
-    "ApiElevationProvider",
+    "FallbackElevationProvider",
     "LocalDemElevationProvider",
-    "DailyQuota",
+    "api_quota_snapshot",
     "cumulative_gain_loss",
     "get_provider",
-    "api_quota_snapshot",
-    "FallbackElevationProvider",
 ]
 
 
@@ -64,7 +66,7 @@ def get_provider(
     # DEM elevations from ever being served to an API-mode user. Imported lazily so
     # the elevation package doesn't import hike_finder.cache at module load (which
     # imports back into elevation, a cycle).
-    def _maybe_cache(api: "ApiElevationProvider") -> ElevationProvider:
+    def _maybe_cache(api: ApiElevationProvider) -> ElevationProvider:
         if cache is None:
             return api
         from ..cache import CachingElevationProvider
@@ -95,10 +97,9 @@ def get_provider(
     if mode == "auto":
         chain = []
         if dem_dir:
-            try:
+            # no tiles / no rasterio -> just use API
+            with contextlib.suppress(ElevationError):
                 chain.append(LocalDemElevationProvider(dem_dir))
-            except ElevationError:
-                pass  # no tiles / no rasterio -> just use API
         chain.append(_maybe_cache(ApiElevationProvider(**api_kwargs)))
         return FallbackElevationProvider(chain)
     raise ValueError(f"unknown elevation mode: {mode!r}")
