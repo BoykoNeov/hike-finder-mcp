@@ -50,7 +50,7 @@ from .elevation import ElevationError, get_provider
 from .ferrata import FerrataSummary, summarise_ferrata
 from .filters import Criteria, Hike, find_hikes
 from .geocode import DEFAULT_NOMINATIM_URL, NominatimGeocoder
-from .geometry import Coord, haversine_m
+from .geometry import Coord, bbox_around, haversine_m
 from .naming import enrich_names
 from .overpass import DEFAULT_OVERPASS_URL, AreaData, build_query, fetch_area
 from .snapshot import (
@@ -527,14 +527,6 @@ def _compose_from_graph(
     )
 
 
-def _bbox_around(point: Coord, pad_m: float) -> Bbox:
-    """A (south, west, north, east) box centred on ``point``, padded ``pad_m`` metres."""
-    lat, lon = point
-    dlat = pad_m / 111_320.0
-    dlon = pad_m / (111_320.0 * max(math.cos(math.radians(lat)), 1e-6))
-    return (lat - dlat, lon - dlon, lat + dlat, lon + dlon)
-
-
 def compose_loops_around(
     point: Coord,
     criteria: Criteria,
@@ -576,7 +568,7 @@ def compose_loops_around(
     # A loop of length <= max_km passing within radius of the point has every vertex within
     # radius + max_km/2 of it (go out along the loop and back), so this pad can't clip one.
     pad_m = radius_m + max_km * 1000.0 / 2.0
-    bbox = _bbox_around(point, pad_m)
+    bbox = bbox_around(point, pad_m)
     cache = _cache.from_config(cfg)
     area = _fetch_area(
         bbox, cfg, cache, user_agent=user_agent, overpass_url=overpass_url, read_cache=True
@@ -861,7 +853,7 @@ def route_via(
 _POI_CANDIDATE_FACTOR = 4
 _POI_CANDIDATE_FLOOR = 10
 
-# The fetched box is padded this much beyond the length cap. ``_bbox_around`` converts
+# The fetched box is padded this much beyond the length cap. ``bbox_around`` converts
 # metres to degrees with 111 320 m/deg, while ``haversine_m`` — the metric every distance
 # in this mode is actually measured with — puts a degree of latitude at ~111 195 m, so a
 # box asked for "5 km" is ~4994 m by the ruler that matters. Nowhere near enough to matter
@@ -968,7 +960,7 @@ def routes_to_poi(
     # The pad IS the worst-case length cap — see the docstring: a route within the cap has
     # every vertex within the cap of the start, so it cannot be clipped out of this box.
     pad_m = _poi_route_cap_m(radius_m, criteria, cfg) * _POI_PAD_MARGIN
-    bbox = _bbox_around(start, pad_m)
+    bbox = bbox_around(start, pad_m)
     cache = _cache.from_config(cfg)
     area = _fetch_area(
         bbox, cfg, cache, user_agent=user_agent, overpass_url=overpass_url, read_cache=True

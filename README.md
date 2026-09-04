@@ -405,6 +405,11 @@ trailhead). The loop geometry — and its gain/loss — is unchanged; only the s
 Four modes that take **points instead of a bounding box** — you don't draw a box, you drop
 a pin (or two). All derive their own search area from the point(s), so **omit `--bbox`**.
 
+Every `LAT LON` below can be a **place name** instead (`--from "Pec pod Snezkou" --to
+"Snezka"`); see [Naming a place instead of typing
+coordinates](#naming-a-place-instead-of-typing-coordinates). One flag per point — repeat
+`--via` rather than listing several coordinates under one.
+
 **Circular routes near a point** (`--around LAT LON`) — "draw me a ~10 km loop starting
 *here*":
 
@@ -799,11 +804,55 @@ claude mcp add hike-finder -- /abs/path/to/scripts/mcp.sh
 All three are pinned by `tests/test_launchers.py` (the MCP one via a real stdio
 handshake — the check that proves nothing leaked to stdout).
 
+### Naming a place instead of typing coordinates
+
+Every mode takes a **place name** wherever it takes numbers, so you need not open a
+map at all:
+
+```bash
+# An area, by name — instead of four bbox corners:
+hike-finder --place "Spindleruv Mlyn" --circular --max-distance 10
+
+# Points, by name — anywhere --around / --from / --to / --via take LAT LON:
+hike-finder --from "Pec pod Snezkou" --to "Snezka" --routes 3
+hike-finder --around "Snezka" --min-distance 6 --max-distance 12
+hike-finder --via "Pec pod Snezkou" --via "Snezka" --via-loop
+```
+
+The name is looked up once through Nominatim (the same service, and the same cache,
+that `--name-places` uses in the opposite direction), and **what it resolved to is
+always printed** — the place, its country, and the ground actually searched:
+
+```
+Area: Špindlerův Mlýn, okres Trutnov, …, Česko (50.7256, 15.6068) — searching 11.6 x 12.3 km
+From: Pec pod Sněžkou, okres Trutnov, …, Česko (50.6936, 15.7336)
+```
+
+Two things it will not do quietly:
+
+- **Ambiguity is listed, not guessed.** "Sněžka" names the famous summit *and* a hill
+  in Vysočina; "Lhota" names dozens of villages. The first match is taken and the rest
+  are printed — pick another with `--place-index N`.
+- **A point-sized place is widened, and says so.** OSM maps a summit as a box a few
+  metres across; searching that returns nothing for no visible reason. Anything under
+  `HIKE_PLACE_MIN_KM` (2 km) is grown to it, and the line reads *"mapped extent 0.01 x
+  0.01 km, widened to 2.0 x 2.0 km"*. Use `--place-radius KM` to set the size yourself
+  — a village widened to the valley around it, or a whole region narrowed to a walkable
+  part.
+
+These lines go to **stderr**, so `--json` output stays machine-readable.
+
+Over MCP the same arguments exist on every tool — `place`, `place_radius_km`,
+`place_index` on the area tools, and `place` / `start_place` / `finish_place` (and
+`{"place": …}` waypoints for `route_via`) on the point tools. The reply carries the
+resolution as a trailing block, so an LLM that meant the *other* Lhota can see that it
+did and correct itself.
+
 ### Getting a bounding box (CLI / MCP)
 
-The web UI gives you the box for free. For the CLI or MCP you supply four corners
-in the order **`south, west, north, east`** (min latitude, min longitude, max
-latitude, max longitude):
+You can still give the four corners yourself, in the order **`south, west, north,
+east`** (min latitude, min longitude, max latitude, max longitude). The web UI gives
+you the box for free; otherwise:
 
 - **openstreetmap.org → "Export" tab** draws a draggable box and shows its four
   edges — copy them straight in.
@@ -850,6 +899,9 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 | `HIKE_OVERPASS_CACHE_TTL_DAYS` | How long a cached Overpass area stays fresh, days (trails change slowly). `0` disables Overpass caching; elevation is immutable terrain and never expires | `30` |
 | `HIKE_GEOCODE` | Opt-in reverse-geocode naming of **unnamed** routes (`route/<id>`) from place names via Nominatim (same as `--name-places`). Off by default — Nominatim's policy is strict | off |
 | `HIKE_NOMINATIM_URL` | Override the Nominatim reverse-geocoding endpoint (self-host for heavy use) | `nominatim.openstreetmap.org` |
+| `HIKE_NOMINATIM_SEARCH_URL` | Override the Nominatim **forward** (`/search`) endpoint used by `--place`. Defaults to the sibling of `HIKE_NOMINATIM_URL`, so self-hosting one direction moves both | derived |
+| `HIKE_PLACE_MIN_KM` | `--place`: smallest area a named place may be searched as, km across. A summit or a hut is mapped as a point-sized box; searching that literally returns nothing, so a smaller extent is widened to this — and the frontend says it widened it | `2` |
+| `HIKE_PLACE_MATCHES` | `--place`: how many candidate places to fetch, so an ambiguous name can list its alternatives instead of silently picking one | `5` |
 | `HIKE_NOMINATIM_MIN_INTERVAL` | Min seconds between Nominatim requests (the public server caps at ~1 req/sec) | `1.1` |
 | `HIKE_GEOCODE_CACHE_TTL_DAYS` | How long a cached place name stays fresh, days (place names change slowly). `0` disables geocode caching | `365` |
 | `HIKE_COMPOSE_MIN_KM` | Compose mode: default min loop length when no `--min-distance` | `3` |

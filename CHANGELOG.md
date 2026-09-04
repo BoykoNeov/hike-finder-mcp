@@ -8,6 +8,53 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Place names instead of coordinates.** Every mode now takes a name wherever it took
+  numbers: `--place "Spindleruv Mlyn"` in place of four `--bbox` corners, and a name given to
+  `--around`, `--from`, `--to` or `--via` in place of a `LAT LON` pair. Over MCP the same
+  arguments exist on every tool that took an area (`place`, `place_radius_km`, `place_index`
+  on `find_hikes`, `list_pois`, `list_ferrata`, `download_area`) and on every tool that took a
+  point (`place` on `circular_routes` and `routes_to_poi`, `start_place`/`finish_place` on
+  `routes_between`, `{"place": …}` waypoints on `route_via`). This is the one change that
+  alters how the tool is used day to day: the README used to send you to openstreetmap.org's
+  Export tab to read four numbers off a draggable box, and an LLM client — which has no Export
+  tab — simply guessed them.
+  The lookup is forward Nominatim (`/search`), reusing everything the existing reverse
+  direction already built: one shared throttle (the 1 request/second cap is per client, not
+  per direction), the same contact User-Agent, and the same persistent cache — though in its
+  own table, because a forward answer is a list of candidates with extents and the reverse
+  table holds one name per coordinate. One request per name; `HIKE_NOMINATIM_SEARCH_URL`
+  points it at a self-hosted instance, and it follows `HIKE_NOMINATIM_URL` there by default so
+  configuring one direction moves both.
+  **What a name resolved to is always printed** — the place, its country and the ground
+  actually searched — because a search of the wrong Lhota looks exactly like a search of the
+  right one. On the CLI those lines go to stderr so `--json` stays machine-readable; over MCP
+  they come back as a trailing content block, so `content[0]` is still the GPX file a client
+  might write out. Two cases get their own wording rather than a silent choice. An **ambiguous
+  name** lists its alternatives under the match taken ("Sněžka" is the famous summit *and* a
+  hill in Vysočina; live, it returns three matches), with `--place-index` / `place_index` to
+  pick another — and an index past a name's match count is an error naming how many there
+  were, never a fall back to the first. A **point-sized place** is widened to
+  `HIKE_PLACE_MIN_KM` (2 km) and the line says it was: OSM maps Sněžka's summit as a box
+  **0.01 km across**, and searching that literally returns nothing for no reason the user can
+  see. Widening is per axis, so a long thin valley keeps its length; `--place-radius KM`
+  replaces the extent outright.
+  Forward geocoding fails in the OPPOSITE way to the reverse direction, deliberately. A
+  reverse miss costs a route its label, so it returns `None`; a forward miss would cost us the
+  ground we search, so it raises — and "Nominatim is unreachable" stays distinct from "no such
+  place", because one calls for a retry and the other for a re-spelling. A failure is never
+  cached; a genuine empty answer is.
+  Taking a name meant the four point flags became free tokens (`nargs="+"`), which quietly
+  turns one old error into a bad lookup: `--via 50.7 15.6 50.8 15.7` — four coordinates under
+  one flag — used to be an argparse error and would have become a lookup of that whole string.
+  It is caught by hand now, on an ALL-tokens-numeric rule, so a real name like "Chata 1000" is
+  untouched. Negative longitudes were checked empirically rather than reasoned about; they
+  still parse. `tests/test_places.py` and `tests/test_place_frontends.py` cover the engine and
+  both surfaces, and the feature was validated live end to end (a 6.56 km, +828 m route drawn
+  from "Pec pod Snezkou" to "Snezka").
+  The **web UI is exempt on purpose**: it has a map, and the map is a better place picker than
+  a name. That is recorded in `HANDOFF.md` along with the fact that the frontend parity test
+  cannot catch the gap — it tables `Criteria` fields, and a place name is not one.
+
 - **CI now lints and type-checks.** Nothing had ever run either over this tree. A `lint`
   job runs `ruff` (rules `E,F,W,I,B,UP,SIM,C4,RUF,BLE,SLF`, line length 100) and `mypy`
   over `src`, both at zero findings, with the configuration in `pyproject.toml`. Unlike

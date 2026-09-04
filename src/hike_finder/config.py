@@ -57,6 +57,16 @@
                         from place names via Nominatim. Off by default (Nominatim's
                         policy is strict); a frontend flag turns it on per search.
   HIKE_NOMINATIM_URL    override the Nominatim reverse endpoint (self-host for heavy use)
+  HIKE_NOMINATIM_SEARCH_URL  override the Nominatim FORWARD (/search) endpoint used by
+                        --place. Defaults to the sibling of HIKE_NOMINATIM_URL, so
+                        self-hosting one direction moves both
+  HIKE_PLACE_MIN_KM     --place: smallest area a named place may be searched as, km
+                        across (default 2). A summit or a hut is mapped as a point-sized
+                        box; searching that literally returns nothing, so a smaller
+                        extent is widened to this — and the frontend SAYS it widened it
+  HIKE_PLACE_MATCHES    --place: how many candidate places to fetch, so an ambiguous
+                        name can list its alternatives instead of silently picking
+                        one (default 5)
   HIKE_NOMINATIM_MIN_INTERVAL  min seconds between Nominatim requests (default 1.1;
                         the public server caps at ~1 req/sec)
   HIKE_GEOCODE_CACHE_TTL_DAYS  how long a cached place name stays fresh, days
@@ -169,6 +179,16 @@ class Config:
     nominatim_url: str | None = _s("HIKE_NOMINATIM_URL")
     nominatim_min_interval_s: float = _f("HIKE_NOMINATIM_MIN_INTERVAL", "1.1")
     geocode_cache_ttl_days: float = _f("HIKE_GEOCODE_CACHE_TTL_DAYS", "365")
+
+    # Forward geocoding (`--place NAME` instead of four bbox corners; see places.py).
+    # Unlike the reverse direction above this is NOT opt-in behind a switch: it only
+    # runs when the user types a name, one request per name, so there is nothing to
+    # gate. `place_min_km` is the floor on how small an area a name may be searched as
+    # — Nominatim maps a peak or a hut as a metres-wide box, and searching that
+    # literally is the "found nothing" that has no cause the user can see.
+    nominatim_search_url: str | None = _s("HIKE_NOMINATIM_SEARCH_URL")
+    place_min_km: float = _f("HIKE_PLACE_MIN_KM", "2.0")
+    place_matches: int = _i("HIKE_PLACE_MATCHES", "5")
 
     # Loop composition (compose.py): default target length band when the user gives no
     # --min/--max-distance, plus the cycle-search bounds (segments per loop, near-

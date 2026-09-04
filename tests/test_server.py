@@ -124,9 +124,13 @@ def test_list_tools_advertises_find_hikes(monkeypatch):
     assert schema["properties"]["format"]["type"] == "string"
     assert set(schema["properties"]["format"]["enum"]) == {"text", "gpx", "geojson"}
 
-    # download_area requires the corners plus a destination path.
+    # download_area needs a destination path and an area — but the area is either the
+    # four corners or a `place` name, which `required` cannot express as a choice, so
+    # only `path` is listed and the corners stay advertised as properties.
     dl = tools["download_area"].input_schema
-    assert dl["required"] == ["south", "west", "north", "east", "path"]
+    assert dl["required"] == ["path"]
+    for key in ("south", "west", "north", "east", "place"):
+        assert key in dl["properties"]
 
 
 def test_every_tool_serialises_its_schema_under_the_wire_name():
@@ -827,7 +831,11 @@ def test_list_pois_live_forwards_bbox_and_kinds(monkeypatch):
 
 def test_list_pois_needs_a_box_or_an_area():
     result = _call("list_pois", {"kinds": ["ruins"]})
-    assert "provide south/west/north/east" in result.content[0].text
+    text = result.content[0].text
+    # All three ways to say where, in one sentence: a name, the corners, or a snapshot.
+    assert "south/west/north/east" in text
+    assert "`place`" in text
+    assert "`area`" in text
 
 
 def test_list_pois_separates_empty_from_cannot_know(tmp_path):

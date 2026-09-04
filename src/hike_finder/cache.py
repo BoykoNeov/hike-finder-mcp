@@ -10,7 +10,7 @@ snapshots are explicit, named, portable, offline-forever files you manage; this 
 is invisible plumbing that quietly spares the public servers on repeat/overlapping
 live searches.
 
-Two stores, different staleness models:
+The stores, and their staleness models:
   - **elevation** — keyed by ``(endpoint, rounded coord)``. Terrain is immutable, so
     there is **no TTL**: a point is cached forever. Keyed by the FULL endpoint, not
     just the host, because OpenTopoData ``srtm30m`` and ``aster30m`` share a host but
@@ -21,6 +21,11 @@ Two stores, different staleness models:
   - **overpass** — keyed by ``sha256(url + query)`` (the query already encodes the
     bbox; the hash auto-invalidates if ``build_query`` changes shape). Trails DO
     change, slowly, so a **TTL** applies (default via config, 0 disables).
+  - **geocode / place_search** — the two directions of Nominatim, kept apart because
+    they answer different questions: a coordinate's place NAME (keyed by rounded coord,
+    one string) and a typed name's candidate PLACES (keyed by the query text, a list
+    with extents). Both TTL'd, both negative-cached, so a misspelling and an empty
+    hillside each cost one request rather than one per run.
 
 Robustness: every DB operation degrades to a clean miss / no-op on ANY sqlite or
 filesystem error (corrupt db, locked, disk full, read-only). A broken cache must be
@@ -38,7 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .elevation.base import ElevationProvider
-from .geocode import Geocoder
+from .geocode import Geocoder, PlaceMatch, PlaceSearcher
 from .paths import user_cache_dir
 from .snapshot import SNAPSHOT_VERSION, _area_from_json, _area_to_json, _coord_key
 
@@ -143,6 +148,17 @@ class Cache:
                     "CREATE TABLE IF NOT EXISTS geocode ("
                     "source TEXT NOT NULL, coord TEXT NOT NULL, place TEXT NOT NULL, "
                     "fetched_at TEXT NOT NULL, PRIMARY KEY (source, coord))"
+                )
+                # FORWARD lookups (a typed name -> the places it could mean). A separate
+                # table rather than a row in ``geocode``: that one is keyed by coordinate
+                # and holds a single name, and a forward answer is a LIST of candidates
+                # with extents — there is no honest way to fold one into the other. Same
+                # TTL model as ``geocode`` (names change slowly) and the same negative
+                # caching: "[]" records that Nominatim positively found nothing.
+                con.execute(
+                    "CREATE TABLE IF NOT EXISTS place_search ("
+                    "source TEXT NOT NULL, query TEXT NOT NULL, payload TEXT NOT NULL, "
+                    "fetched_at TEXT NOT NULL, PRIMARY KEY (source, query))"
                 )
             return True
         except (sqlite3.Error, OSError):
@@ -280,6 +296,57 @@ class Cache:
         except (sqlite3.Error, OSError):
             pass
 
+    # -- forward place search -----------------------------------------------
+
+    def get_place_search(self, source: str, query: str, ttl_seconds: float | None, now=None):
+        """Cached matches for a typed ``query``, or ``None`` on a miss / expiry.
+
+        A cached *empty list* is a real answer ("Nominatim knows no such place") and is
+        returned as ``[]``, distinct from the ``None`` of "never asked" — the same
+        negative-caching split ``get_place`` makes, and for the same reason: a
+        misspelling should not re-hit a rate-limited public server on every run.
+        """
+        if not self._ok:
+            return None
+        try:
+            with self._connect() as con:
+                row = con.execute(
+                    "SELECT payload, fetched_at FROM place_search WHERE source=? AND query=?",
+                    (source, query),
+                ).fetchone()
+        except (sqlite3.Error, OSError):
+            return None
+        if not row:
+            return None
+        payload, fetched_at = row
+        if ttl_seconds is not None:
+            age = _age_seconds(fetched_at, now)
+            if age is None or age > ttl_seconds:
+                return None
+        try:
+            raw = json.loads(payload)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(raw, list):
+            return None
+        return [_match_from_json(m) for m in raw if isinstance(m, dict)]
+
+    def put_place_search(self, source: str, query: str, matches, now=None) -> None:
+        """Store ``query -> matches`` (an empty list records a negative result)."""
+        if not self._ok:
+            return
+        try:
+            payload = json.dumps([_match_to_json(m) for m in matches], ensure_ascii=False)
+            stamp = (now or _utcnow()).replace(microsecond=0).isoformat()
+            with self._connect() as con:
+                con.execute(
+                    "INSERT OR REPLACE INTO place_search (source, query, payload, fetched_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (source, query, payload, stamp),
+                )
+        except (sqlite3.Error, OSError, ValueError, TypeError):
+            pass
+
     def clear(self) -> None:
         """Empty every store (used by ``hike-finder --clear-cache`` and tests)."""
         if not self._ok:
@@ -289,6 +356,7 @@ class Cache:
                 con.execute("DELETE FROM elevation")
                 con.execute("DELETE FROM overpass")
                 con.execute("DELETE FROM geocode")
+                con.execute("DELETE FROM place_search")
         except (sqlite3.Error, OSError):
             pass
 
@@ -322,6 +390,66 @@ class CachingElevationProvider(ElevationProvider):
             self.cache.put_elevations(self.source, new)
             cached = {**cached, **new}
         return [cached[p] for p in points]
+
+
+def _match_to_json(m: PlaceMatch) -> dict:
+    return {
+        "name": m.name,
+        "lat": m.point[0],
+        "lon": m.point[1],
+        "bbox": list(m.bbox) if m.bbox else None,
+        "country": m.country,
+        "kind": m.kind,
+        "osm_type": m.osm_type,
+        "osm_id": m.osm_id,
+    }
+
+
+def _match_from_json(d: dict) -> PlaceMatch:
+    raw = d.get("bbox")
+    bbox = (
+        (float(raw[0]), float(raw[1]), float(raw[2]), float(raw[3]))
+        if isinstance(raw, list) and len(raw) == 4
+        else None
+    )
+    return PlaceMatch(
+        name=str(d.get("name") or ""),
+        point=(float(d.get("lat", 0.0)), float(d.get("lon", 0.0))),
+        bbox=bbox,
+        country=d.get("country"),
+        kind=d.get("kind"),
+        osm_type=d.get("osm_type"),
+        osm_id=d.get("osm_id"),
+    )
+
+
+class CachingPlaceSearch(PlaceSearcher):
+    """Wrap a :class:`~hike_finder.geocode.PlaceSearcher` with a persistent cache.
+
+    The key folds in the requested ``limit``: a run that asked for 3 candidates and one
+    that asked for 8 are different questions, and serving the short answer to the long
+    question would hide alternatives the user is being invited to choose between.
+
+    A FAILURE is never cached. The inner searcher raises rather than returning ``None``
+    (see ``geocode``'s module docstring), and that exception propagates untouched — so a
+    Nominatim outage costs the user an error they can act on, not a stored "no such
+    place" that outlives the outage by the length of the TTL.
+    """
+
+    def __init__(self, cache: Cache, source: str, inner: PlaceSearcher, ttl_seconds: float):
+        self.cache = cache
+        self.source = source
+        self.inner = inner
+        self.ttl_seconds = ttl_seconds
+
+    def search(self, query: str, *, limit: int = 5) -> list[PlaceMatch]:
+        key = f"{int(limit)}|{' '.join((query or '').split()).casefold()}"
+        cached = self.cache.get_place_search(self.source, key, self.ttl_seconds)
+        if cached is not None:  # hit (possibly [] for a cached negative)
+            return cached
+        matches = self.inner.search(query, limit=limit)
+        self.cache.put_place_search(self.source, key, matches)
+        return matches
 
 
 class CachingGeocoder(Geocoder):

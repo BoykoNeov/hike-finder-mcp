@@ -234,10 +234,17 @@ hike-finder --bbox 50.72 15.58 50.74 15.62 \
             --user-agent you@example.com
 ```
 
+**Or skip the coordinates entirely** and name the place:
+
+```bash
+hike-finder --place "Spindleruv Mlyn" --circular --user-agent you@example.com
+```
+
 **Why** — `--bbox` is the area, in the order **`south west north east`** (min-lat
 min-lon max-lat max-lon). You need the coordinates here (the Web UI hands them to
 you for free); get them from **openstreetmap.org → "Export" tab** (drag a box, copy
-the four edges) or read them off mapy.cz. The boolean filters are **tri-state**:
+the four edges) or read them off mapy.cz. `--place` does that lookup for you and
+prints what it found — see [Naming places instead of coordinates](#naming-places-instead-of-coordinates). The boolean filters are **tri-state**:
 omit = don't care, `--circular` = require loops, `--no-circular` = exclude loops
 (same pattern for `--car-access`, `--chairlift-access` and `--transit-access`).
 
@@ -890,10 +897,85 @@ way, for fast, unlimited elevation on *every* composed loop, set up a
 
 ---
 
+## Naming places instead of coordinates
+
+**"I know where I want to walk, I just don't know its coordinates."** Give the name:
+
+```bash
+# An area, instead of four bbox corners:
+hike-finder --place "Spindleruv Mlyn" --circular --max-distance 10             --user-agent you@example.com
+
+# Points, anywhere --around / --from / --to / --via take LAT LON:
+hike-finder --from "Pec pod Snezkou" --to "Snezka" --routes 3             --user-agent you@example.com
+```
+
+**Why** — until now the CLI needed four numbers off openstreetmap.org's Export tab, and
+an LLM client had it worse: it had no Export tab and would guess. `--place` asks
+Nominatim (the same service `--name-places` uses in the other direction, through the
+same cache and the same 1 request/second manners) and turns the name into the box or
+the point the mode wanted.
+
+**Read it** — the tool always tells you what your name became:
+
+```
+Area: Špindlerův Mlýn, okres Trutnov, …, Česko (50.7256, 15.6068) — searching 11.6 x 12.3 km
+```
+
+That line is the whole safety mechanism, because **a search of the wrong place looks
+exactly like a search of the right one**. Two cases where it earns its keep:
+
+- **The name means several places.** "Sněžka" is the famous 1603 m summit — and also a
+  hill in Vysočina. "Lhota" is dozens of villages. The first match is used and the rest
+  are listed under it:
+
+  ```
+  To: Śnieżka / Sněžka, Karpacz, …, Polska (50.7360, 15.7396)
+    match 1 of 3; --place-index N picks another:
+      2. Sněžka, Rohy, okres Třebíč, …, Česko
+      3. Malá Sněžka, Dolní Lánov, …, Česko
+  ```
+
+  Read it before you trust the result; `--place-index 2` takes the second.
+
+- **The place is a point.** OSM maps a summit or a hut as a box a *few metres* across.
+  Searching that literally finds nothing, and you would have no way to know why — so
+  anything under 2 km across is widened, and the line says so:
+
+  ```
+  Area: … — mapped extent 0.01 x 0.01 km, widened to 2.0 x 2.0 km
+  ```
+
+  Set the size yourself with `--place-radius KM` (a radius, so `5` means a 10 km box):
+  widen a village to the valley around it, or narrow a whole region to a walkable part.
+
+**Two things to know**
+
+- These lines go to **stderr**, so `--json` output stays clean for a script to parse.
+- `--place-index` applies to *every* name in the run, so disambiguate one name at a
+  time. Asking for match 2 of a name that has only one match is an error, not a silent
+  fall back to the first.
+
+**From MCP** — the same thing, on every tool: `place`, `place_radius_km` and
+`place_index` on the area tools (`find_hikes`, `list_pois`, `list_ferrata`,
+`download_area`), and `place` / `start_place` / `finish_place` on the point tools, with
+`{"place": "Snezka"}` waypoints for `route_via`. The resolution comes back as a trailing
+block of the reply, so an assistant that meant the other Lhota can see that it did.
+
+**In the Web UI** — there is no place box, on purpose: the map *is* the place picker.
+You pan to where you are going and the box or pin comes from what you can see, which is
+the thing the CLI and MCP cannot do.
+
+---
+
 ## Point-based routes — pick a spot instead of drawing a box
 
 Four modes take **points, not a bounding box** — you don't frame an area, you drop a pin (or
 two). Leave `--bbox` off; the tool works out its own area from the point(s).
+
+Anywhere you see `LAT LON` below you can write a **place name** instead — `--from "Pec pod
+Snezkou" --to "Snezka"`. One flag per point, so repeat `--via` rather than listing several
+coordinates under one; see [Naming places instead of
+coordinates](#naming-places-instead-of-coordinates).
 
 **"Give me a ~10 km loop starting near here."** Point at a spot and get circular day-hikes
 through it:

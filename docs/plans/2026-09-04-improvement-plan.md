@@ -150,7 +150,7 @@ functions. Splitting them makes those branches testable with a monkeypatched fet
 
 ## Tier 3 — features (user decides; listed with the case for each)
 
-### 3.1 Place names instead of coordinates (M) — recommended
+### 3.1 Place names instead of coordinates (M) — DONE
 
 Today the CLI and MCP need four bbox corners, or a lat/lon pair for `--around`,
 `--from`, `--to`, `--via`. The README sends you to openstreetmap.org's Export tab to
@@ -166,6 +166,18 @@ forward direction is one endpoint (`/search`) and gives a bounding box for free:
 Goes through the same cache and user-agent rules as reverse geocoding; one call per
 name. Ambiguity ("Lhota") must be surfaced, not resolved silently: print the chosen
 match and its country, and offer `--place-index`.
+
+**Done, and wider than written here.** `--place` / `--place-radius` / `--place-index` on
+the CLI, names accepted by all four point flags, and `place` on every MCP tool that took
+an area or a point — not just `find_hikes`, because a capability true of six tools out of
+ten is how every previous filter reached the frontends on three different days. Two things
+the plan did not anticipate: a summit's mapped extent is 0.01 km across, so an extent floor
+(`HIKE_PLACE_MIN_KM`, widened per axis and always *reported* as widened) is what stops the
+feature returning a baffling empty answer; and letting the point flags take a name turns
+`--via 50.7 15.6 50.8 15.7` from an argparse error into a bad lookup, so that is caught by
+hand. Forward geocoding raises where the reverse direction returns `None` — its answer is
+which ground gets searched. The web UI is exempt (its map is the place picker) and
+`HANDOFF.md` records both the decision and the fact that the parity test cannot catch it.
 
 ### 3.2 `--show-ferrata` export (M)
 

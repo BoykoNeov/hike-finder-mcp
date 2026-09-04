@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from contextvars import ContextVar
 from dataclasses import replace
 from typing import Any
 
@@ -44,6 +45,8 @@ from . import config as _config
 from .export import hikes_to_geojson, hikes_to_gpx, pois_to_geojson, pois_to_gpx
 from .filters import Criteria
 from .format import format_hike, format_poi, format_poi_summary
+from .geocode import GeocodeError
+from .places import describe_place, resolve_place
 from .poi import POI_KINDS, kind_labels, normalise_kinds
 from .search import (
     area_has_no_routes,
@@ -126,6 +129,62 @@ _FERRATA_SCHEMA = {
 }
 
 
+# A typed place name instead of coordinates. Two fragments, because the two shapes of
+# tool need different things: an AREA tool gets an extent it can resize, a POINT tool
+# gets one coordinate. Shared rather than retyped per tool so an LLM reads the same
+# promise everywhere — the hand-wiring this file is full of is exactly how a capability
+# ends up true of six tools out of ten.
+_PLACE_AREA_SCHEMA = {
+    "place": {
+        "type": "string",
+        "description": (
+            "Search the area OpenStreetMap maps under this NAME, instead of "
+            "south/west/north/east — e.g. \"Spindleruv Mlyn\", \"Krkonose\", "
+            "\"Cortina d'Ampezzo\". PREFER THIS to coordinates you are not certain of: "
+            "a guessed bounding box searches the wrong valley and reports the result as "
+            "if it were the right one. The reply says which place was taken, its country "
+            "and the area actually searched. Add the region when a name is common "
+            "(\"Lhota, Czechia\")."
+        ),
+    },
+    "place_radius_km": {
+        "type": "number",
+        "description": (
+            "With `place`: ignore the place's mapped extent and search a box of this "
+            "radius around its centre (so twice this across). Use it to widen a village "
+            "to the valley around it, or to narrow a whole region to a walkable part."
+        ),
+    },
+    "place_index": {
+        "type": "integer",
+        "description": (
+            "Which match to take when a name is ambiguous, 1-based (default 1). The reply "
+            "lists the alternatives whenever there is more than one, so read it before "
+            "reporting an answer: 'Lhota' names dozens of villages."
+        ),
+    },
+}
+
+_PLACE_POINT_SCHEMA = {
+    "place_index": _PLACE_AREA_SCHEMA["place_index"],
+}
+
+
+def _place_point(key: str, what: str) -> dict:
+    """A ``place``-style argument naming ONE point, for the point-based tools."""
+    return {
+        key: {
+            "type": "string",
+            "description": (
+                f"{what}, as a place NAME (e.g. \"Snezka\") instead of "
+                f"coordinates. PREFER THIS to a latitude and longitude you are not "
+                f"certain of — a guessed point is silently a different walk. The reply "
+                f"says which place was taken and its country."
+            ),
+        }
+    }
+
+
 async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
     """The nine tools. Both arguments are the mcp 2.x handler signature (request
     context, pagination params); neither is used — the list is small and static, so it
@@ -159,6 +218,7 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
             input_schema={
                 "type": "object",
                 "properties": {
+                    **_PLACE_AREA_SCHEMA,
                     "south": {"type": "number"},
                     "west": {"type": "number"},
                     "north": {"type": "number"},
@@ -252,6 +312,8 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
             input_schema={
                 "type": "object",
                 "properties": {
+                    **_place_point("place", "The point to draw loops around"),
+                    **_PLACE_POINT_SCHEMA,
                     "lat": {"type": "number", "description": "Latitude of the point."},
                     "lon": {"type": "number", "description": "Longitude of the point."},
                     "radius_m": {
@@ -297,7 +359,10 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                         "downloadable route document as text.",
                     },
                 },
-                "required": ["lat", "lon"],
+                # `place` OR lat+lon — a JSON Schema `required` list cannot say "one of
+                # these two shapes", and an LLM reads this list as the contract, so
+                # neither shape is listed and the description carries the rule.
+                "required": [],
             },
         ),
         Tool(
@@ -322,6 +387,9 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
             input_schema={
                 "type": "object",
                 "properties": {
+                    **_place_point("start_place", "Where the walk starts"),
+                    **_place_point("finish_place", "Where the walk finishes"),
+                    **_PLACE_POINT_SCHEMA,
                     "start_lat": {"type": "number"},
                     "start_lon": {"type": "number"},
                     "finish_lat": {"type": "number"},
@@ -358,7 +426,8 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                         "description": "Output format (default 'text').",
                     },
                 },
-                "required": ["start_lat", "start_lon", "finish_lat", "finish_lon"],
+                # Each end is a name OR a coordinate pair; see circular_routes.
+                "required": [],
             },
         ),
         Tool(
@@ -392,13 +461,25 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                         "items": {
                             "type": "object",
                             "properties": {
+                                "place": {
+                                    "type": "string",
+                                    "description": "This waypoint as a place NAME (e.g. "
+                                    "\"Snezka\") instead of coordinates.",
+                                },
                                 "lat": {"type": "number"},
                                 "lon": {"type": "number"},
                             },
-                            "required": ["lat", "lon"],
+                            # Each waypoint is EITHER {"place": ...} OR {"lat":.., "lon":..};
+                            # JSON Schema `required` cannot express that choice, and this list
+                            # is what an LLM treats as the contract, so it stays empty and the
+                            # description carries the rule.
+                            "required": [],
                         },
-                        "description": "Waypoints to link, in visiting order (>=2).",
+                        "description": "Waypoints to link, in visiting order (>=2). Each is "
+                        "either {\"place\": \"Snezka\"} or {\"lat\": .., \"lon\": ..}; "
+                        "prefer a name to coordinates you are not certain of.",
                     },
+                    **_PLACE_POINT_SCHEMA,
                     "loop": {
                         "type": "boolean",
                         "description": (
@@ -454,6 +535,8 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
             input_schema={
                 "type": "object",
                 "properties": {
+                    **_place_point("place", "Where the walk starts"),
+                    **_PLACE_POINT_SCHEMA,
                     "lat": {"type": "number", "description": "Latitude of the start point."},
                     "lon": {"type": "number", "description": "Longitude of the start point."},
                     "kinds": {
@@ -513,7 +596,8 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                         "description": "Output format (default 'text').",
                     },
                 },
-                "required": ["lat", "lon", "kinds"],
+                # The start is a name OR a coordinate pair; `kinds` is unconditional.
+                "required": ["kinds"],
             },
         ),
         Tool(
@@ -538,6 +622,7 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
             input_schema={
                 "type": "object",
                 "properties": {
+                    **_PLACE_AREA_SCHEMA,
                     "south": {"type": "number"},
                     "west": {"type": "number"},
                     "north": {"type": "number"},
@@ -592,6 +677,7 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
             input_schema={
                 "type": "object",
                 "properties": {
+                    **_PLACE_AREA_SCHEMA,
                     "south": {"type": "number"},
                     "west": {"type": "number"},
                     "north": {"type": "number"},
@@ -624,6 +710,7 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
             input_schema={
                 "type": "object",
                 "properties": {
+                    **_PLACE_AREA_SCHEMA,
                     "south": {"type": "number"},
                     "west": {"type": "number"},
                     "north": {"type": "number"},
@@ -637,7 +724,8 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                         "(it queries Nominatim at ~1 req/s for every unnamed route).",
                     },
                 },
-                "required": ["south", "west", "north", "east", "path"],
+                # `place` OR the four corners; `path` is unconditional.
+                "required": ["path"],
             },
         ),
         Tool(
@@ -704,6 +792,87 @@ def _serialize(hikes: list, fmt: str, empty_msg: str) -> list[TextContent]:
     return [TextContent(type="text", text="\n".join(format_hike(h) for h in hikes))]
 
 
+# What the place names in the CURRENT tool call resolved to. A context variable, filled
+# by `_resolve_place` and drained by `call_tool`, rather than a value threaded back
+# through each handler: `list_pois` alone has eight return points, and a note attached
+# to seven of them is exactly the half-wired surface this whole feature exists to stop.
+# One seam covers every tool, including tools nobody has written yet.
+_PLACE_NOTES: ContextVar[list[str] | None] = ContextVar("place_notes", default=None)
+
+
+async def _resolve_place(arguments: dict, query: str, *, radius_km=None, label: str):
+    """Look one name up (off the event loop — it is a network call) and record what it
+    resolved to, in the same sentences the CLI prints.
+
+    An LLM told it searched "Lhota, Mělník" when it meant the one near Prague can correct
+    itself, and only if the server says which Lhota it took; `place_index` is named as
+    the way to pick another, exactly as `--place-index` is on the CLI.
+    """
+    res = await asyncio.to_thread(
+        resolve_place,
+        query,
+        CFG,
+        index=int(arguments.get("place_index") or 1),
+        radius_km=radius_km,
+    )
+    notes = _PLACE_NOTES.get()
+    if notes is not None:
+        notes.extend(
+            describe_place(
+                res, label=label, extent=radius_km is not None or label == "Area",
+                index_flag="place_index",
+            )
+        )
+    return res
+
+
+async def _bbox_from(arguments: dict, missing: str):
+    """The bbox to search, from either a typed ``place`` or the four corners.
+
+    One helper for all four area tools, so "a name works here" can never become true of
+    some of them and not others — which is precisely how every previous filter reached
+    the three frontends on three different days.
+    """
+    place = arguments.get("place")
+    if place:
+        res = await _resolve_place(
+            arguments, str(place),
+            radius_km=arguments.get("place_radius_km"), label="Area",
+        )
+        return res.bbox
+    if [k for k in ("south", "west", "north", "east") if k not in arguments]:
+        raise ValueError(missing)
+    return (arguments["south"], arguments["west"], arguments["north"], arguments["east"])
+
+
+def _index_of(arguments: dict) -> dict:
+    """Just the call-level ``place_index``, to merge into a per-waypoint dict.
+
+    ``route_via``'s waypoints are their own little argument objects, and the index that
+    disambiguates a name is given once for the whole call — so it has to be carried in
+    rather than looked up, or a named waypoint would always take match 1 while the same
+    name on ``circular_routes`` honoured the index.
+    """
+    idx = arguments.get("place_index")
+    return {} if idx is None else {"place_index": idx}
+
+
+async def _point_from(
+    arguments: dict, lat_key: str, lon_key: str, place_key: str, label: str
+):
+    """The point, from either a typed name or a lat/lon pair.
+
+    The point is ``None`` when neither was given, leaving each tool's own "provide X"
+    message to say so in its own words.
+    """
+    name = arguments.get(place_key)
+    if name:
+        return (await _resolve_place(arguments, str(name), label=label)).point
+    if lat_key in arguments and lon_key in arguments:
+        return (arguments[lat_key], arguments[lon_key])
+    return None
+
+
 def _handler_for(name: str):
     """Resolve a tool name to its implementation, or raise for a name we don't serve.
 
@@ -744,6 +913,10 @@ async def call_tool(_ctx, params: CallToolRequestParams) -> CallToolResult:
       its own call — "cathedral is not a kind, try ruins" is useless as an exception it
       never sees. Under mcp 1.x both landed on the same channel because the framework
       caught the raise for us; splitting them is the point of doing this by hand.
+      `GeocodeError` rides this channel for the same reason: "no place matched
+      'Snezkaa'" and "Nominatim is unreachable" are both things the caller can act on —
+      re-spell, or wait — and neither is reparable from a protocol-level error it cannot
+      read.
 
     Which makes the handlers' own `raise ValueError(...)` argument guards LOAD-BEARING:
     mcp 2.x does not validate arguments against a tool's `inputSchema` server-side (the
@@ -754,12 +927,24 @@ async def call_tool(_ctx, params: CallToolRequestParams) -> CallToolResult:
     is what caught it.
     """
     handler = _handler_for(params.name)
+    # A fresh note list per call, drained below: whatever place names this call resolved
+    # are appended as ONE trailing content block, after the payload. Trailing because
+    # under `format="gpx"` the first block IS the file, and a client writing `content[0]`
+    # out must still get a valid track — the provenance line rides behind it, where an
+    # LLM still reads it and a file writer never sees it.
+    token = _PLACE_NOTES.set([])
     try:
-        return CallToolResult(content=await handler(params.arguments or {}))
-    except ValueError as exc:
+        content = list(await handler(params.arguments or {}))
+        notes = _PLACE_NOTES.get() or []
+        if notes:
+            content.append(TextContent(type="text", text="\n".join(notes)))
+        return CallToolResult(content=content)
+    except (ValueError, GeocodeError) as exc:
         return CallToolResult(
             content=[TextContent(type="text", text=str(exc))], is_error=True
         )
+    finally:
+        _PLACE_NOTES.reset(token)
 
 
 def _point_empty(diagnostics: dict, msg: str) -> str:
@@ -781,9 +966,12 @@ def _point_empty(diagnostics: dict, msg: str) -> str:
 
 
 async def _call_circular_routes(arguments: dict) -> list[TextContent]:
-    if [k for k in ("lat", "lon") if k not in arguments]:
-        raise ValueError("provide lat and lon for the point to search around.")
-    point = (arguments["lat"], arguments["lon"])
+    point = await _point_from(arguments, "lat", "lon", "place", "Around")
+    if point is None:
+        raise ValueError(
+            "provide the point to search around: either `place` (a name, e.g. "
+            "\"Spindleruv Mlyn\") or lat and lon."
+        )
     diagnostics: dict = {}
     hikes = await asyncio.to_thread(
         compose_loops_around,
@@ -806,14 +994,15 @@ async def _call_circular_routes(arguments: dict) -> list[TextContent]:
 
 
 async def _call_routes_between(arguments: dict) -> list[TextContent]:
-    if [
-        k for k in ("start_lat", "start_lon", "finish_lat", "finish_lon") if k not in arguments
-    ]:
+    start = await _point_from(arguments, "start_lat", "start_lon", "start_place", "From")
+    finish = await _point_from(
+        arguments, "finish_lat", "finish_lon", "finish_place", "To"
+    )
+    if start is None or finish is None:
         raise ValueError(
-            "provide start_lat/start_lon and finish_lat/finish_lon for the two points."
+            "provide both ends: `start_place`/`finish_place` (names, e.g. \"Pec pod "
+            "Snezkou\" and \"Snezka\"), or start_lat/start_lon and finish_lat/finish_lon."
         )
-    start = (arguments["start_lat"], arguments["start_lon"])
-    finish = (arguments["finish_lat"], arguments["finish_lon"])
     diagnostics: dict = {}
     hikes = await asyncio.to_thread(
         routes_between, start, finish, _criteria(arguments), _cfg(arguments),
@@ -833,16 +1022,24 @@ async def _call_routes_between(arguments: dict) -> list[TextContent]:
 
 async def _call_route_via(arguments: dict) -> list[TextContent]:
     raw = arguments.get("points") or []
-    points = [
-        (p["lat"], p["lon"])
-        for p in raw
-        if isinstance(p, dict) and "lat" in p and "lon" in p
-    ]
+    points: list = []
+    for i, entry in enumerate(raw, 1):
+        if not isinstance(entry, dict):
+            continue
+        # A waypoint is a name OR a coordinate pair. Resolved in the order given, so the
+        # notes read as the itinerary does; a name that resolves to nothing raises here
+        # and comes back as readable content, not a silently shorter route.
+        pt = await _point_from(
+            entry | _index_of(arguments), "lat", "lon", "place", f"Via {i}"
+        )
+        if pt is not None:
+            points.append(pt)
     if len(points) < 2:
         return [
             TextContent(
                 type="text",
-                text="provide at least two points ({lat, lon}) to link into a route.",
+                text="provide at least two points to link into a route — each either "
+                '{"place": "Snezka"} or {"lat": .., "lon": ..}.',
             )
         ]
     loop = bool(arguments.get("loop"))
@@ -864,15 +1061,16 @@ async def _call_route_via(arguments: dict) -> list[TextContent]:
 
 
 async def _call_routes_to_poi(arguments: dict) -> list[TextContent]:
-    if [k for k in ("lat", "lon") if k not in arguments] or not arguments.get("kinds"):
+    start = await _point_from(arguments, "lat", "lon", "place", "From")
+    if start is None or not arguments.get("kinds"):
         raise ValueError(
-            "provide lat and lon for the start point, and `kinds` — what to walk to "
-            "(e.g. [\"ruins\"])."
+            "provide the start point — `place` (a name) or lat and lon — and `kinds`, "
+            "what to walk to (e.g. [\"ruins\"])."
         )
     diagnostics: dict = {}
     hikes = await asyncio.to_thread(
         routes_to_poi,
-        (arguments["lat"], arguments["lon"]),
+        start,
         # Validated against the registry, so an unknown kind raises (surfaced by call_tool)
         # rather than reading to the client as "there are no ruins in this valley".
         normalise_kinds(arguments["kinds"]),
@@ -993,12 +1191,11 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
             name_places=name_places
         )
     else:
-        if [k for k in ("south", "west", "north", "east") if k not in arguments]:
-            raise ValueError(
-                "provide south/west/north/east for a live search, or `area` for an "
-                "offline snapshot search."
-            )
-        bbox = (arguments["south"], arguments["west"], arguments["north"], arguments["east"])
+        bbox = await _bbox_from(
+            arguments,
+            "provide `place` (a name like \"Spindleruv Mlyn\"), or south/west/north/east, "
+            "for a live search — or `area` for an offline snapshot search.",
+        )
         # search_hikes / compose_loops are synchronous (network + math); run off the loop.
         composing = arguments.get("compose_loops")
         search = compose_loops if composing else search_hikes
@@ -1102,12 +1299,11 @@ async def _call_list_pois(arguments: dict) -> list[TextContent]:
         gap_state, gap_kinds = snapshot_poi_gap(snap, kinds)
         places = await asyncio.to_thread(list_snapshot_pois, snap, kinds)
     else:
-        if [k for k in ("south", "west", "north", "east") if k not in arguments]:
-            raise ValueError(
-                "provide south/west/north/east for a live listing, or `area` for a "
-                "downloaded snapshot."
-            )
-        bbox = (arguments["south"], arguments["west"], arguments["north"], arguments["east"])
+        bbox = await _bbox_from(
+            arguments,
+            "provide `place` (a name like \"Spindleruv Mlyn\"), or south/west/north/east, "
+            "for a live listing — or `area` for a downloaded snapshot.",
+        )
         places = await asyncio.to_thread(list_area_pois, bbox, kinds, CFG)
 
     if not places:
@@ -1233,7 +1429,13 @@ async def _call_list_areas(arguments: dict) -> list[TextContent]:
 
 
 async def _call_download_area(arguments: dict) -> list[TextContent]:
-    bbox = (arguments["south"], arguments["west"], arguments["north"], arguments["east"])
+    bbox = await _bbox_from(
+        arguments,
+        "provide the area to save: either `place` (a name like \"Spindleruv Mlyn\") or "
+        "south/west/north/east.",
+    )
+    if "path" not in arguments:
+        raise ValueError("provide `path` — where to write the snapshot file.")
     path = arguments["path"]
     name_places = arguments.get("name_places")
     snap = await asyncio.to_thread(download_area, bbox, CFG, name_places=name_places)

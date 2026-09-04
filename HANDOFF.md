@@ -219,6 +219,15 @@ Entry points on the shared engine, all rendering identically:
   of "only in the downloaded area". Exports through `export.pois_to_gpx` / `pois_to_geojson` as
   **waypoints**, not tracks.
 
+- `places.resolve_place` — **a typed name instead of numbers** (`--place`, and a name given
+  to `--around`/`--from`/`--to`/`--via`; MCP `place`/`start_place`/`finish_place` and
+  `{"place": …}` waypoints). Not a search mode: it sits *in front of* the modes and turns a
+  name into the bbox or point they already took, so every mode below is unchanged and cannot
+  tell a typed name from typed numbers. Forward Nominatim (`geocode.NominatimGeocoder.search`,
+  `/search`), through the same throttle, contact UA and persistent cache as the reverse
+  direction, with its own cache table (`place_search`) because a forward answer is a *list of
+  candidates with extents*, not one name.
+
 **Near-misses** (`find_hikes(near_miss="auto")`, the frontend default) surface close-but-not-
 matching routes only when there are 0 strict matches, annotated with the literal gap. Shape is
 never relaxed and excluded access stays strict.
@@ -770,6 +779,60 @@ Run it: `pytest -q` — the full suite is offline (a few `.sh` launcher cases ne
 skip without the `mcp` extra).
 
 ## Known limitations / TODOs (design notes, not bugs)
+
+- **The web UI has no place-name box, on purpose — and the parity test cannot catch it.**
+  `--place` and the MCP `place` argument exist because the CLI and an LLM client have no way
+  to point at a map. The web UI *is* a map: you pan to where you are going and the box or pin
+  comes from what you can see, which is strictly more than a name gives you. So the fourth
+  frontend is exempt, and this is the record of that being a decision. **The gap is invisible
+  to `tests/test_frontend_parity.py`**, which tables `Criteria` fields — and a place name is
+  not one; it resolves to a bbox or a point *before* `Criteria` is built. Anyone adding a
+  place box to the web should not expect a red test to tell them it was missing. If it is ever
+  added, the natural shape is a search box that MOVES THE MAP (and fills the corners the page
+  already sends), not a `place` parameter on `/api/hikes` — the page's contract with the
+  engine is coordinates, and keeping it that way is what makes "offline == live" hold there.
+
+- **`--place-index` applies to every name in a run, not to one flag.** `--from Lhota --to
+  Lhota --place-index 2` asks for the second match of *both*. This is why the CLI errors when
+  an index is past a name's match count instead of falling back to the first: with a run-wide
+  index, a silent fall back would mean one end of a walk honoured the choice and the other
+  did not. Per-name disambiguation would need a syntax on the value itself (`"Lhota#2"`),
+  which buys little for a flag you use interactively, one name at a time. The MCP `place_index`
+  has the same scope, and `server._index_of` is what carries it into `route_via`'s per-waypoint
+  argument objects — without it a named waypoint would always take match 1 while the same name
+  on `circular_routes` honoured the index.
+
+- **The two geocoding directions fail in OPPOSITE ways, and must keep doing so.** Reverse is
+  best-effort: any failure returns `None` and a route keeps its `route/<id>` label, because a
+  missing label is cosmetic. Forward *decides which ground is searched*, so
+  `geocode.PlaceSearcher.search` raises: there is no default area to fall back to that would
+  not be a lie about what was searched, and "we could not ask Nominatim" must not read to the
+  user as "no such place" — one calls for a retry and the other for a re-spelling. The forward
+  cache never stores a failure for the same reason (an outage must not become a cached "no such
+  place" outliving it by a year), though it does store a genuine empty answer, so a typo in a
+  script costs one request rather than one per run.
+
+- **A named place smaller than `HIKE_PLACE_MIN_KM` is widened, and the widening is always
+  said out loud.** OSM maps Sněžka's summit as a box **0.01 km across** (measured live, not
+  assumed). Searching that returns nothing, and the user has no way to see why — this repo's
+  own recurring failure, a label promising what the selector never checked. So the box grows
+  to the floor (2 km), **per axis**, so a long thin valley keeps its length rather than being
+  squared off into two ridgelines nobody named. The printed line distinguishes the two cases
+  (`mapped extent 0.01 x 0.01 km, widened to 2.0 x 2.0 km` vs. plain `searching 11.6 x 12.3
+  km`) because "widened" is exactly the fact that makes an empty answer trustworthy instead of
+  baffling. `--place-radius` overrides the extent outright and says so too.
+
+- **`--around`/`--from`/`--to`/`--via` take free tokens now, and one specific mistake had to
+  be re-caught by hand.** They were `nargs=2, type=float`; taking a name means `nargs="+",
+  type=str`, and `cli._loc_value` decides which was meant. The rule is **all tokens numeric**,
+  not *any*: `--via 50.7 15.6 50.8 15.7` (four coordinates crammed under one flag) used to be
+  a loud argparse error and would otherwise have become a lookup of the "place name"
+  `50.7 15.6 50.8 15.7` — which Nominatim answers with nothing, or worse, with something. The
+  *any*-numeric rule would have caught that too, and also broken a real name like "Chata 1000".
+  Separately: argparse's negative-number handling was **verified empirically, not reasoned
+  about** — `--from 50.7 -3.5` still parses, because the matcher lives on the parser (which
+  defines no negative-number-looking option) rather than on the argument's type. A wrong guess
+  there would have silently broken every western-hemisphere invocation.
 
 - **Four MCP point-mode tools still honour twelve filters they do not advertise.**
   `circular_routes`, `routes_between`, `route_via` and `routes_to_poi` build their filters

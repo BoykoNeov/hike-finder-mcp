@@ -24,6 +24,20 @@ def haversine_m(a: Coord, b: Coord) -> float:
     return 2 * EARTH_RADIUS_M * math.asin(math.sqrt(h))
 
 
+def bbox_around(point: Coord, pad_m: float) -> tuple[float, float, float, float]:
+    """A ``(south, west, north, east)`` box centred on ``point``, padded ``pad_m`` metres.
+
+    The longitude padding is divided by ``cos(lat)`` so the box is padded by the same
+    ground distance in both axes rather than the same number of degrees — at 50 deg N a
+    degree of longitude is two thirds of a degree of latitude, and a box that ignored
+    that would be a third too narrow.
+    """
+    lat, lon = point
+    dlat = pad_m / 111_320.0
+    dlon = pad_m / (111_320.0 * max(math.cos(math.radians(lat)), 1e-6))
+    return (lat - dlat, lon - dlon, lat + dlat, lon + dlon)
+
+
 def polyline_length_m(points: list[Coord]) -> float:
     """Total length of an ordered polyline, in metres."""
     return sum(haversine_m(points[i], points[i + 1]) for i in range(len(points) - 1))

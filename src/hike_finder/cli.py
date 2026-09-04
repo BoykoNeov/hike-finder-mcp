@@ -24,6 +24,8 @@ from .elevation import api_quota_snapshot
 from .export import hikes_to_geojson, hikes_to_gpx, pois_to_geojson, pois_to_gpx
 from .filters import Criteria
 from .format import format_hike, format_poi, format_poi_summary, hike_to_dict
+from .geocode import GeocodeError
+from .places import describe_place, resolve_place
 from .poi import kind_labels, normalise_kinds, unrecorded_kinds
 from .search import (
     area_has_no_routes,
@@ -70,7 +72,34 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         metavar=("SOUTH", "WEST", "NORTH", "EAST"),
         help="Bounding box: min-lat min-lon max-lat max-lon (e.g. openstreetmap.org Export tab). "
-        "Required unless --area is given.",
+        "Required unless --place or --area is given.",
+    )
+    p.add_argument(
+        "--place",
+        nargs="+",
+        metavar="NAME",
+        help="Search the area OpenStreetMap maps under this NAME, instead of typing four "
+        "--bbox corners (e.g. --place \"Spindleruv Mlyn\"). The name is looked up once via "
+        "Nominatim; the chosen match, its country and the area actually searched are "
+        "printed. A name that matches several places lists the alternatives — pick one "
+        "with --place-index rather than trusting the first.",
+    )
+    p.add_argument(
+        "--place-radius",
+        type=float,
+        metavar="KM",
+        help="With --place: ignore the mapped extent and search a box of this radius "
+        "around the place's centre (so twice this across). Use it to widen a village to "
+        "the valley around it, or to narrow a whole region.",
+    )
+    p.add_argument(
+        "--place-index",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Which match to take when a name is ambiguous, 1-based (default 1). It "
+        "applies to EVERY name looked up in the run — including names given to --around, "
+        "--from, --to and --via — so disambiguate one name at a time.",
     )
 
     g = p.add_argument_group("filters (all optional)")
@@ -160,13 +189,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     r.add_argument(
         "--around",
-        nargs=2,
-        type=float,
-        metavar=("LAT", "LON"),
-        help="Draw circular day-loops that pass near this point and start there. Loop "
-        "length comes from --min-distance/--max-distance (default 3-15 km); how near a "
-        "loop must pass is --around-radius. Combine with --car-access/--chairlift-access "
-        "to also require a trailhead. Omit --bbox (the area is derived from the point).",
+        nargs="+",
+        metavar="LOC",
+        help="Draw circular day-loops that pass near this point and start there. Give it "
+        "either LAT LON or a place name (--around Snezka). Loop length comes from "
+        "--min-distance/--max-distance (default 3-15 km); how near a loop must pass is "
+        "--around-radius. Combine with --car-access/--chairlift-access to also require a "
+        "trailhead. Omit --bbox (the area is derived from the point).",
     )
     r.add_argument(
         "--around-radius",
@@ -178,18 +207,18 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument(
         "--from",
         dest="from_pt",
-        nargs=2,
-        type=float,
-        metavar=("LAT", "LON"),
-        help="Start point: with --to, draw the N shortest routes from here to there.",
+        nargs="+",
+        metavar="LOC",
+        help="Start point, as LAT LON or a place name: with --to, draw the N shortest "
+        "routes from here to there.",
     )
     r.add_argument(
         "--to",
         dest="to_pt",
-        nargs=2,
-        type=float,
-        metavar=("LAT", "LON"),
-        help="Finish point for --from. Each point is snapped onto the nearest trail.",
+        nargs="+",
+        metavar="LOC",
+        help="Finish point for --from, as LAT LON or a place name (--from Pec --to "
+        "Snezka). Each point is snapped onto the nearest trail.",
     )
     r.add_argument(
         "--to-poi",
@@ -221,12 +250,13 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument(
         "--via",
         action="append",
-        nargs=2,
-        type=float,
-        metavar=("LAT", "LON"),
-        help="Add a waypoint. Repeat it (>=2 times) to draw ONE route linking the points in "
-        "the order you give them, each snapped to the nearest trail. Add --via-loop to close "
-        "the route into a circular one. Omit --bbox (the area is derived from the points).",
+        nargs="+",
+        metavar="LOC",
+        help="Add a waypoint, as LAT LON or a place name. Repeat it (>=2 times) to draw "
+        "ONE route linking the points in the order you give them, each snapped to the "
+        "nearest trail. One --via per waypoint: several coordinates under a single --via "
+        "is an error, not a fifth waypoint. Add --via-loop to close the route into a "
+        "circular one. Omit --bbox (the area is derived from the points).",
     )
     r.add_argument(
         "--via-loop",
@@ -744,6 +774,85 @@ def _print_areas(as_json: bool) -> int:
     return 0
 
 
+def _loc_value(tokens, flag: str):
+    """A point flag's raw tokens -> ``(lat, lon)``, or the place NAME to look up.
+
+    The four point flags take ``LAT LON`` *or* a name, which argparse cannot express, so
+    they collect free tokens and this decides which was meant: all-numeric is a
+    coordinate pair, anything else is a name. The all-numeric test is what keeps
+    ``--via 50.7 15.6 50.8 15.7`` — four coordinates crammed under one flag, which used
+    to be a loud argparse error — from quietly becoming a lookup of the place name
+    "50.7 15.6 50.8 15.7", which Nominatim answers with nothing, or worse, something.
+    A name that merely CONTAINS a number ("Chata 1000") is untouched by the rule.
+    """
+    nums: list[float] | None = []
+    for t in tokens:
+        try:
+            nums.append(float(t))  # type: ignore[union-attr]
+        except (TypeError, ValueError):
+            nums = None
+            break
+    if nums is None:
+        return " ".join(str(t) for t in tokens)
+    if len(nums) != 2:
+        raise ValueError(
+            f"{flag} takes LAT LON (two numbers) or a place name; {len(nums)} number(s) "
+            f"is neither. Give one {flag} per point, repeating the flag."
+        )
+    return (nums[0], nums[1])
+
+
+def _resolve_places(args, cfg) -> int:
+    """Turn every place NAME the user typed into the numbers the modes need.
+
+    Mutates ``args`` in place — ``--place`` becomes ``args.bbox``, a named point flag
+    becomes its coordinate pair — so every mode below is unchanged and cannot tell a
+    typed name from typed numbers. Returns how many names were looked up.
+
+    What each lookup resolved to is printed to **stderr**, not stdout: it is provenance,
+    not a result, and ``--json`` output has to stay machine-readable. It is printed
+    unconditionally, because a search of the wrong Lhota looks exactly like a search of
+    the right one.
+    """
+    idx = getattr(args, "place_index", 1) or 1
+    looked_up = 0
+
+    def _point(tokens, flag: str, label: str):
+        nonlocal looked_up
+        val = _loc_value(tokens, flag)
+        if not isinstance(val, str):
+            return [val[0], val[1]]
+        res = resolve_place(val, cfg, index=idx)
+        looked_up += 1
+        for line in describe_place(res, label=label, extent=False):
+            print(line, file=sys.stderr)
+        return [res.point[0], res.point[1]]
+
+    if getattr(args, "place", None):
+        res = resolve_place(
+            " ".join(args.place), cfg, index=idx,
+            radius_km=getattr(args, "place_radius", None),
+        )
+        looked_up += 1
+        for line in describe_place(res, label="Area"):
+            print(line, file=sys.stderr)
+        args.bbox = list(res.bbox)
+    for attr, flag, label in (
+        ("around", "--around", "Around"),
+        ("from_pt", "--from", "From"),
+        ("to_pt", "--to", "To"),
+    ):
+        tokens = getattr(args, attr, None)
+        if tokens is not None:
+            setattr(args, attr, _point(tokens, flag, label))
+    if getattr(args, "via", None) is not None:
+        args.via = [
+            _point(tokens, "--via", f"Via {i}")
+            for i, tokens in enumerate(args.via, 1)
+        ]
+    return looked_up
+
+
 def run(args: argparse.Namespace) -> int:
     cfg = _config.load()
     near_miss = "auto" if args.near_misses is None else args.near_misses
@@ -791,6 +900,55 @@ def run(args: argparse.Namespace) -> int:
 
     if args.area and args.download:
         print("error: --area and --download are mutually exclusive.", file=sys.stderr)
+        return 2
+
+    # A typed place name becomes numbers here, once, before any mode looks at them —
+    # so `--place` is simply another way to give `--bbox`, and a named `--from` is
+    # simply another way to give its coordinates. The combination checks come FIRST so a
+    # contradictory command costs no Nominatim request, and so the error names `--place`
+    # rather than the `--bbox` it would have turned into.
+    _point_mode = (
+        getattr(args, "around", None) is not None
+        or getattr(args, "from_pt", None) is not None
+        or getattr(args, "to_pt", None) is not None
+        or getattr(args, "via", None) is not None
+    )
+    if getattr(args, "place", None):
+        if args.bbox:
+            print(
+                "error: --place and --bbox both say where to search — use one.",
+                file=sys.stderr,
+            )
+            return 2
+        if args.area:
+            print(
+                "error: --area searches a snapshot you already downloaded, so its area is "
+                "fixed; --place picks an area to fetch live. Use one.",
+                file=sys.stderr,
+            )
+            return 2
+        if _point_mode:
+            print(
+                "error: --place names the AREA to search, but the point-based modes derive "
+                "their own area from the point(s) you give — put the name on --around / "
+                "--from / --to / --via instead (e.g. --around \"Spindleruv Mlyn\").",
+                file=sys.stderr,
+            )
+            return 2
+    elif getattr(args, "place_radius", None) is not None:
+        print("error: --place-radius only applies to --place.", file=sys.stderr)
+        return 2
+    try:
+        _named = _resolve_places(args, cfg)
+    except (GeocodeError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    if getattr(args, "place_index", 1) != 1 and not _named:
+        print(
+            "error: --place-index picks between matches for a place NAME, and this run "
+            "gave none — every point is already a coordinate.",
+            file=sys.stderr,
+        )
         return 2
 
     # Two inventories, checked BEFORE either branch — the `--show-pois` branch below
