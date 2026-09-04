@@ -676,10 +676,29 @@ async def call_tool(_ctx, params: CallToolRequestParams) -> CallToolResult:
         )
 
 
+def _point_empty(diagnostics: dict, msg: str) -> str:
+    """The empty-result sentence for a point mode, or the one fact that outranks it.
+
+    The four point tools derive their own bbox from the point(s) the caller passed, so
+    "OSM maps no hiking route relations here" is exactly as true of that box as of a
+    drawn one — and every sentence below blames a radius, a snap distance or a length cap
+    for excluding something that was never there. It matters more on this frontend than
+    on the CLI: an LLM reading "widen search_radius_m" will dutifully retry, and each
+    retry costs another Overpass request to learn the same thing.
+
+    One kind only, never the ferrata gap: a point mode is always a LIVE fetch, which
+    parses both cable lists and the member-way tags — and the ferrata clause changed the
+    query text, i.e. the Overpass cache key, so a pre-feature response cannot be served
+    under one either. Same reasoning as ``find_hikes``' live branch.
+    """
+    return no_routes_message() if diagnostics.get("no_routes") else msg
+
+
 async def _call_circular_routes(arguments: dict) -> list[TextContent]:
     if [k for k in ("lat", "lon") if k not in arguments]:
         raise ValueError("provide lat and lon for the point to search around.")
     point = (arguments["lat"], arguments["lon"])
+    diagnostics: dict = {}
     hikes = await asyncio.to_thread(
         compose_loops_around,
         point,
@@ -687,12 +706,16 @@ async def _call_circular_routes(arguments: dict) -> list[TextContent]:
         _cfg(arguments),
         radius_m=arguments.get("radius_m"),
         near_miss=_near_miss(arguments),
+        diagnostics=diagnostics,
     )
     return _serialize(
         hikes,
         arguments.get("format") or "text",
-        "No circular routes pass within the radius of your point — widen radius_m, the "
-        "min/max_distance_km band, or drop car_access/chairlift_access.",
+        _point_empty(
+            diagnostics,
+            "No circular routes pass within the radius of your point — widen radius_m, the "
+            "min/max_distance_km band, or drop car_access/chairlift_access.",
+        ),
     )
 
 
@@ -705,15 +728,20 @@ async def _call_routes_between(arguments: dict) -> list[TextContent]:
         )
     start = (arguments["start_lat"], arguments["start_lon"])
     finish = (arguments["finish_lat"], arguments["finish_lon"])
+    diagnostics: dict = {}
     hikes = await asyncio.to_thread(
-        routes_between, start, finish, _criteria(arguments), _cfg(arguments), k=arguments.get("routes")
+        routes_between, start, finish, _criteria(arguments), _cfg(arguments),
+        k=arguments.get("routes"), diagnostics=diagnostics,
     )
     return _serialize(
         hikes,
         arguments.get("format") or "text",
-        "No routes could be drawn between your two points — they may sit on disconnected "
-        "trail networks, be off-network (more than ~2 km from any trail), or every route "
-        "exceeds the length cap.",
+        _point_empty(
+            diagnostics,
+            "No routes could be drawn between your two points — they may sit on disconnected "
+            "trail networks, be off-network (more than ~2 km from any trail), or every route "
+            "exceeds the length cap.",
+        ),
     )
 
 
@@ -732,8 +760,10 @@ async def _call_route_via(arguments: dict) -> list[TextContent]:
             )
         ]
     loop = bool(arguments.get("loop"))
+    diagnostics: dict = {}
     hikes = await asyncio.to_thread(
-        route_via, points, _criteria(arguments), _cfg(arguments), loop=loop
+        route_via, points, _criteria(arguments), _cfg(arguments), loop=loop,
+        diagnostics=diagnostics,
     )
     empty = (
         "No circular route could be drawn through your points — a point may be off-network "
@@ -743,7 +773,7 @@ async def _call_route_via(arguments: dict) -> list[TextContent]:
         "than ~2 km from any trail), a leg crosses a gap, or the route falls outside the "
         "min/max_distance_km band."
     )
-    return _serialize(hikes, arguments.get("format") or "text", empty)
+    return _serialize(hikes, arguments.get("format") or "text", _point_empty(diagnostics, empty))
 
 
 async def _call_routes_to_poi(arguments: dict) -> list[TextContent]:
@@ -752,6 +782,7 @@ async def _call_routes_to_poi(arguments: dict) -> list[TextContent]:
             "provide lat and lon for the start point, and `kinds` — what to walk to "
             "(e.g. [\"ruins\"])."
         )
+    diagnostics: dict = {}
     hikes = await asyncio.to_thread(
         routes_to_poi,
         (arguments["lat"], arguments["lon"]),
@@ -762,17 +793,25 @@ async def _call_routes_to_poi(arguments: dict) -> list[TextContent]:
         _cfg(arguments),
         n=arguments.get("routes"),
         search_radius_m=arguments.get("search_radius_m"),
+        diagnostics=diagnostics,
     )
     # Destination-shaped, never the `poi`-filter wording: nothing was filtered out of an
-    # area here, a route to an object could not be drawn.
+    # area here, a route to an object could not be drawn. `no_routes` outranks even that:
+    # this sentence names three causes and all three are about the destination, so on a
+    # box with no trails in it, it reports missing CHURCHES to someone whose real problem
+    # is a map with no walking routes. `diagnostics["no_routes"]` reads `area.routes`
+    # only — an area full of trails and free of ruins keeps the sentence below.
     return _serialize(
         hikes,
         arguments.get("format") or "text",
-        "No route could be drawn to an object of that kind — either nothing of it is mapped "
-        "within search_radius_m of your point (widen it), the ones found sit off the trail "
-        "network, or every route to them runs past the length cap (raise max_distance_km). "
-        "A miss means nothing of that kind is MAPPED in OSM near your point, not that "
-        "nothing is there.",
+        _point_empty(
+            diagnostics,
+            "No route could be drawn to an object of that kind — either nothing of it is mapped "
+            "within search_radius_m of your point (widen it), the ones found sit off the trail "
+            "network, or every route to them runs past the length cap (raise max_distance_km). "
+            "A miss means nothing of that kind is MAPPED in OSM near your point, not that "
+            "nothing is there.",
+        ),
     )
 
 

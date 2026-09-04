@@ -1130,3 +1130,60 @@ def test_a_bare_name_still_loses_to_a_real_path(tmp_path, monkeypatch):
     _ferrata_snapshot(snapshot_path("dupe"), routes=[])          # named: no routes at all
     explicit = _ferrata_snapshot(tmp_path / "dupe.json")         # the path: one real route
     assert "Cable ridge" in _call("find_hikes", {"area": explicit}).content[0].text
+
+
+# ------------------------------------ the point tools carry `no_routes` too
+#
+# `find_hikes` has read `diagnostics` since the message existed; the four point tools
+# derive their own bbox from the caller's point(s) and answered a routeless region with
+# their own advice — "widen radius_m", "raise max_distance_km", "nothing of that kind is
+# mapped near your point". An LLM reads those as instructions and retries, and every
+# retry is another Overpass request that learns the same thing. Stubbed at the engine
+# function each tool calls, so what is pinned is this frontend's wiring; the engine side
+# is pinned in test_no_routes_message.py.
+
+
+_POINT_TOOLS = {
+    "circular_routes": ("compose_loops_around", {"lat": 50.73, "lon": 15.60},
+                        "widen radius_m"),
+    "routes_between": ("routes_between",
+                       {"start_lat": 50.72, "start_lon": 15.58,
+                        "finish_lat": 50.74, "finish_lon": 15.62},
+                       "disconnected"),
+    "route_via": ("route_via",
+                  {"points": [{"lat": 50.72, "lon": 15.58}, {"lat": 50.74, "lon": 15.62}]},
+                  "off-network"),
+    "routes_to_poi": ("routes_to_poi",
+                      {"lat": 50.73, "lon": 15.60, "kinds": ["ruins"]},
+                      "nothing of it is mapped"),
+}
+
+
+@pytest.mark.parametrize("tool", sorted(_POINT_TOOLS))
+def test_a_point_tool_over_an_unmapped_region_reports_the_map(monkeypatch, tool):
+    fn, args, advice = _POINT_TOOLS[tool]
+
+    def _stub(*a, diagnostics=None, **kw):
+        diagnostics["no_routes"] = True
+        return []
+
+    monkeypatch.setattr(server, fn, _stub)
+    text = _call(tool, args).content[0].text
+    assert text == server.no_routes_message()   # replaces the advice, never joins it
+    assert advice not in text
+
+
+@pytest.mark.parametrize("tool", sorted(_POINT_TOOLS))
+def test_a_point_tool_over_a_mapped_region_keeps_its_own_advice(monkeypatch, tool):
+    """The quiet direction: routes exist, the search still missed, and the lever the tool
+    names is the right one to pull."""
+    fn, args, advice = _POINT_TOOLS[tool]
+
+    def _stub(*a, diagnostics=None, **kw):
+        diagnostics["no_routes"] = False
+        return []
+
+    monkeypatch.setattr(server, fn, _stub)
+    text = _call(tool, args).content[0].text
+    assert advice in text
+    assert "No hiking route relations are mapped" not in text

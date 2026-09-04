@@ -13,7 +13,7 @@ and worth its own plan.
 
 ## Tier 1 — small, concrete, do first
 
-### 1.1 `find_hikes` over MCP cannot take a bare area name (S)
+### 1.1 `find_hikes` over MCP cannot take a bare area name (S) — DONE
 
 `list_pois` and `list_ferrata` accept `area="cortina"` — the name an LLM has just
 read out of `list_areas` — and fall back to the named snapshot directory. `find_hikes`
@@ -26,7 +26,7 @@ is the one an LLM calls most.
 - Pin it in `tests/test_server.py` with a name-only call over a hand-built snapshot,
   plus the "no such area" wording.
 
-### 1.2 Doc/metadata drift that will actually mislead someone (S)
+### 1.2 Doc/metadata drift that will actually mislead someone (S) — DONE
 
 - `requirements.txt` still pins `mcp>=1.2`. `pyproject.toml` requires `mcp>=2` and the
   server no longer runs on 1.x. Anyone who installs from the requirements file gets a
@@ -46,7 +46,7 @@ mis-labelling, the MCP ferrata caveat, the "avoidance still works" promise on a
 routeless file). Follow the existing ritual: tag only after CI is green on the
 release commit.
 
-### 1.4 Web point-based modes never carry a notice (S–M)
+### 1.4 Web point-based modes never carry a notice (S–M) — DONE (all three frontends)
 
 `/api/hikes` grew a `notices` list so the page could say what the *source* could not
 answer. The point-based modes (`--around`, `--from/--to`, `--via`, `--to-poi`) return
@@ -60,6 +60,13 @@ path). Decide one of:
 
 The first is better: the ferrata gap was found "silent" in three frontends one at a
 time; the fourth silence is this one.
+
+**Done, and wider than written here.** The seam belongs to the engine, so the fix was
+not the web's alone: the four point functions fill the same `diagnostics` out-parameter
+`search_hikes` does, and the CLI and the MCP server read it too. Wiring only the web
+would have shipped the fifth instance of this exact pattern in the release that fixes
+the fourth. Verified live at Kamikōchi. See "The point modes say which empty they are"
+in `HANDOFF.md`.
 
 ---
 

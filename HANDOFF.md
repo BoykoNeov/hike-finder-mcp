@@ -526,6 +526,52 @@ thing is validated live against real OSM. Highlights:
   and `ceskyraj.json` has neither. `ferrata_gap_message` is now the single place that
   picks between the two sentences, and the ordering (unreadable first) is what keeps each
   one true.
+- **The point modes say which empty they are — on all three frontends in one go.**
+  `--around`, `--from/--to`, `--via` and `--to-poi` derive their own bbox from the
+  point(s) you pick, and until this they could not report a single fact about the fetch:
+  the four engine functions returned hikes and nothing else, so every frontend answered
+  an empty search there with its own advice — widen the radius, move your points closer
+  to a trail, raise the length cap. In Kamikōchi (824 mapped path ways, zero route
+  relations) every one of those sentences sends the reader to fix something that was
+  never the problem, and picking a point is the most natural way to search a place like
+  that. Worth not re-deriving:
+  - **The seam is the SAME `diagnostics` out-parameter** the bbox search already fills,
+    added to all four functions, set from the ONE area fetch each of them makes — before
+    any snapping or routing, so the answer never depends on how far a picked point landed
+    from a trail. That has its own message and its own fix.
+  - **All three frontends were wired in the same change, deliberately.** The ferrata
+    caveat reached the CLI, the web UI and the MCP server on three different days, and
+    this is the same shape one level down. The web's `_live_notices`, the CLI's
+    `empty_msg` override and the server's `_point_empty` are three call sites of one
+    fact.
+  - **`--to-poi` is the case that had to be got right.** One fetch answers both of its
+    empties, and they are different facts: `no_routes` reads `area.routes` only, so an
+    area full of trails and free of ruins keeps the destination-shaped sentence. The
+    other direction is the dangerous one — "nothing of that kind is mapped in OSM near
+    your start" is a claim about churches made by a search that never found a trail.
+  - **One kind here, never the ferrata gap, and `web._live_notices` says why in prose.**
+    A point mode is always a LIVE fetch, which parses both cable lists and the member-way
+    tags, and the ferrata clause changed the query text — the Overpass cache key — so a
+    pre-feature response cannot be served under one either. `ferrata_gap_message` is
+    provably `None` there; a seam that can never fire reads as one that might.
+  - **The browser proof does not come free from the area path's.** §14's assertion that
+    `no_routes` *displaces* the empty-result advice runs in the area mode, whose fallback
+    contains "widen the map" — a real check there and a vacuous one in every point mode,
+    since none of their four sentences says it. `webui_harness.cjs` §15 drives the two
+    that can actually fail (`topoi`, `around`) at Kamikōchi's coordinates, and its stub
+    rule sits ABOVE the `to_poi` one or that shadows it and answers with routes.
+  **Verified live over real Overpass at Kamikōchi** (36.24, 137.63), the region the fact
+  was measured in: `--around` printed the map-data sentence in place of "widen
+  --around-radius", and `--to-poi ruins` printed it in place of its three-cause
+  destination sentence. Noted while reading that second run: the mode's own stderr log
+  line ("nothing of that kind is mapped within 3.0 km") still prints beside it. It is a
+  log, not the answer, and it is true there — but it is the closest thing to a
+  contradiction this change leaves on screen, so it is written down rather than
+  discovered again.
+  Pinned: 10 engine cases + 8 CLI cases (`test_no_routes_message.py`), 13 HTTP cases
+  (`test_web.py`, including that the live and saved paths word the one fact identically),
+  8 MCP cases (`test_server.py`) and 4 browser checks — each in both directions, because
+  a caveat that never switches off is noise.
 - **The web UI carries its caveats: `/api/hikes` is an envelope, not a bare array.**
   `{"hikes": [...], "notices": [{"kind", "message"}]}`. The array was the reason the
   browser was the one frontend that answered a question it could not answer with a
@@ -699,10 +745,11 @@ skip without the `mcp` extra).
   what the *source* could not answer — so the web UI showed a silent empty list where the
   CLI logs to stderr. See "The web UI carries its caveats" under What is DONE. MCP
   `find_hikes` was the worst instance of this class and is now wired (see "MCP
-  `find_hikes` carries the ferrata gap" under What is DONE). Two residual limits:
-  - The web's *point-based* modes (`--around`, `--from/--to`, `--via`, `--to-poi`) return
-    `notices: []` unconditionally, because they build their own bbox and their failure
-    shapes are already worded in the page. Nothing computes a notice for them yet.
+  `find_hikes` carries the ferrata gap" under What is DONE). Both residual limits are
+  now closed:
+  - ~~The web's *point-based* modes return `notices: []` unconditionally~~ — fixed, and
+    on all three frontends at once; see "The point modes say which empty they are" under
+    What is DONE.
   - ~~MCP `find_hikes` cannot take a bare area name~~ — fixed; see "All three area tools
     read an area the same way" under What is DONE.
 - **`--show-ferrata` cannot export.** `--gpx`/`--geojson` are named in its ignored-flags

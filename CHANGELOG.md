@@ -8,6 +8,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The point-based modes now say WHICH empty they are.** `--around`, `--from/--to`,
+  `--via` and `--to-poi` derive their own area from the point(s) you pick, and could not
+  report a single fact about that fetch — so in a region OSM maps no hiking route
+  relations in, each answered with its own advice: widen the radius, move your points
+  closer to a trail, raise the max distance. Every one of them sends you to fix something
+  that was never the problem, and `--to-poi`'s went furthest, reporting "nothing of that
+  kind is mapped near your start" — a claim about ruins from a search that never found a
+  trail. The four engine functions now fill the same `diagnostics` out-parameter the bbox
+  search has always filled, and **all three frontends read it**: the CLI replaces its
+  empty message, the web UI carries a `no_routes` notice on the point modes as it already
+  did on the area mode, and the MCP server replaces the sentence an LLM would otherwise
+  act on — where "widen search_radius_m" costs another Overpass request per retry to
+  learn the same thing.
+  Wiring all three at once is the point: the ferrata caveat reached the three frontends
+  on three different days, and this was the same shape one level down. The one distinction
+  that had to survive is `--to-poi`'s two empties: the flag reads `area.routes` only, so an
+  area full of trails and free of ruins keeps its destination-shaped wording.
+  Pinned in both directions at four levels — engine, CLI, HTTP and the browser, where the
+  existing proof did not transfer: the page's "the notice displaces the advice" check ran
+  in the area mode, whose fallback says "widen the map", which no point-mode sentence ever
+  says.
+
 - **MCP `find_hikes` accepts a bare area name**, like `list_pois` and `list_ferrata`
   already did. `list_areas` prints a `name`; an LLM passes it straight back into the next
   call, and on this tool — the one it calls most — that raised a `FileNotFoundError` from

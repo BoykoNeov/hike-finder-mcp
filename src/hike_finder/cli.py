@@ -969,11 +969,18 @@ def run(args: argparse.Namespace) -> int:
             )
             return 2
         used_before, _ = api_quota_snapshot(cfg)
+        # The same out-parameter the bbox search below fills, on the four point modes:
+        # they derive their own box from the point(s) you picked, and "OSM maps no hiking
+        # route relations here" is exactly as true of a derived box as of a drawn one --
+        # and exactly as invisible without this, since each empty message below blames a
+        # radius, a snap distance or a filter instead.
+        diagnostics: dict = {}
         common = dict(
             user_agent=args.user_agent,
             overpass_url=args.overpass_url,
             elevation_mode=args.elevation_mode,
             dem_dir=args.dem_dir,
+            diagnostics=diagnostics,
         )
         try:
             if around is not None:
@@ -1047,6 +1054,13 @@ def run(args: argparse.Namespace) -> int:
             _fetch_hint(e)
             return 1
         _quota_line(cfg, used_before)
+        # Outranks every message above it, for the reason the bbox path states: each of
+        # them blames a filter for excluding something, and nothing was there to exclude.
+        # `--to-poi` is the one worth naming: its sentence claims "nothing of that kind is
+        # mapped near your point", which is a statement about churches made by a search
+        # that never found a trail to walk to one.
+        if diagnostics.get("no_routes"):
+            empty_msg = no_routes_message()
         _emit(hikes, args.json, empty_msg)
         _write_exports(hikes, args)
         return 0

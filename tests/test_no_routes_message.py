@@ -35,6 +35,13 @@ _ROUTE = {
 }
 
 
+class _Flat:
+    """Deterministic elevation, no network — these tests never reach a real route."""
+
+    def lookup(self, pts):
+        return [0.0 for _ in pts]
+
+
 def _parse(*argv):
     return build_parser().parse_args(list(argv))
 
@@ -122,3 +129,123 @@ def test_offline_snapshot_with_routes_keeps_the_criteria_wording(tmp_path, capsy
     out = capsys.readouterr().out
     assert "No matching hikes found" in out
     assert "No hiking route relations are mapped" not in out
+
+
+# --- the point-based modes ----------------------------------------------------
+#
+# `--around`, `--from/--to`, `--via` and `--to-poi` derive their own bbox from the point(s)
+# you picked, and until now none of them could report this fact at all: they returned
+# hikes and nothing else, so every frontend answered an empty search there by blaming a
+# radius, a snap distance or a filter. Kamikochi is the case — 824 mapped paths, zero
+# route relations — and picking a point in it is the most natural way to search it.
+
+
+@pytest.mark.parametrize("routes, expected", [([], True), ([_ROUTE], False)])
+@pytest.mark.parametrize("mode", ["around", "between", "via", "to_poi"])
+def test_the_point_modes_report_the_fact_through_the_same_diagnostics(
+    monkeypatch, mode, routes, expected
+):
+    """One seam, four entry points, and the same key `search_hikes` fills.
+
+    Set from the ONE area fetch each of them makes, before any snapping or routing, so
+    the answer does not depend on how far the picked points landed from a trail — those
+    have their own messages and their own fixes.
+    """
+    monkeypatch.setattr(S, "_fetch_area", lambda *a, **k: AreaData(routes=list(routes)))
+    monkeypatch.setattr(S._cache, "from_config", lambda cfg: None)
+    monkeypatch.setattr(S, "_provider", lambda *a, **k: _Flat())
+    p, q = (50.73, 15.60), (50.74, 15.62)
+    diagnostics: dict = {}
+    if mode == "around":
+        S.compose_loops_around(p, S.Criteria(), diagnostics=diagnostics)
+    elif mode == "between":
+        S.routes_between(p, q, S.Criteria(), diagnostics=diagnostics)
+    elif mode == "via":
+        S.route_via([p, q], S.Criteria(), diagnostics=diagnostics)
+    else:
+        S.routes_to_poi(p, ("ruins",), S.Criteria(), diagnostics=diagnostics)
+    assert diagnostics["no_routes"] is expected
+
+
+def test_to_poi_reports_missing_TRAILS_not_missing_destinations(monkeypatch):
+    """The one place the two empties could be conflated, since one fetch answers both.
+
+    `--to-poi` comes back empty either because the map holds no route relations or
+    because it holds no churches — different facts, different fixes, and only the first
+    is what `no_routes` means. An area full of trails and free of ruins must NOT be
+    reported as a stretch of map with nothing mapped in it.
+    """
+    monkeypatch.setattr(S, "_fetch_area", lambda *a, **k: AreaData(routes=[_ROUTE], pois=[]))
+    monkeypatch.setattr(S._cache, "from_config", lambda cfg: None)
+    monkeypatch.setattr(S, "_provider", lambda *a, **k: _Flat())
+    diagnostics: dict = {}
+    assert S.routes_to_poi((50.73, 15.60), ("ruins",), S.Criteria(),
+                           diagnostics=diagnostics) == []
+    assert diagnostics["no_routes"] is False
+
+
+def test_the_point_modes_diagnostics_stay_optional(monkeypatch):
+    """Every existing caller omits the keyword and must keep working untouched."""
+    monkeypatch.setattr(S, "_fetch_area", lambda *a, **k: AreaData(routes=[]))
+    monkeypatch.setattr(S._cache, "from_config", lambda cfg: None)
+    monkeypatch.setattr(S, "_provider", lambda *a, **k: _Flat())
+    p, q = (50.73, 15.60), (50.74, 15.62)
+    assert S.compose_loops_around(p, S.Criteria()) == []
+    assert S.routes_between(p, q, S.Criteria()) == []
+    assert S.route_via([p, q], S.Criteria()) == []
+    assert S.routes_to_poi(p, ("ruins",), S.Criteria()) == []
+
+
+# --- the point modes on the CLI -----------------------------------------------
+#
+# The engine seam above is only half the fix: it makes the fact AVAILABLE, and a frontend
+# that never reads it still answers Kamikochi by blaming a radius. This is the shape the
+# repo keeps re-learning — the ferrata caveat reached three frontends on three different
+# days — so all three read it in the same release this time. Stubbed at the engine's fetch
+# rather than at the CLI's imports, so the whole chain (flag → engine → diagnostics →
+# printed sentence) is what is under test.
+
+
+def _live_stub(monkeypatch, routes):
+    monkeypatch.setattr(S, "_fetch_area", lambda *a, **k: AreaData(routes=list(routes)))
+    monkeypatch.setattr(S, "_provider", lambda *a, **k: _Flat())
+    monkeypatch.setattr(S._cache, "from_config", lambda cfg: None)
+
+
+_CLI_POINT_MODES = {
+    "around": ("--around", "50.73", "15.60"),
+    "between": ("--from", "50.72", "15.58", "--to", "50.74", "15.62"),
+    "via": ("--via", "50.72", "15.58", "--via", "50.74", "15.62"),
+    "to_poi": ("--from", "50.73", "15.60", "--to-poi", "ruins"),
+}
+
+# What each mode says INSTEAD when it does not know — every one of them names a lever
+# that was not the problem, which is the reason this fix exists.
+_CLI_ADVICE = {
+    "around": "widen --around-radius",
+    "between": "disconnected trail networks",
+    "via": "off-network",
+    "to_poi": "widen --to-poi-radius",
+}
+
+
+@pytest.mark.parametrize("mode", sorted(_CLI_POINT_MODES))
+def test_cli_point_modes_blame_the_map_not_your_point(monkeypatch, capsys, mode):
+    _live_stub(monkeypatch, [])
+    assert run(_parse(*_CLI_POINT_MODES[mode])) == 0
+    out = capsys.readouterr().out
+    assert "No hiking route relations are mapped" in out
+    assert _CLI_ADVICE[mode] not in out          # displaced, not printed beside it
+
+
+@pytest.mark.parametrize("mode", sorted(_CLI_POINT_MODES))
+def test_cli_point_modes_keep_their_own_wording_where_the_map_has_routes(
+    monkeypatch, capsys, mode
+):
+    """The half that makes it a signal. One relation nowhere near the picked point: the
+    search is still empty, and the honest answer is the mode's own advice."""
+    _live_stub(monkeypatch, [_ROUTE])
+    assert run(_parse(*_CLI_POINT_MODES[mode], "--min-distance", "500")) == 0
+    out = capsys.readouterr().out
+    assert "No hiking route relations are mapped" not in out
+    assert _CLI_ADVICE[mode] in out

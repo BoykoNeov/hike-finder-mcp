@@ -692,3 +692,111 @@ def test_hike_export_is_unaffected_by_the_new_branch(server):
     status, headers, body = _get_raw(server + "/api/gpx?area=webtest")
     assert headers["Content-Disposition"] == 'attachment; filename="hikes.gpx"'
     assert "<trk>" in body
+
+
+# ------------------------------------------- the point-based modes carry notices too
+#
+# `/api/hikes` grew a `notices` list so the page could say what the SOURCE could not
+# answer, and the point-based modes returned `notices: []` unconditionally. That is the
+# fourth instance of one silence: the ferrata gap was found missing in three frontends on
+# three different days, and this is the same shape one level down — one endpoint, five
+# modes, the notice wired into one of them.
+#
+# The engine seam is `diagnostics`, the same out-parameter the bbox path has always read;
+# these tests stub the engine and assert the WIRING, while the four engine functions
+# filling it are pinned in test_no_routes_message.py.
+
+
+_POINT_MODES = {
+    "around": ("compose_loops_around", "around_lat=50.73&around_lon=15.60"),
+    "between": ("routes_between",
+                "from_lat=50.72&from_lon=15.58&to_lat=50.74&to_lon=15.62"),
+    "via": ("route_via", "via=50.72,15.58&via=50.74,15.62"),
+    "topoi": ("routes_to_poi", "to_poi_lat=50.73&to_poi_lon=15.60&to_poi=ruins"),
+}
+
+
+@pytest.mark.parametrize("mode", sorted(_POINT_MODES))
+def test_a_point_mode_over_an_unmapped_region_blames_the_map_not_your_point(
+    server, monkeypatch, mode
+):
+    """Pick a point in a region OSM maps no route relations in, and be told so.
+
+    Without this each mode answers with its own advice — widen the radius, move your
+    points closer to a trail, raise the max distance — every one of which sends the user
+    to fix something that was never the problem. The page renders a `no_routes` notice in
+    the status line INSTEAD of that advice, so nothing else has to change per mode.
+    """
+    fn, query = _POINT_MODES[mode]
+
+    def _stub(*a, diagnostics=None, **kw):
+        diagnostics["no_routes"] = True
+        return []
+
+    monkeypatch.setattr(web, fn, _stub)
+    status, body = _get(server + "/api/hikes?" + query)
+    assert status == 200 and body["hikes"] == []
+    assert [n["kind"] for n in body["notices"]] == ["no_routes"]
+    assert "not your filters" in body["notices"][0]["message"]
+
+
+@pytest.mark.parametrize("mode", sorted(_POINT_MODES))
+def test_a_point_mode_over_a_mapped_region_says_nothing(server, monkeypatch, mode):
+    """The half that makes the notice a signal: routes exist, so there is no notice.
+
+    A caveat that never switches off is noise, and this one is checked on the fetch rather
+    than on the result — so an empty list from a well-mapped area (your radius was too
+    small) stays worded as the ordinary miss it is.
+    """
+    from hike_finder.filters import Hike
+
+    fn, query = _POINT_MODES[mode]
+    hike = Hike(osm_id=-1, name="A route", distance_km=6.0, circular=False,
+                car_access=False, chairlift_access=False, start=(50.73, 15.60),
+                gain_m=120, loss_m=120, composed=True, composed_of=("0402",))
+
+    def _stub(*a, diagnostics=None, **kw):
+        diagnostics["no_routes"] = False
+        return [hike]
+
+    monkeypatch.setattr(web, fn, _stub)
+    status, body = _get(server + "/api/hikes?" + query)
+    assert status == 200 and len(body["hikes"]) == 1
+    assert body["notices"] == []
+
+
+@pytest.mark.parametrize("mode", sorted(_POINT_MODES))
+def test_a_point_mode_never_carries_a_ferrata_notice(server, monkeypatch, mode):
+    """A silence that IS deliberate, pinned so it doesn't read as the next oversight.
+
+    A point mode is always a live fetch, and a live fetch parses both ferrata lists and
+    the member-way tags — and the ferrata clause changed the query TEXT, i.e. the Overpass
+    cache key, so a pre-feature response cannot be served under one either.
+    `ferrata_gap_message` is provably None here, so there is no seam rather than a seam
+    that can never fire. The same reasoning the live bbox path already carries.
+    """
+    fn, query = _POINT_MODES[mode]
+
+    def _stub(*a, diagnostics=None, **kw):
+        diagnostics["no_routes"] = False
+        return []
+
+    monkeypatch.setattr(web, fn, _stub)
+    _, body = _get(server + "/api/hikes?" + query + "&ferrata=false")
+    assert [n["kind"] for n in body["notices"]] == []
+
+
+def test_the_live_and_saved_paths_word_no_routes_identically(server):
+    """One fact, one sentence, whichever branch produced it.
+
+    `_area_notices` reads a saved file and `_live_notices` reads a fetch's diagnostics;
+    they are separate functions because they answer different questions (only a file can
+    fall short on cable), and the one question they share must not drift apart.
+    """
+    from hike_finder.overpass import AreaData
+
+    assert web._live_notices({"no_routes": True}) == web._area_notices(
+        AreaData(routes=[]), Criteria()
+    )
+    assert web._live_notices({}) == []          # absent key is not a claim
+    assert web._live_notices({"no_routes": False}) == []

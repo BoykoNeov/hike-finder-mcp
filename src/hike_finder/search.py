@@ -542,6 +542,7 @@ def compose_loops_around(
     elevation_mode: str | None = None,
     dem_dir: str | None = None,
     near_miss: bool | str = False,
+    diagnostics: dict | None = None,
 ) -> list[Hike]:
     """Circular routes that pass within ``radius_m`` of a picked ``point`` and start there.
 
@@ -554,6 +555,12 @@ def compose_loops_around(
     Unlike ``compose_loops``, no ``bbox`` is given: it is derived from the point as
     ``radius + max-loop/2`` — the tight bound below which a qualifying loop (length ≤ max,
     passing within radius of the point) can never be clipped, so completeness holds.
+
+    ``diagnostics`` is the out-parameter ``search_hikes`` documents: facts about the
+    FETCH the returned hikes cannot carry — today ``no_routes``, which tells "your
+    points/filters excluded everything" apart from "OSM maps no hiking route
+    relations here at all". The two take different fixes, and the second is not
+    about the search. The box reported on is the one this function DERIVES.
     """
     cfg = cfg or _config.load()
     radius_m = radius_m if radius_m is not None else cfg.around_radius_m
@@ -570,6 +577,8 @@ def compose_loops_around(
     area = _fetch_area(
         bbox, cfg, cache, user_agent=user_agent, overpass_url=overpass_url, read_cache=True
     )
+    if diagnostics is not None:
+        diagnostics["no_routes"] = area_has_no_routes(area)
     graph = build_trail_graph(clip_routes_to_bbox(area.routes, bbox))
     provider = _provider(cfg, elevation_mode, dem_dir, cache)
     return _compose_from_graph(
@@ -589,6 +598,7 @@ def routes_between(
     overpass_url: str | None = None,
     elevation_mode: str | None = None,
     dem_dir: str | None = None,
+    diagnostics: dict | None = None,
 ) -> list[Hike]:
     """The ``k`` shortest distinct trail routes from ``start`` to ``finish``, shortest first.
 
@@ -603,6 +613,12 @@ def routes_between(
     if given, else ``cfg.routes_max_factor x`` the straight-line separation. Each route is
     measured through the *unchanged* ``find_hikes`` (elevation/gain, access), so offline ==
     online holds; the results are ordered shortest-first by measured distance.
+
+    ``diagnostics`` is the out-parameter ``search_hikes`` documents: facts about the
+    FETCH the returned hikes cannot carry — today ``no_routes``, which tells "your
+    points/filters excluded everything" apart from "OSM maps no hiking route
+    relations here at all". The two take different fixes, and the second is not
+    about the search. The box reported on is the one this function DERIVES.
     """
     cfg = cfg or _config.load()
     k = k if k is not None else cfg.routes_k
@@ -626,6 +642,8 @@ def routes_between(
     area = _fetch_area(
         bbox, cfg, cache, user_agent=user_agent, overpass_url=overpass_url, read_cache=True
     )
+    if diagnostics is not None:
+        diagnostics["no_routes"] = area_has_no_routes(area)
     graph = build_trail_graph(clip_routes_to_bbox(area.routes, bbox))
     graph, snapped = snap_points(graph, [start, finish])
     (src, src_d), (dst, dst_d) = snapped
@@ -686,6 +704,7 @@ def route_via(
     overpass_url: str | None = None,
     elevation_mode: str | None = None,
     dem_dir: str | None = None,
+    diagnostics: dict | None = None,
 ) -> list[Hike]:
     """ONE route linking several picked points in the order given, each snapped to the
     nearest trail.
@@ -706,6 +725,12 @@ def route_via(
     a leg crossing a gap in the network, aborts loudly rather than routing to a distant trail.
     Length/gain/access filters in ``criteria`` still apply (e.g. ``--max-distance`` drops a
     linked route that runs longer than you allow).
+
+    ``diagnostics`` is the out-parameter ``search_hikes`` documents: facts about the
+    FETCH the returned hikes cannot carry — today ``no_routes``, which tells "your
+    points/filters excluded everything" apart from "OSM maps no hiking route
+    relations here at all". The two take different fixes, and the second is not
+    about the search. The box reported on is the one this function DERIVES.
     """
     cfg = cfg or _config.load()
     if len(points) < 2:
@@ -734,6 +759,8 @@ def route_via(
     area = _fetch_area(
         bbox, cfg, cache, user_agent=user_agent, overpass_url=overpass_url, read_cache=True
     )
+    if diagnostics is not None:
+        diagnostics["no_routes"] = area_has_no_routes(area)
     graph = build_trail_graph(clip_routes_to_bbox(area.routes, bbox))
     graph, snapped = snap_points(graph, points)
     nodes = [n for (n, _) in snapped]
@@ -866,6 +893,7 @@ def routes_to_poi(
     overpass_url: str | None = None,
     elevation_mode: str | None = None,
     dem_dir: str | None = None,
+    diagnostics: dict | None = None,
 ) -> list[Hike]:
     """Routes from a picked ``start`` to the ``n`` nearest objects of ``kinds`` — "draw me
     a route to the nearest ruin".
@@ -903,6 +931,12 @@ def routes_to_poi(
     An empty result is never silent: the three causes — nothing of that kind mapped nearby,
     everything found sitting off-network, and nothing reachable within the cap — are
     distinguished in the log, because they need three different fixes.
+
+    ``diagnostics`` is the out-parameter ``search_hikes`` documents: facts about the
+    FETCH the returned hikes cannot carry — today ``no_routes``, which tells "your
+    points/filters excluded everything" apart from "OSM maps no hiking route
+    relations here at all". The two take different fixes, and the second is not
+    about the search. The box reported on is the one this function DERIVES.
     """
     cfg = cfg or _config.load()
     kinds = _poi.normalise_kinds(kinds)
@@ -929,6 +963,14 @@ def routes_to_poi(
     area = _fetch_area(
         bbox, cfg, cache, user_agent=user_agent, overpass_url=overpass_url, read_cache=True
     )
+    # ROUTE relations, not destinations. This mode has two ways to come back empty — no
+    # trails, or no objects of that kind — and one fetch answers both, so the flag has to
+    # say which. `area_has_no_routes` reads `area.routes` only; `area.pois` being empty is
+    # a different fact with a different message (the destination-shaped one the frontends
+    # already word), and conflating them would tell someone the map has no trails when it
+    # has no churches.
+    if diagnostics is not None:
+        diagnostics["no_routes"] = area_has_no_routes(area)
 
     # Candidates: registered objects of the asked-for kinds within the search radius. The
     # radius is measured crow-flies, which is a LOWER bound on the walk, so nothing inside

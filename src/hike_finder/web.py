@@ -964,6 +964,30 @@ def _poi_kinds(qs: dict, key: str = "poi") -> tuple[str, ...]:
     return normalise_kinds(raw)
 
 
+def _live_notices(diagnostics: dict) -> list[dict]:
+    """What a LIVE fetch could not answer, worded for the browser.
+
+    The live counterpart of ``_area_notices``, and shorter for a reason that is worth
+    stating rather than leaving as an absence: there is exactly one kind here, never the
+    ferrata gap. A live fetch always parses ``ferrata_routes``/``ferrata_ways`` and the
+    member-way tags, and the ferrata clause changed the query TEXT — the Overpass cache
+    key — so a pre-feature response cannot be served under one either. On this path
+    ``ferrata_gap_message`` is provably ``None``, and a seam that can never fire reads as
+    one that might.
+
+    Used by every live mode, the point-based ones included. They derive their own bbox
+    from the point(s) you clicked, so "OSM maps no hiking route relations in this area"
+    is exactly as true of that derived box as of a drawn one — and exactly as invisible
+    without this, since each of those modes otherwise answers an empty search by blaming
+    a radius, a snap distance or a filter. The page puts a ``no_routes`` message in the
+    status line INSTEAD of that advice (see ``showNotices``), so nothing has to change
+    per mode for it to land right.
+    """
+    if diagnostics.get("no_routes"):
+        return [{"kind": "no_routes", "message": no_routes_message()}]
+    return []
+
+
 def _area_notices(area, criteria: Criteria) -> list[dict]:
     """What a SAVED area cannot answer about this search, worded for the browser.
 
@@ -1287,14 +1311,16 @@ class Handler(BaseHTTPRequestHandler):
         # Circular routes near a picked point (derives its own area from the point).
         around_lat, around_lon = _num(qs, "around_lat"), _num(qs, "around_lon")
         if around_lat is not None and around_lon is not None:
+            diagnostics: dict = {}
             try:
-                return compose_loops_around(
+                hikes = compose_loops_around(
                     (around_lat, around_lon), criteria, cfg=cfg,
                     radius_m=_num(qs, "around_radius_m"),
-                    user_agent=ua, near_miss=near_miss,
-                ), [], None
+                    user_agent=ua, near_miss=near_miss, diagnostics=diagnostics,
+                )
             except Exception as e:  # noqa: BLE001 — surface any fetch/HTTP failure to the UI
                 return None, [], _fetch_error(e)
+            return hikes, _live_notices(diagnostics), None
 
         # Routes to the nearest church / ruin / peak from a picked point (derives its own
         # area). Distinct from `poi_kinds` above, which only FILTERS whatever routes a
@@ -1302,15 +1328,22 @@ class Handler(BaseHTTPRequestHandler):
         tp_lat, tp_lon = _num(qs, "to_poi_lat"), _num(qs, "to_poi_lon")
         if to_poi_kinds and tp_lat is not None and tp_lon is not None:
             n = _num(qs, "to_poi_n")
+            diagnostics = {}
             try:
-                return routes_to_poi(
+                hikes = routes_to_poi(
                     (tp_lat, tp_lon), to_poi_kinds, criteria, cfg=cfg,
                     n=int(n) if n else None,
                     search_radius_m=_num(qs, "to_poi_radius_m"),
-                    user_agent=ua,
-                ), [], None
+                    user_agent=ua, diagnostics=diagnostics,
+                )
             except Exception as e:  # noqa: BLE001
                 return None, [], _fetch_error(e)
+            # `no_routes` outranks this mode's own empty sentence, which names three
+            # causes ("nothing of that kind mapped / off the network / past the max
+            # distance") and would blame all three for a box with no trails in it. The
+            # page already checks the notice first, so the precedence is the area mode's,
+            # unchanged, rather than a second rule invented here.
+            return hikes, _live_notices(diagnostics), None
         if to_poi_kinds and (tp_lat is None) != (tp_lon is None):
             return None, [], (400, {"error": "to_poi needs both to_poi_lat and to_poi_lon"})
 
@@ -1319,13 +1352,15 @@ class Handler(BaseHTTPRequestHandler):
         t_lat, t_lon = _num(qs, "to_lat"), _num(qs, "to_lon")
         if None not in (f_lat, f_lon, t_lat, t_lon):
             k = _num(qs, "routes_k")
+            diagnostics = {}
             try:
-                return routes_between(
+                hikes = routes_between(
                     (f_lat, f_lon), (t_lat, t_lon), criteria, cfg=cfg,
-                    k=int(k) if k else None, user_agent=ua,
-                ), [], None
+                    k=int(k) if k else None, user_agent=ua, diagnostics=diagnostics,
+                )
             except Exception as e:  # noqa: BLE001
                 return None, [], _fetch_error(e)
+            return hikes, _live_notices(diagnostics), None
 
         # One route linking several picked points ('via'), optionally closed into a
         # non-retracing circular route. Each waypoint arrives as a repeated `via=lat,lon`.
@@ -1340,13 +1375,16 @@ class Handler(BaseHTTPRequestHandler):
                     return None, [], (400, {"error": f"bad via point {item!r} (want 'lat,lon')"})
             if len(points) < 2:
                 return None, [], (400, {"error": "give at least two via points to link"})
+            diagnostics = {}
             try:
-                return route_via(
+                hikes = route_via(
                     points, criteria, cfg=cfg,
                     loop=_tri(qs, "via_loop") is True, user_agent=ua,
-                ), [], None
+                    diagnostics=diagnostics,
+                )
             except Exception as e:  # noqa: BLE001
                 return None, [], _fetch_error(e)
+            return hikes, _live_notices(diagnostics), None
 
         bbox, bbox_err = self._bbox(qs)
         if bbox_err is not None:
@@ -1357,7 +1395,7 @@ class Handler(BaseHTTPRequestHandler):
         search = compose_loops if composing else search_hikes
         # Filled by the search with facts about the FETCH the hikes cannot carry — the
         # same out-parameter the CLI and the MCP server read (see search.search_hikes).
-        diagnostics: dict = {}
+        diagnostics = {}
         kwargs = dict(cfg=cfg, user_agent=ua, near_miss=near_miss, diagnostics=diagnostics)
         # Naming applies only to ordinary routes — composed loops already carry their
         # constituent-trail label, never a route/<id> fallback.
@@ -1372,10 +1410,7 @@ class Handler(BaseHTTPRequestHandler):
         # ferrata clause changed the query TEXT — the Overpass cache key — so a
         # pre-feature response cannot be served under it either. `ferrata_gap_message`
         # is provably None here, and a seam that can never fire reads as one that might.
-        notices = []
-        if diagnostics.get("no_routes"):
-            notices.append({"kind": "no_routes", "message": no_routes_message()})
-        return hikes, notices, None
+        return hikes, _live_notices(diagnostics), None
 
     def _api(self, qs: dict) -> None:
         hikes, notices, err = self._resolve_hikes(qs)

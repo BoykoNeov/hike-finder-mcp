@@ -199,6 +199,12 @@ function hikesReply(url) {
   // result exists to hide behind.
   if (/area=nofer/.test(url)) return { hikes: AREA_HIKES, notices: [FERRATA_GAP] };
   if (/area=norelations/.test(url)) return { hikes: [], notices: [NO_ROUTES] };
+  // A POINT mode over a region OSM maps no route relations in. Keyed on Kamikochi's
+  // latitude (824 mapped path ways, zero route relations — the case measured in this
+  // repo), and placed ABOVE the to_poi rule below, which would otherwise shadow it and
+  // answer with routes.
+  if (/(?:around|from|to_poi|via)_?lat=36\.24|via=36\.24/.test(url))
+    return { hikes: [], notices: [NO_ROUTES] };
   if (/[?&]to_poi=/.test(url)) return { hikes: TO_POI_HIKES, notices: [] };
   return { hikes: [], notices: [] };
 }
@@ -567,6 +573,38 @@ const fire = (ev, latlng) => (handlers[ev] || []).forEach(f => f({ latlng }));
         el('notices')._children.length === 0, el('notices')._children.length);
   check('and falls back to the ordinary empty-result advice',
         /widen the map/.test(el('status').textContent), el('status').textContent);
+
+  // 15. The same notice in a POINT mode. Worth its own checks because §14's proof does
+  // not transfer: it runs in the area mode, whose fallback sentence contains "widen the
+  // map", so `!/widen the map/` is a real assertion there and a vacuous one in every
+  // point mode — none of their four sentences says it. What each of them DOES say is
+  // advice about a point, a radius or a length cap, and `topoi`'s goes further and makes
+  // a claim about the world ("nothing of that kind is mapped in OSM near your start")
+  // that is simply false when the truth is there are no trails to walk on.
+  el('poi').selectedOptions = [];
+  el('mode').value = 'topoi';
+  updateMode();
+  fire('click', { lat: 36.24, lng: 137.63 });        // Kamikochi
+  el('to_poi').selectedOptions = [{ value: 'ruins' }];
+  el('notices')._children.length = 0;
+  el('results')._children.length = 0;
+  await search();
+  check('a point mode over an unmapped region reports the map',
+        /not your filters/.test(el('status').textContent), el('status').textContent);
+  check('and does not claim instead that no ruins are mapped there',
+        !/nothing of that kind is mapped/.test(el('status').textContent),
+        el('status').textContent);
+  check('the point mode does not render it as a notice box either',
+        el('notices')._children.length === 0, el('notices')._children.length);
+
+  el('mode').value = 'around';
+  updateMode();
+  fire('click', { lat: 36.24, lng: 137.63 });
+  el('results')._children.length = 0;
+  await search();
+  check('the loop mode says it too, in place of "widen the radius"',
+        /not your filters/.test(el('status').textContent)
+        && !/widen the radius/.test(el('status').textContent), el('status').textContent);
 
   console.log('PASS ' + ok.length + ' / FAIL ' + fail.length);
   fail.forEach(f => console.log('  FAIL: ' + f));
