@@ -55,6 +55,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a name. That is recorded in `HANDOFF.md` along with the fact that the frontend parity test
   cannot catch the gap — it tables `Criteria` fields, and a place name is not one.
 
+### Changed
+
+- **The three "where do I search?" errors now name all three ways.** `--place NAME`,
+  `--bbox SOUTH WEST NORTH EAST`, or `--area FILE` — on the plain search, `--show-pois`
+  and `--show-ferrata`. These are the messages a user lands on after mistyping a place
+  name, and telling them to use `--bbox` would send them back to the coordinates
+  `--place` exists to spare them. The browse and download modes already accepted a name
+  (it resolves into the box before any mode looks at it); only the wording lagged.
+
 - **CI now lints and type-checks.** Nothing had ever run either over this tree. A `lint`
   job runs `ruff` (rules `E,F,W,I,B,UP,SIM,C4,RUF,BLE,SLF`, line length 100) and `mypy`
   over `src`, both at zero findings, with the configuration in `pyproject.toml`. Unlike

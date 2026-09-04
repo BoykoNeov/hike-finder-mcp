@@ -226,7 +226,11 @@ Entry points on the shared engine, all rendering identically:
   tell a typed name from typed numbers. Forward Nominatim (`geocode.NominatimGeocoder.search`,
   `/search`), through the same throttle, contact UA and persistent cache as the reverse
   direction, with its own cache table (`place_search`) because a forward answer is a *list of
-  candidates with extents*, not one name.
+  candidates with extents*, not one name. The cache keys on the text the user typed —
+  whitespace-normalised and casefolded, but **not transliterated** — so `Sněžka` and `Snezka`
+  are two questions and Nominatim answers them differently (2 matches vs 3, observed live).
+  That is correct, not a broken cache: they are different queries to the service, and folding
+  them together would mean guessing which spelling the user meant.
 
 **Near-misses** (`find_hikes(near_miss="auto")`, the frontend default) surface close-but-not-
 matching routes only when there are 0 strict matches, annotated with the literal gap. Shape is

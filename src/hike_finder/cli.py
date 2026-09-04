@@ -581,8 +581,8 @@ def _show_pois(args: argparse.Namespace, cfg) -> int:
     else:
         if not args.bbox:
             print(
-                "error: --show-pois needs --bbox (or --area FILE to browse a downloaded "
-                "area).",
+                "error: --show-pois needs an area: --place NAME, --bbox SOUTH WEST "
+                "NORTH EAST, or --area FILE to browse a downloaded one.",
                 file=sys.stderr,
             )
             return 2
@@ -672,8 +672,8 @@ def _show_ferrata(args: argparse.Namespace, cfg) -> int:
     else:
         if not args.bbox:
             print(
-                "error: --show-ferrata needs --bbox (or --area FILE to browse a "
-                "downloaded area).",
+                "error: --show-ferrata needs an area: --place NAME, --bbox SOUTH WEST "
+                "NORTH EAST, or --area FILE to browse a downloaded one.",
                 file=sys.stderr,
             )
             return 2
@@ -1263,7 +1263,8 @@ def run(args: argparse.Namespace) -> int:
 
     if not args.bbox:
         print(
-            "error: --bbox is required (or pass --area FILE to search a snapshot).",
+            "error: an area is required: --place NAME, --bbox SOUTH WEST NORTH EAST, "
+            "or --area FILE to search a snapshot.",
             file=sys.stderr,
         )
         return 2

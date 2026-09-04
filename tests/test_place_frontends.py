@@ -219,6 +219,49 @@ def test_place_index_without_any_name_is_rejected(monkeypatch, capsys):
     assert "gave none" in capsys.readouterr().err
 
 
+def test_place_feeds_the_download_and_browse_modes(monkeypatch):
+    """`--place` is simply another way to give `--bbox`, so it has to reach the modes
+    that take an area and draw no routes — saving a snapshot, and listing what is there.
+    Those dispatch on their own branches well before the search path, which is exactly
+    where a resolution wired only into the search would go missing."""
+    seen: dict = {}
+
+    def _download(bbox, cfg=None, **kw):
+        seen["download"] = bbox
+        raise SystemExit  # far enough: the bbox is what this test is about
+
+    def _pois(bbox, kinds, cfg, **kw):
+        seen["pois"] = bbox
+        return []
+
+    def _ferrata(bbox, cfg, **kw):
+        seen["ferrata"] = bbox
+        return []
+
+    monkeypatch.setattr("hike_finder.cli.download_area", _download)
+    monkeypatch.setattr("hike_finder.cli.list_area_pois", _pois)
+    monkeypatch.setattr("hike_finder.cli.list_area_ferrata", _ferrata)
+
+    with pytest.raises(SystemExit):
+        _run(["--place", "Spindleruv Mlyn", "--download", "out.json"], monkeypatch)
+    assert seen["download"] == (50.66, 15.53, 50.78, 15.69)
+
+    _run(["--place", "Spindleruv Mlyn", "--show-pois"], monkeypatch)
+    assert seen["pois"] == (50.66, 15.53, 50.78, 15.69)
+
+    _run(["--place", "Spindleruv Mlyn", "--show-ferrata"], monkeypatch)
+    assert seen["ferrata"] == (50.66, 15.53, 50.78, 15.69)
+
+
+def test_every_missing_area_message_names_place_too(monkeypatch, capsys):
+    """A user who mistypes a place name lands on one of these. Telling them to use
+    --bbox would send them back to the coordinates --place exists to spare them."""
+    for argv in (["--min-gain", "100"], ["--show-pois"], ["--show-ferrata"]):
+        assert _run(argv, monkeypatch)[0] == 2
+        err = capsys.readouterr().err
+        assert "--place" in err and "--bbox" in err and "--area" in err, argv
+
+
 # ------------------------------------------------------------------ the MCP server
 
 def _call(tool, args):

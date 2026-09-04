@@ -206,10 +206,16 @@ def test_run_area_mode_writes_gpx_and_geojson(tmp_path, capsys):
     assert "Wrote 1 route(s)" in capsys.readouterr().err
 
 
-def test_run_requires_bbox_without_area(capsys):
+def test_run_requires_an_area(capsys):
+    """The message names ALL three ways to give one — a name, the corners, a snapshot.
+
+    It is what a user sees after mistyping a place name, so telling them to use --bbox
+    would send them back to the coordinates --place exists to spare them.
+    """
     rc = run(build_parser().parse_args(["--min-gain", "100"]))
     assert rc == 2
-    assert "--bbox is required" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "--place" in err and "--bbox" in err and "--area" in err
 
 
 # --------------------------------------------------- points of interest + area listing
@@ -548,7 +554,9 @@ def test_show_pois_rejects_the_wrong_combinations(capsys):
     assert "lists objects without routing to them" in capsys.readouterr().err
     # Neither a box nor an area to look in.
     assert run(_parse("--show-pois")) == 2
-    assert "--show-pois needs --bbox" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "--show-pois needs an area" in err
+    assert "--place" in err and "--bbox" in err and "--area" in err
     # A typo'd kind is loud, not an empty list.
     assert run(_parse("--show-pois", "--bbox", "1", "2", "3", "4", "--poi", "dragon")) == 2
     assert "unknown point-of-interest kind" in capsys.readouterr().err

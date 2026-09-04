@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from hike_finder.cache import Cache, CachingPlaceSearch
-from hike_finder.config import Config
+from hike_finder.config import Config, load
 from hike_finder.geocode import (
     DEFAULT_NOMINATIM_SEARCH_URL,
     GeocodeError,
@@ -330,6 +330,20 @@ def test_place_min_km_is_configurable(stub_search):
     stub_search([_PEAK])
     res = resolve_place("Snezka", Config(place_min_km=8.0), cache=None)
     assert res.extent_km[0] == pytest.approx(8.0, abs=0.1)
+
+
+def test_the_place_knobs_are_read_from_the_environment(monkeypatch):
+    """The test above overrides the dataclass FIELD, which bypasses the env read — so it
+    proves the floor is honoured, not that the documented variable reaches it. Config
+    reads env per instantiation (``default_factory``), so this is the half that checks
+    the name in the README is the name in the code."""
+    monkeypatch.setenv("HIKE_PLACE_MIN_KM", "8")
+    monkeypatch.setenv("HIKE_PLACE_MATCHES", "9")
+    monkeypatch.setenv("HIKE_NOMINATIM_SEARCH_URL", "https://example.test/search")
+    cfg = load()
+    assert cfg.place_min_km == 8.0
+    assert cfg.place_matches == 9
+    assert cfg.nominatim_search_url == "https://example.test/search"
 
 
 def test_ambiguity_is_reported_not_resolved(stub_search):
