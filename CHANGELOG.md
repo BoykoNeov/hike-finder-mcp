@@ -120,6 +120,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`HIKE_ROUTES_MAX_FACTOR` is in the README's environment-variable table.** It was the
   one setting in `config.py` documented nowhere in the README at all.
 
+## [0.6.0] - 2026-08-10
+
 ### Added
 
 - **Via ferrata are a registered concept: `--ferrata` finds them, `--no-ferrata` keeps
