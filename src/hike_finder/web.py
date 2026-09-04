@@ -950,6 +950,29 @@ def _str(qs: dict, key: str) -> str | None:
     return v or None
 
 
+def build_criteria(qs: dict) -> Criteria:
+    """The filters a query asks for — the web's half of the three-frontend surface.
+
+    Named to match ``cli.build_criteria`` and ``server._criteria``, and lifted out of
+    the request handler for the same reason those two are separate functions: it is the
+    one place a filter reaches this frontend, so a parity test can drive all three from
+    one table (see ``tests/test_frontend_parity.py``). Raises ``ValueError`` on an
+    unknown POI kind, which the handler turns into a 400.
+    """
+    return Criteria(
+        min_gain_m=_num(qs, "min_gain_m"),
+        max_gain_m=_num(qs, "max_gain_m"),
+        min_distance_km=_num(qs, "min_distance_km"),
+        max_distance_km=_num(qs, "max_distance_km"),
+        circular=_tri(qs, "circular"),
+        car_access=_tri(qs, "car_access"),
+        chairlift_access=_tri(qs, "chairlift_access"),
+        transit_access=_tri(qs, "transit_access"),
+        poi_kinds=_poi_kinds(qs),
+        ferrata=_tri(qs, "ferrata"),
+    )
+
+
 def _poi_kinds(qs: dict, key: str = "poi") -> tuple[str, ...]:
     """The requested POI kinds, from repeated ``key=`` and/or comma-separated values.
 
@@ -1259,23 +1282,11 @@ class Handler(BaseHTTPRequestHandler):
         nowhere to put a sentence, and the search that produced it already showed one.
         """
         try:
-            poi_kinds = _poi_kinds(qs)
+            criteria = build_criteria(qs)
             to_poi_kinds = _poi_kinds(qs, "to_poi")
         except ValueError as e:
             return None, [], (400, {"error": str(e)})
         cfg = _cfg_for(qs)
-        criteria = Criteria(
-            min_gain_m=_num(qs, "min_gain_m"),
-            max_gain_m=_num(qs, "max_gain_m"),
-            min_distance_km=_num(qs, "min_distance_km"),
-            max_distance_km=_num(qs, "max_distance_km"),
-            circular=_tri(qs, "circular"),
-            car_access=_tri(qs, "car_access"),
-            chairlift_access=_tri(qs, "chairlift_access"),
-            transit_access=_tri(qs, "transit_access"),
-            poi_kinds=poi_kinds,
-            ferrata=_tri(qs, "ferrata"),
-        )
         # near_misses tri-state: absent -> "auto", true -> always, false -> never.
         nm = _tri(qs, "near_misses")
         near_miss = "auto" if nm is None else nm
