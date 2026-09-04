@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **MCP `find_hikes` accepts a bare area name**, like `list_pois` and `list_ferrata`
+  already did. `list_areas` prints a `name`; an LLM passes it straight back into the next
+  call, and on this tool — the one it calls most — that raised a `FileNotFoundError` from
+  deep inside `load_snapshot`, about a path the caller never typed, before any search or
+  any of its caveats ran. A path still wins; the named snapshot directory is the fallback,
+  and an unreadable file is a sentence naming what the caller actually wrote.
+  The three tools now share one `_read_area` helper rather than two copies and an
+  omission. That is the fix worth having: the fallback was written twice and the third
+  tool went five releases without it, which is the same shape as the ferrata caveat
+  reaching three frontends on three different days. A new test reads all three replies to
+  the same unknown name and asserts they are identical, so a fourth tool has to agree on
+  purpose. Also pinned: an explicit path still wins over a same-stemmed file in the
+  snapshot directory.
+
 ### Fixed
 
 - **A short route is no longer labelled a loop because 150 m is a long way for it.**

@@ -191,9 +191,10 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                     },
                     "area": {
                         "type": "string",
-                        "description": "Path to a snapshot from download_area. When set, the "
+                        "description": "An already-downloaded area to search. When set, the "
                         "search runs OFFLINE against the snapshot and south/west/north/east "
-                        "are ignored.",
+                        "are ignored. Accepts either a path written by download_area OR the "
+                        "bare `name` shown by list_areas.",
                     },
                     "compose_loops": {
                         "type": "boolean",
@@ -459,8 +460,7 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                         "type": "string",
                         "description": "An already-downloaded area to list, with zero network — "
                         "takes the place of the bounding box. Accepts either a path written by "
-                        "download_area OR the bare `name` shown by list_areas (note that "
-                        "find_hikes(area=…) takes a path only).",
+                        "download_area OR the bare `name` shown by list_areas.",
                     },
                     "kinds": {
                         "type": "array",
@@ -804,6 +804,39 @@ def _ferrata_caveat(snapshot, criteria: Criteria) -> str:
     )
 
 
+async def _read_area(area: str) -> tuple[object | None, list[TextContent] | None]:
+    """Read a saved area given EITHER a path OR the bare name ``list_areas`` prints.
+
+    Returns ``(snapshot, None)`` or ``(None, [TextContent])`` — exactly one of the two is
+    filled, so a caller's whole obligation is ``if err is not None: return err``.
+
+    Two behaviours, and both exist because of how this frontend is driven. An LLM reads a
+    ``name`` out of ``list_areas`` and passes it straight back; a path wins when one is
+    given, and otherwise the named snapshot directory is tried, so that name works here
+    verbatim. And a file that cannot be read comes back as a SENTENCE naming what the
+    caller actually typed, not as a ``FileNotFoundError`` raised from deep inside
+    ``load_snapshot`` about a path they never wrote.
+
+    Shared by all three area-reading tools rather than copied into each. It was copied
+    into two of them, and the third — ``find_hikes``, the tool an LLM calls most — never
+    got the copy and raised on a bare name. That is this project's recurring shape: the
+    ferrata caveat reached its three frontends on three different days. One function is
+    what makes "all three agree" checkable instead of remembered.
+    """
+    path = area
+    if not os.path.isfile(path):
+        named = snapshot_path(path)
+        if named is not None and named.is_file():
+            path = str(named)
+    try:
+        return await asyncio.to_thread(load_snapshot, path), None
+    except (OSError, ValueError) as e:
+        return None, [TextContent(type="text", text=(
+            f"Could not read the area {area!r}: {e}. Pass a path written by "
+            f"download_area, or the bare name of an area shown by list_areas."
+        ))]
+
+
 async def _call_find_hikes(arguments: dict) -> list[TextContent]:
     criteria = _criteria(arguments)
     near_miss = _near_miss(arguments)
@@ -816,7 +849,12 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
     diagnostics: dict = {}
     # Offline: search a saved snapshot (no network), bbox comes from the snapshot.
     if area_path:
-        snap = await asyncio.to_thread(load_snapshot, area_path)
+        # A bare name works here too (see _read_area). It is the input an LLM has just
+        # read out of `list_areas`, and until this went through the shared helper this
+        # tool — alone among the three that take an `area` — raised on it.
+        snap, err = await _read_area(area_path)
+        if err is not None:
+            return err
         hikes = await asyncio.to_thread(
             search_snapshot, snap, criteria, _cfg(arguments), near_miss=near_miss,
             name_places=name_places
@@ -917,20 +955,9 @@ async def _call_list_pois(arguments: dict) -> list[TextContent]:
     # A live listing is always "ok" — the fetch just happened against this build.
     gap_state, gap_kinds = "ok", ()
     if area_path:
-        # A path wins; otherwise fall back to the NAMED snapshot directory, so the name an
-        # LLM just read out of list_areas works here verbatim instead of raising a bare
-        # FileNotFoundError from deep inside load_snapshot.
-        if not os.path.isfile(area_path):
-            named = snapshot_path(area_path)
-            if named is not None and named.is_file():
-                area_path = str(named)
-        try:
-            snap = await asyncio.to_thread(load_snapshot, area_path)
-        except (OSError, ValueError) as e:
-            return [TextContent(type="text", text=(
-                f"Could not read the area {arguments['area']!r}: {e}. Pass a path written by "
-                f"download_area, or the bare name of an area shown by list_areas."
-            ))]
+        snap, err = await _read_area(area_path)
+        if err is not None:
+            return err
         # Read BEFORE the listing: an empty result from a pre-POI snapshot is not an
         # answer about the landscape, and an LLM client will report it as one unless the
         # difference is spelled out in the text it gets back.
@@ -999,17 +1026,9 @@ async def _call_list_ferrata(arguments: dict) -> list[TextContent]:
     """The cabled inventory: what via ferrata are here, with no route drawn to any."""
     area_path = arguments.get("area")
     if area_path:
-        if not os.path.isfile(area_path):
-            named = snapshot_path(area_path)
-            if named is not None and named.is_file():
-                area_path = str(named)
-        try:
-            snap = await asyncio.to_thread(load_snapshot, area_path)
-        except (OSError, ValueError) as e:
-            return [TextContent(type="text", text=(
-                f"Could not read the area {arguments['area']!r}: {e}. Pass a path written "
-                f"by download_area, or the bare name of an area shown by list_areas."
-            ))]
+        snap, err = await _read_area(area_path)
+        if err is not None:
+            return err
         # Read BEFORE the listing, like the POI gap above: a pre-ferrata file returns an
         # empty tuple, and an LLM client will report that as "there are none there"
         # unless the difference arrives in the text.

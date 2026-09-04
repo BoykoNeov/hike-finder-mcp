@@ -649,6 +649,24 @@ thing is validated live against real OSM. Highlights:
   route's OWN `ferrata 5.6 km` flag in its `<desc>`, so "the document says nothing about
   ferrata" is the wrong property — "the document does not carry the CAVEAT" is the right
   one.
+- **All three area tools read an area the same way** (`server._read_area`). `find_hikes`
+  called `load_snapshot(area_path)` straight, so `find_hikes(area="cortina")` — the bare
+  `name` an LLM has just read out of `list_areas` — raised a `FileNotFoundError` from deep
+  inside the loader, about a path the caller never typed, before any search or caveat ran.
+  `list_pois` and `list_ferrata` each already tried the path, fell back to the named
+  snapshot directory, and turned a read failure into a sentence; the fix is one helper
+  they all three call, not a third copy. Wording unchanged, so the two tools that had it
+  keep their exact reply.
+  The seam is the point rather than the two lines of logic: this fallback was written
+  twice and the third tool went five releases without it, which is the same shape as the
+  ferrata caveat reaching three frontends on three different days. `test_the_three_area
+  _tools_answer_an_unknown_name_identically` reads all three replies and compares them, so
+  a fourth tool, or a reworded one, has to agree on purpose. Two more tests pin what the
+  helper decides: a bare name resolves, and an explicit path still WINS over a
+  same-stemmed file in the snapshot directory (the fallback only fires when the argument
+  is not itself a readable file). The `find_hikes` schema now says so too — and the
+  `list_pois` schema's "note that `find_hikes(area=…)` takes a path only" is gone, which
+  is the kind of sentence that outlives the fact it describes.
 - **All three frontends validated live**, including the MCP server over real stdio.
 - **Repo hygiene**: MIT license, CHANGELOG, complete pyproject, and CI across Linux 3.10–3.14 +
   Windows; v0.1.0 through v0.6.0 tagged + GitHub-released. **CI being green is a
@@ -685,13 +703,8 @@ skip without the `mcp` extra).
   - The web's *point-based* modes (`--around`, `--from/--to`, `--via`, `--to-poi`) return
     `notices: []` unconditionally, because they build their own bbox and their failure
     shapes are already worded in the page. Nothing computes a notice for them yet.
-  - **MCP `find_hikes` cannot take a bare area name**, unlike `list_pois` and
-    `list_ferrata`, which try the path, fall back to the NAMED snapshot directory
-    (`snapshot_path`), and turn a read failure into a sentence. `_call_find_hikes` calls
-    `load_snapshot(area_path)` straight, so `find_hikes(area="cortina")` — the name an
-    LLM just read out of `list_areas` — raises before any of the search or its caveats
-    happen. A real inconsistency between tools on one server, and a separate task: the
-    fix is the two helpers those handlers already share the shape of, not more wording.
+  - ~~MCP `find_hikes` cannot take a bare area name~~ — fixed; see "All three area tools
+    read an area the same way" under What is DONE.
 - **`--show-ferrata` cannot export.** `--gpx`/`--geojson` are named in its ignored-flags
   note rather than wired up, because `ferrata.FerrataLine` carries only a start point,
   not the cabled line's geometry. Exporting means widening that record and adding a

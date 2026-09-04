@@ -1066,3 +1066,67 @@ def test_no_routes_and_the_ferrata_gap_are_both_said_when_both_are_true(tmp_path
     alone = _call("find_hikes", {"area": path, "ferrata": False}).content[0].text
     assert alone == server.no_routes_message()
     assert "ferrata" not in alone.lower()
+
+
+# ---------------------------------------- find_hikes takes a bare area name, like the rest
+#
+# `list_areas` prints a `name`; an LLM passes it straight back into the next call. That
+# worked on `list_pois` and `list_ferrata` and raised on `find_hikes` — the tool most
+# likely to receive it — because the path->named-directory fallback had been written twice
+# and never a third time. The three now share `server._read_area`, and these tests pin the
+# shared behaviour on the handler that lacked it.
+
+
+def test_find_hikes_accepts_a_bare_area_name(tmp_path, monkeypatch):
+    """The name out of list_areas, used verbatim, with no path anywhere in the call."""
+    monkeypatch.setenv("HIKE_SNAPSHOT_DIR", str(tmp_path))
+    from hike_finder.snapshot import snapshot_path
+
+    _ferrata_snapshot(snapshot_path("cortina"))
+    result = _call("find_hikes", {"area": "cortina"})
+    assert not result.is_error
+    # The real route out of the fixture, measured by the real engine — not an error and
+    # not an empty list dressed up as an answer.
+    assert "Cable ridge" in result.content[0].text
+
+
+def test_find_hikes_unreadable_area_is_a_message_not_a_traceback(tmp_path):
+    """A name that matches no file is a sentence naming what the caller typed.
+
+    Same wording as list_pois/list_ferrata, from the same function: three tools answering
+    one mistake three ways is three chances to send the reader somewhere else.
+    """
+    result = _call("find_hikes", {"area": str(tmp_path / "nope.json")})
+    text = result.content[0].text
+    assert "Could not read the area" in text
+    assert "shown by list_areas" in text
+    # The path the caller wrote, not one the fallback rewrote it into.
+    assert "nope.json" in text
+
+
+def test_the_three_area_tools_answer_an_unknown_name_identically(tmp_path):
+    """The parity this refactor exists for, asserted rather than remembered.
+
+    `find_hikes` diverged for five releases without anything failing. A test that reads
+    all three replies is what turns "they agree" into something a future change trips on.
+    """
+    missing = str(tmp_path / "nope.json")
+    texts = [
+        _call(tool, {"area": missing}).content[0].text
+        for tool in ("find_hikes", "list_pois", "list_ferrata")
+    ]
+    assert len(set(texts)) == 1, texts
+
+
+def test_a_bare_name_still_loses_to_a_real_path(tmp_path, monkeypatch):
+    """A path wins over a same-named file in the snapshot directory.
+
+    The fallback only fires when the argument is not itself a readable file, so an
+    explicit path can never be shadowed by a snapshot that happens to share its stem.
+    """
+    monkeypatch.setenv("HIKE_SNAPSHOT_DIR", str(tmp_path / "snaps"))
+    from hike_finder.snapshot import snapshot_path
+
+    _ferrata_snapshot(snapshot_path("dupe"), routes=[])          # named: no routes at all
+    explicit = _ferrata_snapshot(tmp_path / "dupe.json")         # the path: one real route
+    assert "Cable ridge" in _call("find_hikes", {"area": explicit}).content[0].text
