@@ -129,6 +129,27 @@ def test_list_tools_advertises_find_hikes(monkeypatch):
     assert dl["required"] == ["south", "west", "north", "east", "path"]
 
 
+def test_every_tool_serialises_its_schema_under_the_wire_name():
+    """The field is `input_schema` in Python and `inputSchema` on the wire.
+
+    `mcp.types.Tool` accepts either spelling at construction, so a server built with
+    the wrong one still runs locally and still passes every test that reads the model
+    back as an object — and then advertises tools no client can read. This asserts the
+    serialised form, which is the only place the difference shows.
+    """
+
+    async def _impl():
+        async with create_connected_server_and_client_session(server.app) as session:
+            return await session.list_tools()
+
+    result = asyncio.run(_impl())
+    assert result.tools
+    for tool in result.tools:
+        wire = tool.model_dump(by_alias=True)
+        assert "inputSchema" in wire, tool.name
+        assert wire["inputSchema"]["type"] == "object", tool.name
+
+
 def test_call_tool_maps_arguments_and_renders(monkeypatch):
     captured = {}
 

@@ -28,6 +28,7 @@ import asyncio
 import json
 import os
 from dataclasses import replace
+from typing import Any
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -64,7 +65,13 @@ from .search import (
     snapshot_kinds_missing_message,
     snapshot_poi_gap,
 )
-from .snapshot import list_snapshots, load_snapshot, save_snapshot, snapshot_path
+from .snapshot import (
+    AreaSnapshot,
+    list_snapshots,
+    load_snapshot,
+    save_snapshot,
+    snapshot_path,
+)
 
 CFG = _config.load()
 
@@ -149,7 +156,7 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                 "Target length comes from min/max_distance_km (default 3-15 km); results "
                 "are stitched from several trails and have no single relation id."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "south": {"type": "number"},
@@ -235,7 +242,7 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                 "chairlift_access to require a parking lot / lift near the loop. Results are "
                 "stitched from several trails and have no single OSM relation id."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "lat": {"type": "number", "description": "Latitude of the point."},
@@ -289,7 +296,7 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                 "route's length; a point more than ~2 km from any trail is treated as off-network "
                 "and yields no routes. Results are stitched from several trails (no single OSM id)."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "start_lat": {"type": "number"},
@@ -332,7 +339,7 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                 "from any trail, or a leg crossing a gap in the network, yields no route. Results "
                 "are stitched from several trails (no single OSM id)."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "points": {
@@ -389,7 +396,7 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                 "of that kind mapped nearby / found but off-network / too far to route to), "
                 "because they need different fixes."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "lat": {"type": "number", "description": "Latitude of the start point."},
@@ -457,7 +464,7 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                 "points to load into a GPS. An empty result means nothing of that kind is "
                 "MAPPED in OSM there, not that nothing is there."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "south": {"type": "number"},
@@ -511,7 +518,7 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                 "rank them without checking which scale applies). An empty result means "
                 "nothing is TAGGED as cabled in OSM there, not that nothing is there."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "south": {"type": "number"},
@@ -543,7 +550,7 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                 "no further API calls. Use it to avoid re-hitting the rate-limited elevation "
                 "API while exploring an area with different filters."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "south": {"type": "number"},
@@ -576,7 +583,7 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                 "directly. An entry reporting 0 points of interest predates the POI feature "
                 "and cannot answer a `poi` search until it is re-downloaded."
             ),
-            inputSchema={"type": "object", "properties": {}, "required": []},
+            input_schema={"type": "object", "properties": {}, "required": []},
         ),
     ])
 
@@ -851,11 +858,12 @@ def _ferrata_caveat(snapshot, criteria: Criteria) -> str:
     )
 
 
-async def _read_area(area: str) -> tuple[object | None, list[TextContent] | None]:
+async def _read_area(area: str) -> AreaSnapshot | list[TextContent]:
     """Read a saved area given EITHER a path OR the bare name ``list_areas`` prints.
 
-    Returns ``(snapshot, None)`` or ``(None, [TextContent])`` — exactly one of the two is
-    filled, so a caller's whole obligation is ``if err is not None: return err``.
+    Returns the snapshot, or the sentence to hand back instead. One value rather than a
+    pair, so "exactly one of the two is filled" is a fact about the type instead of a
+    promise in prose: a caller's whole obligation is ``if isinstance(x, list): return x``.
 
     Two behaviours, and both exist because of how this frontend is driven. An LLM reads a
     ``name`` out of ``list_areas`` and passes it straight back; a path wins when one is
@@ -876,9 +884,9 @@ async def _read_area(area: str) -> tuple[object | None, list[TextContent] | None
         if named is not None and named.is_file():
             path = str(named)
     try:
-        return await asyncio.to_thread(load_snapshot, path), None
+        return await asyncio.to_thread(load_snapshot, path)
     except (OSError, ValueError) as e:
-        return None, [TextContent(type="text", text=(
+        return [TextContent(type="text", text=(
             f"Could not read the area {area!r}: {e}. Pass a path written by "
             f"download_area, or the bare name of an area shown by list_areas."
         ))]
@@ -894,14 +902,19 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
     # Facts about the fetch the hikes can't carry (see search.area_has_no_routes); the
     # offline branch reads the same thing straight off the snapshot's own area.
     diagnostics: dict = {}
+    # The saved area, on an offline search; `None` on the live path. The two reads
+    # after the branch key off THIS rather than off `area_path`, so each is tied to
+    # the snapshot it actually has in hand.
+    saved: AreaSnapshot | None = None
     # Offline: search a saved snapshot (no network), bbox comes from the snapshot.
     if area_path:
         # A bare name works here too (see _read_area). It is the input an LLM has just
         # read out of `list_areas`, and until this went through the shared helper this
         # tool — alone among the three that take an `area` — raised on it.
-        snap, err = await _read_area(area_path)
-        if err is not None:
-            return err
+        snap = await _read_area(area_path)
+        if isinstance(snap, list):
+            return snap
+        saved = snap
         hikes = await asyncio.to_thread(
             search_snapshot, snap, criteria, _cfg(arguments), near_miss=near_miss,
             name_places=name_places
@@ -917,7 +930,7 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
         composing = arguments.get("compose_loops")
         search = compose_loops if composing else search_hikes
         # Naming only applies to ordinary routes — composed loops carry their own label.
-        kwargs = {"near_miss": near_miss, "diagnostics": diagnostics}
+        kwargs: dict[str, Any] = {"near_miss": near_miss, "diagnostics": diagnostics}
         if not composing:
             kwargs["name_places"] = name_places
         hikes = await asyncio.to_thread(search, bbox, criteria, _cfg(arguments), **kwargs)
@@ -930,7 +943,7 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
     # `ferrata_gap_message` is provably None, and a seam that can never fire reads as one
     # that might. Recomputed rather than plumbed out of `search_snapshot`, which already
     # logs it — a log line reaches a terminal, not a client's reply text.
-    caveat = _ferrata_caveat(snap, criteria) if area_path else ""
+    caveat = _ferrata_caveat(saved, criteria) if saved is not None else ""
 
     if not hikes:
         composing = arguments.get("compose_loops") and not area_path
@@ -960,7 +973,9 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
         # result. Offline it comes straight off the snapshot's own area; live, the search
         # filled it during the fetch that already happened.
         no_routes = (
-            area_has_no_routes(snap.area) if area_path else diagnostics.get("no_routes")
+            area_has_no_routes(saved.area)
+            if saved is not None
+            else diagnostics.get("no_routes")
         )
         if no_routes:
             msg = no_routes_message()
@@ -1000,11 +1015,14 @@ async def _call_list_pois(arguments: dict) -> list[TextContent]:
     area_path = arguments.get("area")
     # Which of the four coverage cases the source is in (see search.snapshot_poi_gap).
     # A live listing is always "ok" — the fetch just happened against this build.
-    gap_state, gap_kinds = "ok", ()
+    gap_state: str = "ok"
+    # `None` (not `()`) when the file cannot say which kinds it holds — the third
+    # answer `snapshot_poi_gap` returns, which the callers below spell `or ()`.
+    gap_kinds: tuple[str, ...] | None = ()
     if area_path:
-        snap, err = await _read_area(area_path)
-        if err is not None:
-            return err
+        snap = await _read_area(area_path)
+        if isinstance(snap, list):
+            return snap
         # Read BEFORE the listing: an empty result from a pre-POI snapshot is not an
         # answer about the landscape, and an LLM client will report it as one unless the
         # difference is spelled out in the text it gets back.
@@ -1073,9 +1091,9 @@ async def _call_list_ferrata(arguments: dict) -> list[TextContent]:
     """The cabled inventory: what via ferrata are here, with no route drawn to any."""
     area_path = arguments.get("area")
     if area_path:
-        snap, err = await _read_area(area_path)
-        if err is not None:
-            return err
+        snap = await _read_area(area_path)
+        if isinstance(snap, list):
+            return snap
         # Read BEFORE the listing, like the POI gap above: a pre-ferrata file returns an
         # empty tuple, and an LLM client will report that as "there are none there"
         # unless the difference arrives in the text.

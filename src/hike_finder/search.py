@@ -33,6 +33,7 @@ from . import config as _config
 from . import ferrata as _ferrata
 from . import poi as _poi
 from .compose import (
+    ComposedLoop,
     _assemble,
     _dijkstra,
     assemble_loop_series,
@@ -263,7 +264,7 @@ def _measure_composed(
     # route back to its provenance after find_hikes (which preserves osm_id per Hike). Each
     # route's elevation series is pre-assembled from the shared per-segment lookups above and
     # handed to find_hikes, so its elevation pass skips the redundant whole-route resample.
-    route_by_id: dict[int, object] = {}
+    route_by_id: dict[int, ComposedLoop] = {}
     syn_routes: list[dict] = []
     pre_elev_by_id: dict[int, list[float]] = {}
     pre_points_by_id: dict[int, list] = {}
@@ -339,7 +340,7 @@ def _measure_composed(
         if route is not None:
             h.composed = True
             h.composed_of = route.refs
-            if getattr(route, "anchor", None) is not None:
+            if route.anchor is not None:
                 # Access-anchored loop: start at the trailhead you drive/ride to (the on-route
                 # point nearest your parking/lift), not the geometric head. Label only — the
                 # coords stay unrotated, so gain/loss is byte-identical to an unanchored run.
@@ -1225,7 +1226,7 @@ def download_area(
             labelled, len(places),
         )
     return AreaSnapshot(
-        bbox=tuple(bbox),
+        bbox=bbox,
         area=area,
         elevations=recorder.samples,
         sample_interval_m=cfg.sample_interval_m,

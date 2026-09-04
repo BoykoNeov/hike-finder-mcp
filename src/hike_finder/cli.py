@@ -1023,6 +1023,8 @@ def run(args: argparse.Namespace) -> int:
                     "network, or the linked route falls outside --min/--max-distance."
                 )
             elif to_poi:
+                # --to-poi without --from was rejected above.
+                assert from_pt is not None
                 hikes = routes_to_poi(
                     (from_pt[0], from_pt[1]),
                     to_poi,
@@ -1045,6 +1047,8 @@ def run(args: argparse.Namespace) -> int:
                     "not that nothing is there.)"
                 )
             else:
+                # Validated above: --to needs --from, --from needs a destination.
+                assert from_pt is not None and to_pt is not None
                 hikes = routes_between(
                     (from_pt[0], from_pt[1]),
                     (to_pt[0], to_pt[1]),
@@ -1146,7 +1150,8 @@ def run(args: argparse.Namespace) -> int:
     used_before, _ = api_quota_snapshot(cfg)
     # Filled by the search with facts about the fetch that the hikes can't carry — here,
     # whether the area had any route relations at all (see search.area_has_no_routes).
-    diagnostics: dict = {}
+    # Same name as the point modes' out-parameter above; that branch has returned by now.
+    diagnostics = {}
     kwargs = {
         "cfg": cfg,
         "user_agent": args.user_agent,
@@ -1201,8 +1206,13 @@ def main(argv: list[str] | None = None) -> None:
     # the summary uses an em-dash. On Windows the console defaults to cp1252, which
     # can't encode them and would crash on print — force UTF-8, degrade if it can't.
     for stream in (sys.stdout, sys.stderr):
+        # A redirected stream (a StringIO under test, a pipe wrapper) may not offer
+        # `reconfigure` at all — hence the suppress, and the getattr that says so.
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
         with contextlib.suppress(AttributeError, ValueError):
-            stream.reconfigure(encoding="utf-8", errors="replace")
+            reconfigure(encoding="utf-8", errors="replace")
     sys.exit(run(build_parser().parse_args(argv)))
 
 

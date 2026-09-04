@@ -80,25 +80,37 @@ class DailyQuota:
 
     # -- internals (callers below hold _LOCK) -------------------------------
 
+    @property
+    def _state_file(self) -> Path:
+        """``self.path``, which is set for exactly as long as the quota is enabled.
+
+        Every caller of ``_read``/``_write`` gates on ``self.enabled`` first, so the
+        raise below is a statement of that invariant rather than a reachable path.
+        """
+        if self.path is None:  # pragma: no cover - guarded by `enabled` at every use
+            raise RuntimeError("quota tracking is disabled; there is no state file")
+        return self.path
+
     def _today(self) -> str:
         return self._now().date().isoformat()
 
     def _read(self) -> tuple[str, int]:
         """(date, count) from disk, or (today, 0) if missing/corrupt."""
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            data = json.loads(self._state_file.read_text(encoding="utf-8"))
             return str(data["date"]), int(data["count"])
         except (OSError, ValueError, KeyError, TypeError):
             return self._today(), 0
 
     def _write(self, date: str, count: int) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        state_file = self._state_file
+        state_file.parent.mkdir(parents=True, exist_ok=True)
         # Atomic replace so a concurrent reader never sees a half-written file.
-        fd, tmp = tempfile.mkstemp(dir=str(self.path.parent), suffix=".tmp")
+        fd, tmp = tempfile.mkstemp(dir=str(state_file.parent), suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump({"date": date, "count": count}, f)
-            os.replace(tmp, self.path)
+            os.replace(tmp, state_file)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)

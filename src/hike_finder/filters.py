@@ -16,6 +16,7 @@ distance/shape/access.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .access import (
@@ -385,7 +386,7 @@ class Criteria:
 def _route_start(
     line: list[Coord],
     termini: list[Coord],
-    access_points: list[Coord] = (),
+    access_points: Sequence[Coord] = (),
     weld_m: float = 1.0,
 ) -> Coord:
     """Pick the start-marker coordinate.
@@ -543,6 +544,9 @@ def measure_geometry(
     # to `ways`; an EMPTY list means the data predates the member-tag fetch, so the
     # summaries stay None rather than claiming a fully untagged route.
     way_tags = route.get("way_tags") or []
+    members: list[tuple[list[Coord], dict]] | None
+    surface_summary: SurfaceSummary | None
+    tracktype_summary: SurfaceSummary | None
     if way_tags:
         # strict: `way_tags` is parallel to `ways` by construction in BOTH producers
         # (overpass.parse_area and compose.clip_routes_to_bbox, which rebuilds it).
@@ -910,7 +914,11 @@ def find_hikes(
             gain_threshold_m=gain_threshold_m,
             smooth_window=smooth_window,
             loop_tolerance_m=loop_tolerance_m,
-            pre_elevations=pre_elevations_by_id.get(hike.osm_id) if use_pre else None,
+            pre_elevations=(
+                pre_elevations_by_id.get(hike.osm_id)
+                if pre_elevations_by_id is not None
+                else None
+            ),
             pre_points=pre_points_by_id.get(hike.osm_id) if pre_points_by_id else None,
             use_presampled=use_pre,
         )
@@ -931,15 +939,21 @@ def find_hikes(
                 gain_threshold_m=gain_threshold_m,
                 smooth_window=smooth_window,
                 loop_tolerance_m=loop_tolerance_m,
-                pre_elevations=pre_elevations_by_id.get(hike.osm_id) if use_pre else None,
+                pre_elevations=(
+                    pre_elevations_by_id.get(hike.osm_id)
+                    if pre_elevations_by_id is not None
+                    else None
+                ),
                 pre_points=pre_points_by_id.get(hike.osm_id) if pre_points_by_id else None,
                 use_presampled=use_pre,
             )
         # Candidates: strict survivors that failed only on gain, plus the relaxed
         # pool. Each gets notes (or is dropped if it misses too hard — gain only).
-        candidates = [h for h, _ in strict_survivors if not criteria.accepts_gain(h)]
-        candidates += [h for h, _ in relaxed_only]
-        for h in candidates:
+        near_candidates = [
+            h for h, _ in strict_survivors if not criteria.accepts_gain(h)
+        ]
+        near_candidates += [h for h, _ in relaxed_only]
+        for h in near_candidates:
             notes = criteria.near_miss_notes(
                 h,
                 gain_frac=near_miss_gain_frac,

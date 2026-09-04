@@ -29,7 +29,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from itertools import pairwise
-from typing import NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from .access import _bbox_pad
 from .geometry import (
@@ -39,6 +39,9 @@ from .geometry import (
     project_on_polyline,
     resample_by_distance,
 )
+
+if TYPE_CHECKING:  # no runtime import: compose stays unaware of poi.py
+    from .poi import PoiHit
 
 # Same coincidence tolerance as geometry._vertex_graph: merges vertices that are
 # the same OSM node despite float noise, well below trail vertex spacing so it
@@ -330,6 +333,11 @@ class ComposedLoop:
     # per-segment elevation lists concatenate in exactly the loop's geometric order.
     start_node: int = -1
     ordered_segs: tuple[int, ...] = ()
+    # The object a route was drawn TO (`search.routes_to_poi`). Declared here so the
+    # attribute is part of the record rather than bolted on at runtime, but under
+    # TYPE_CHECKING only: composition itself never sets, reads or imports POIs, and
+    # the string annotation keeps that true at run time as well as in the design.
+    destination: PoiHit | None = None
 
 
 class ComposeResult(NamedTuple):
@@ -641,7 +649,10 @@ def find_loops(
 
     seen: set[frozenset[int]] = set()
     found: list[ComposedLoop] = []
-    state = {"exp": 0, "capped": False}
+    # `exp` counts expansions, `capped` records hitting the budget. One dict so the
+    # nested `dfs` can mutate both without a `nonlocal` per counter; typed loosely
+    # because the two values are not the same kind of thing.
+    state: dict[str, Any] = {"exp": 0, "capped": False}
 
     def dfs(start: int, cur: int, path: list[int], length: float, visited: set[int]) -> None:
         if state["exp"] >= budget:
@@ -820,6 +831,7 @@ def snap_points(
             cand = (d, sid, pos)
             if best is None or cand < (best[0], best_sid, best[1]):
                 best, best_sid = (d, pos, coord), sid
+        assert best is not None  # every graph reaching here has a usable segment
         snaps.append({"sid": best_sid, "dist": best[0], "pos": best[1], "coord": best[2]})
 
     coords = list(graph.coords)

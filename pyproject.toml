@@ -95,3 +95,13 @@ ignore = [
 # promoting internals to the public surface just to test them. The rule stays on for
 # `src`, where reaching into another module's privates is a design smell.
 "tests/*" = ["SLF001"]
+
+# mypy. Scope is `src` only: the tests are full of deliberately half-built dicts and
+# monkeypatched stand-ins, and annotating those to a checker's satisfaction would make
+# them harder to read for no gain. `python_version` is the floor the package claims,
+# not whatever interpreter happens to run the job.
+[tool.mypy]
+files = ["src/hike_finder"]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = true

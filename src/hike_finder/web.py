@@ -1353,7 +1353,10 @@ class Handler(BaseHTTPRequestHandler):
         # N shortest routes between two picked points (derives its own area).
         f_lat, f_lon = _num(qs, "from_lat"), _num(qs, "from_lon")
         t_lat, t_lon = _num(qs, "to_lat"), _num(qs, "to_lon")
-        if None not in (f_lat, f_lon, t_lat, t_lon):
+        if (
+            f_lat is not None and f_lon is not None
+            and t_lat is not None and t_lon is not None
+        ):
             k = _num(qs, "routes_k")
             diagnostics = {}
             try:

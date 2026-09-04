@@ -297,8 +297,11 @@ def transit_access(
     best_rail: tuple[float, str] | None = None
     best_road: tuple[float, str] | None = None
     for stop in transit:
-        kind = stop.get("kind")
-        spec = TRANSIT_KINDS.get(kind or "")
+        # Read as a string up front: `kind` reaches `_transit_radius` and the
+        # best-so-far tuples below, and a missing key is not a registered kind
+        # anyway (the lookup on the next line drops it).
+        kind = str(stop.get("kind") or "")
+        spec = TRANSIT_KINDS.get(kind)
         if spec is None:
             continue
         slat, slon = stop["coord"]

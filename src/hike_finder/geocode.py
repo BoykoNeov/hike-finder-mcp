@@ -96,16 +96,17 @@ class NominatimGeocoder(Geocoder):
 
         lat, lon = point
         self._throttle()
+        params: dict[str, str | float | int] = {
+            "format": "jsonv2",
+            "lat": lat,
+            "lon": lon,
+            "zoom": self.zoom,
+            "addressdetails": 1,
+        }
         try:
             resp = requests.get(
                 self.endpoint,
-                params={
-                    "format": "jsonv2",
-                    "lat": lat,
-                    "lon": lon,
-                    "zoom": self.zoom,
-                    "addressdetails": 1,
-                },
+                params=params,
                 headers={"User-Agent": self.user_agent},
                 timeout=self.timeout,
             )

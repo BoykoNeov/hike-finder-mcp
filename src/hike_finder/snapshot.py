@@ -54,6 +54,7 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from .elevation.base import Coord, ElevationError, ElevationProvider
 from .geocode import Geocoder
@@ -246,7 +247,7 @@ def _route_to_json(r: dict) -> dict:
 
 
 def _area_to_json(area: AreaData) -> dict:
-    out = {
+    out: dict[str, Any] = {
         "routes": [_route_to_json(r) for r in area.routes],
         "parking": [
             {"coord": [p["coord"][0], p["coord"][1]], "name": p.get("name")}
@@ -423,7 +424,7 @@ def snapshot_from_json(d: dict) -> AreaSnapshot:
             f"unsupported snapshot version {d.get('version')!r} "
             f"(this build reads v{SNAPSHOT_VERSION}) — re-download the area"
         )
-    bbox = tuple(d["bbox"])  # type: ignore[assignment]
+    bbox = tuple(d["bbox"])
     elevations: dict[Coord, float] = {}
     for key, elev in d.get("elevations", {}).items():
         lat_s, lon_s = key.split(",")

@@ -35,7 +35,7 @@ import xml.etree.ElementTree as ET
 from .base import Coord, ElevationError, ElevationProvider
 
 try:
-    import rasterio  # type: ignore
+    import rasterio
 
     _HAVE_RASTERIO = True
 except Exception:  # noqa: BLE001  # pragma: no cover - optional heavy dep

@@ -242,8 +242,14 @@ def parse_area(elements: list[dict]) -> AreaData:
     # set is stamped here for the same reason and in the same breath: this function IS
     # where `poi.classify` runs, so the registry it was classified against is exactly the
     # one this build has. Recording it anywhere else would be a second source of truth.
+    transit_stops: list[dict] = []
+    ferrata_routes: list[dict] = []
+    ferrata_ways: list[dict] = []
     area = AreaData(
-        transit=[], poi_kinds=_poi.all_kinds(), ferrata_routes=[], ferrata_ways=[]
+        transit=transit_stops,
+        poi_kinds=_poi.all_kinds(),
+        ferrata_routes=ferrata_routes,
+        ferrata_ways=ferrata_ways,
     )
     # FIRST: the tag-only member-way records from `way(r); out tags;`, keyed by way id
     # so the relation branch below can join them onto its members. They must also be
@@ -285,7 +291,7 @@ def parse_area(elements: list[dict]) -> AreaData:
             # same downstream machinery — but filed apart, so it can only ever surface
             # through a search that asked for it. See AreaData.ferrata_routes.
             bucket = (
-                area.ferrata_routes
+                ferrata_routes
                 if route_kind == _ferrata.FERRATA_ROUTE
                 else area.routes
             )
@@ -319,7 +325,7 @@ def parse_area(elements: list[dict]) -> AreaData:
             ident = el.get("id")
             if geom and ident not in seen_ferrata_ways:
                 seen_ferrata_ways.add(ident)
-                area.ferrata_ways.append(
+                ferrata_ways.append(
                     {
                         "id": ident,
                         "coords": [(pt["lat"], pt["lon"]) for pt in geom],
@@ -351,7 +357,7 @@ def parse_area(elements: list[dict]) -> AreaData:
             coord = _representative_coord(el)
             if coord and ident not in seen_transit:
                 seen_transit.add(ident)
-                area.transit.append(
+                transit_stops.append(
                     {"coord": coord, "kind": kind, "name": tags.get("name")}
                 )
         else:

@@ -95,7 +95,7 @@ def get_provider(
             raise ValueError("mode='local' requires dem_dir")
         return LocalDemElevationProvider(dem_dir)  # local disk; not cached
     if mode == "auto":
-        chain = []
+        chain: list[ElevationProvider] = []
         if dem_dir:
             # no tiles / no rasterio -> just use API
             with contextlib.suppress(ElevationError):

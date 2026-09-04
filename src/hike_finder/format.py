@@ -9,6 +9,8 @@ The same applies to the *inventory* mode's output (:func:`format_poi`,
 """
 from __future__ import annotations
 
+from typing import Any
+
 from .access import transit_label
 from .ferrata import summary_label as ferrata_label
 from .filters import Hike
@@ -159,7 +161,7 @@ def hike_to_dict(h: Hike, *, geometry: bool = False) -> dict:
     ``--json`` keeps its compact shape and the web map opts in only when it needs to
     draw the lines.
     """
-    d = {
+    d: dict[str, Any] = {
         # A composed loop carries no single OSM relation id — expose None and list its
         # constituent trails in `composed_of` instead.
         "osm_id": None if h.composed else h.osm_id,
