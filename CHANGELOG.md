@@ -57,6 +57,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The README now opens with a six-step setup for a machine that has nothing on it.**
+  Three overlapping onboarding sections ("Getting started (from a fresh clone)",
+  "Quickstart", and half of "Install") sat below ~630 lines of feature prose, so the
+  first thing a new reader met was the filter table. They are collapsed into one
+  section at the top: prerequisites, clone, virtual environment, install, contact
+  address, verify. Windows and macOS/Linux get equal, uncommented blocks rather than
+  a POSIX line with the PowerShell one commented out beneath it, plus the
+  execution-policy fallback for when `Activate.ps1` is blocked. The first real command
+  is now `--place "Spindleruv Mlyn"`, not four bbox numbers a beginner has no way to
+  obtain, and its sample output is a real run rather than a hand-written line.
+- **The Overpass contact address is now a numbered setup step, not a footnote.**
+  Missing it makes every single search fail with `406`, which made it the one buried
+  detail guaranteed to break a first run.
+- **New "Contact, quotas and rate limits" section, correcting a common misconception:**
+  there is no OpenStreetMap signup that raises your API limits. An openstreetmap.org
+  account is for *editing the map*; Nominatim publishes no registered or paid tier, and
+  Overpass needs no account — both throttle per IP address, not per user. The contact
+  string buys a warning email instead of a silent IP block, not quota. The section says
+  what the real limits are and ranks what actually gets you headroom: the cache (already
+  on), `--download`/`--area` snapshots (zero API calls), local DEM tiles (removes the
+  elevation API entirely), a regional endpoint, self-hosting.
+- **Fixed three broken in-page links** to the `--show-pois` section, whose anchor needs
+  the double hyphen GitHub generates for the parenthesised code span in its heading.
+
 - **The three "where do I search?" errors now name all three ways.** `--place NAME`,
   `--bbox SOUTH WEST NORTH EAST`, or `--area FILE` — on the plain search, `--show-pois`
   and `--show-ferrata`. These are the messages a user lands on after mistyping a place

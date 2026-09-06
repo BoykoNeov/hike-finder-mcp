@@ -6,23 +6,170 @@
 Find **marked hiking routes from OpenStreetMap** and filter them by **real,
 locally-computed elevation gain and distance** — not numbers scraped from
 trail-description websites — plus **shape and access**: whether a route is a loop,
-and whether you can reach it by **car** or **chairlift**.
+and whether you can reach it by **car**, **chairlift** or **public transport**.
 
 It runs three ways on one engine: a **command-line tool**, a **local web UI** (a
 map you pan to your area), or an **MCP server** for LLM clients. The CLI and web
 UI need **no LLM and no MCP client** — they're plain standalone programs.
 
+---
+
+## Getting started (new machine, from zero)
+
+**First time on this machine? Do these six steps in order.** They take about ten
+minutes. You do **not** need an account, an API key, a credit card, or a server —
+everything runs on your own computer against public, free data.
+
+Copy each block into a terminal. On Windows use **PowerShell** (press `Win`, type
+`powershell`, hit Enter); on macOS or Linux use **Terminal**.
+
+### 1. Install Python and git
+
+You need [**Python 3.10 or newer**](https://www.python.org/downloads/) and
+[**git**](https://git-scm.com/downloads). Install both, then close and reopen your
+terminal so it picks them up, and check:
+
+```bash
+python --version      # want 3.10 or higher — on Windows try `py --version` if this fails
+git --version
+```
+
+> **Windows tip:** in the Python installer, tick **"Add python.exe to PATH"** on
+> the first screen. If you missed it, use `py` instead of `python` everywhere below.
+
+### 2. Get the code
+
+```bash
+git clone https://github.com/BoykoNeov/hike-finder-mcp.git
+cd hike-finder-mcp
+```
+
+(No git? Use the green **Code → Download ZIP** button on the GitHub page, unzip it,
+and `cd` into the unzipped folder instead.)
+
+### 3. Make a private Python environment
+
+This keeps the tool's dependencies out of your system Python. Run it *inside* the
+`hike-finder-mcp` folder.
+
+**Windows (PowerShell):**
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+```
+
+**macOS / Linux:**
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
+Your prompt now starts with `(.venv)`. You must do this activation step again in
+every new terminal window.
+
+> **Windows: "running scripts is disabled on this system"?** Either allow it once
+> with `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` and re-run the
+> activate line, or skip activation entirely and prefix every later command with
+> `.venv\Scripts\` — e.g. `.venv\Scripts\python -m pip install -e .` and
+> `.venv\Scripts\hike-finder --help`.
+
+### 4. Install the tool
+
+```bash
+pip install -e .
+```
+
+That gives you the `hike-finder` command line tool and the `hike-finder-web` map
+UI, with one dependency (`requests`). The MCP server, the high-accuracy offline
+elevation backend, and the test suite are optional add-ons — see
+[Install](#install).
+
+### 5. Tell OpenStreetMap who you are (one line — skip it and nothing works)
+
+The free OpenStreetMap servers this tool reads from require every program to
+identify itself with a real contact address. If you don't, **every search fails
+with `406 Not Acceptable`.** This is the single most common first-run problem.
+
+Set it once per terminal session, using **your own** email:
+
+**Windows (PowerShell):**
+
+```powershell
+$env:HIKE_OVERPASS_UA = "you@example.com"
+```
+
+**macOS / Linux:**
+
+```bash
+export HIKE_OVERPASS_UA="you@example.com"
+```
+
+To make it permanent, add that line to your PowerShell profile
+(`notepad $PROFILE`) or your `~/.bashrc` / `~/.zshrc`. You can also pass it per
+command with `--user-agent you@example.com`, or type it into the Contact box in
+the web UI.
+
+> **There is no signup, and no email registration that raises your limits.** The
+> address is not sent to any account system — it just travels with each request so
+> the volunteer server operators can email you instead of silently blocking you if
+> something goes wrong. For what the real limits are and how to get more headroom,
+> see [Contact, quotas and rate limits](#contact-quotas-and-rate-limits).
+
+### 6. Check it works
+
+Offline first — this touches no network at all:
+
+```bash
+hike-finder --help
+```
+
+If that prints a usage screen, your install is good. Now a real search, by
+**place name** so you don't have to find any coordinates:
+
+```bash
+hike-finder --place "Spindleruv Mlyn" --max-distance 10
+```
+
+The first line tells you which place the name resolved to, then each hike prints
+on one line — name, length, climb and descent, and what it found nearby:
+
+```text
+Area: Špindlerův Mlýn, okres Trutnov, Královéhradecký kraj, Česko (50.7256, 15.6068) — searching 11.6 x 12.3 km
+[Ž] Nad Dolním Dvorem - Klínovka — 8.26 km, +754 m / -44 m [one-way] (start 50.6450,15.6552, OSM relation 3199247)
+[Ž] U Třídomí - Česká Budka — 9.52 km, +721 m / -65 m [one-way, surface:mixed (88% known)] (start 50.7177,15.5438, OSM relation 64382)
+0402 — 9.87 km, +704 m / -320 m [one-way, car, lift:chair_lift, transit:bus stop] (start 50.7315,15.5940, OSM relation 6133813)
+```
+
+Steepest first. `[loop]` vs `[one-way]` is the shape; `car`, `lift:` and
+`transit:` mean parking, a chairlift or a bus/train stop is mapped near an end.
+The first run is the slowest — results are cached on disk, so searching the same
+area again is much faster.
+
+### Now pick how you want to use it
+
+- **[Web UI](#option-a--web-ui-easiest-no-coordinates-to-type)** — easiest. Run
+  `hike-finder-web`, open <http://127.0.0.1:8765>, pan the map to where you want to
+  walk, click search. No coordinates to type.
+- **[Command line](#option-b--command-line)** — `hike-finder --place "…"` plus
+  filters. Everything the tool can do, scriptable, with `--json` output.
+- **[MCP server](#option-c--mcp-server-drive-it-from-an-llm-client)** — optional;
+  lets an LLM client (Claude Desktop, Claude Code) run searches for you in plain
+  language.
+
+> **Want the slow, fully-explained version** — every step with sample output and
+> how to read it? See **[`GUIDE.md`](GUIDE.md)**. This README is the terse
+> reference: the full flag list, every environment variable, the filter table.
+
+---
+
+## Why this exists
+
 It targets OSM route *relations* (`route=hiking`/`foot`), the same signed,
 maintained trail data — including the Czech **KČT** network — that **mapy.cz**
 renders. Distance and elevation gain are computed in this codebase, so the
 numbers are consistent and tunable instead of inherited from a third party.
-
-> **New here? Read [`GUIDE.md`](GUIDE.md)** — a verbose, step-by-step walkthrough
-> covering what to do, why, what output to expect, and how to read the results.
-> This README is the terse reference (full flag list, every env var, the filter
-> table); the guide is the tutorial.
-
-## Why this exists
 
 Trail sites (AllTrails, Komoot, mapy.cz) all report *different* gain for the
 same trail because elevation gain depends entirely on how you sample and
@@ -198,7 +345,7 @@ silent empty result.
 > `--poi` **filters** existing routes by what they pass. To have a route **drawn to** the
 > nearest ruin instead, see [`--to-poi`](#point-based-route-drawing-pick-points-on-a-map-get-routes)
 > below — the same kinds, the opposite question. They combine. To just **see what is
-> there**, with no route at all, see [`--show-pois`](#just-show-me-whats-there-show-pois).
+> there**, with no route at all, see [`--show-pois`](#just-show-me-whats-there---show-pois).
 
 ### Just show me what's there (`--show-pois`)
 
@@ -545,7 +692,7 @@ circular route* checkbox for `--via`); MCP has the `circular_routes`, `routes_be
 GPX/GeoJSON like any other route.
 
 The same **Mode** selector also carries "Show points of interest (no routes)" — the
-[`--show-pois`](#just-show-me-whats-there-show-pois) browse. Unlike the four routing modes
+[`--show-pois`](#just-show-me-whats-there---show-pois) browse. Unlike the four routing modes
 it works on a **downloaded area** as well as the live map, and MCP exposes it as the
 `list_pois` tool.
 
@@ -567,7 +714,7 @@ hike-finder --bbox 50.72 15.58 50.74 15.62 --compose-loops --gpx day.gpx   # com
 - **GeoJSON** (RFC 7946) — a `FeatureCollection` of route lines carrying the full computed
   stats in `properties` (gain/loss, distance, shape, access, provenance).
 
-The same two flags export the [`--show-pois`](#just-show-me-whats-there-show-pois) listing
+The same two flags export the [`--show-pois`](#just-show-me-whats-there---show-pois) listing
 instead, as **waypoints** rather than tracks — a GPX `<wpt>` / GeoJSON `Point` per object —
 which is the honest shape when the answer is a set of places, not a walk.
 
@@ -626,81 +773,63 @@ Copernicus GLO-30 spanning a latitude band, which needs resampling) build your
 own with `gdalbuildvrt *.tif mosaic.vrt` and drop the `.vrt` in the directory —
 it is used as-is.
 
-## Getting started (from a fresh clone)
-
-New here? Five steps from nothing to a working tool. Already have the repo and a
-Python environment? Skip to [Quickstart](#quickstart).
-
-**1. Prerequisites** — [Python 3.10+](https://www.python.org/downloads/) and
-[git](https://git-scm.com/downloads). Confirm with `python --version`.
-
-**2. Clone the repo**
-
-```bash
-git clone https://github.com/BoykoNeov/hike-finder-mcp.git
-cd hike-finder-mcp
-```
-
-**3. Create and activate a virtual environment** (recommended — keeps the deps isolated)
-
-```bash
-python -m venv .venv
-source .venv/bin/activate          # Linux / macOS
-# .venv\Scripts\Activate.ps1       # Windows PowerShell
-```
-
-**4. Install** — base install gives the CLI and web UI (no LLM / MCP stack). See
-[Install](#install) below for the `mcp`, `local-dem`, and `dev` extras.
-
-```bash
-pip install -e .
-```
-
-**5. Verify** — offline, no network or contact needed:
-
-```bash
-hike-finder --help                 # prints usage → the entry points resolve
-```
-
-For deeper assurance, `pip install -e ".[dev]"` then `pytest` runs the full
-offline suite (a few `.sh` launcher cases need `bash`; MCP tests skip without
-the `mcp` extra). From here, pick a frontend: the **Web UI** (Option A),
-**command line** (Option B), or **MCP server** (Option C) below.
-
-Want the slower, fully-explained version of all of this — with sample output and
-how to interpret it? See **[`GUIDE.md`](GUIDE.md)**.
-
-## Quickstart
-
-```bash
-pip install -e .                   # CLI + web UI; no LLM / MCP stack required
-
-# browser: pan a map to your area, set filters, search
-hike-finder-web                    # then open http://127.0.0.1:8765
-
-# terminal: one command, prints results
-hike-finder --bbox 50.72 15.58 50.74 15.62 --circular --user-agent you@example.com
-```
-
 ## Using it
 
 Three frontends, one engine. **The CLI and web UI need no LLM and no MCP client.**
 
 ### Install
 
+Already done in [Getting started](#getting-started-new-machine-from-zero) above;
+these are the optional extras.
+
 ```bash
 pip install -e .                  # base: the `hike-finder` CLI and `hike-finder-web` UI
 pip install -e ".[mcp]"           # + the MCP server (`hike-finder-mcp`)
 pip install -e ".[local-dem]"     # + the local GeoTIFF DEM elevation backend (needs rasterio)
-pip install -e ".[dev]"           # + pytest
+pip install -e ".[dev]"           # + pytest (run the full offline suite with `pytest`)
 ```
 
 Extras combine: `pip install -e ".[mcp,local-dem]"`.
 
-**Set a contact for Overpass.** OSM's public server rejects the default User-Agent
-with `406`. Provide a real email/URL via `--user-agent` (CLI), the Contact field
-(web UI), or `HIKE_OVERPASS_UA=you@example.com` in the environment — per
-[OSM etiquette](https://operations.osmfoundation.org/policies/nominatim/).
+### Contact, quotas and rate limits
+
+Everything this tool reads is free and needs no account. Three public services are
+involved: **Overpass** (the trail data), **Nominatim** (turning place names into
+coordinates, and back), and an **elevation API** (terrain heights) unless you use
+local DEM tiles.
+
+**The contact string is identification, not registration.** Overpass and Nominatim
+both require a request to name the program and a way to reach its operator, and
+both reject the default Python User-Agent — that is the `406` you get without it.
+Set `HIKE_OVERPASS_UA` (or `--user-agent`, or the web UI's Contact field) to an
+email or URL you actually read.
+
+> **A common misconception: there is no OpenStreetMap signup that gives you more
+> API calls.** Registering an account on openstreetmap.org lets you *edit the map*;
+> it does nothing for these read APIs. Nominatim's policy offers no paid or
+> registered tier at all, and Overpass needs no account — both throttle **per IP
+> address**, not per user. So a real contact address doesn't buy you quota. What it
+> buys you is a warning email instead of a silent IP block, which is the difference
+> between a bad afternoon and a bad month.
+
+The public limits, roughly: Nominatim asks for **at most 1 request/second**;
+Overpass considers under ~100 queries and 10 MB/day comfortable for a regularly-run
+program. This tool already paces itself inside those (`HIKE_API_MIN_INTERVAL`,
+`HIKE_NOMINATIM_MIN_INTERVAL`, `HIKE_API_DAILY_LIMIT`) and backs off on `429`.
+
+Straight from the operators: the
+[Nominatim usage policy](https://operations.osmfoundation.org/policies/nominatim/)
+and the [Overpass API wiki page](https://wiki.openstreetmap.org/wiki/Overpass_API).
+
+**How to actually get more headroom**, in order of effort:
+
+| Do this | Effect |
+|---------|--------|
+| Nothing — the **cache is already on** | Repeat and overlapping searches never re-hit the servers. See [Transparent cache](#transparent-cache-automatic-on-by-default). |
+| `hike-finder --place "…" --download myarea.json`, then `--area myarea.json` | **Downloads once, then searches offline forever with zero API calls.** See [Saved areas](#saved-areas--fetch-once-search-offline-no-api-calls). This is the big one. |
+| `pip install -e ".[local-dem]"` + DEM tiles in `HIKE_DEM_DIR` | Removes the elevation API from the picture entirely — no quota, and better accuracy. See [Two elevation backends](#two-elevation-backends-both-supported). |
+| Point `HIKE_OVERPASS_URL` at a regional Overpass instance | Spreads load off the main server. |
+| Run your own Overpass / Nominatim instance | No shared limits at all. Worth it only for heavy or commercial use, which the public servers explicitly ask you not to put on them. |
 
 ### Option A — Web UI (easiest; no coordinates to type)
 
@@ -923,7 +1052,9 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 ### Troubleshooting
 
 - **`406 Not Acceptable` / every Overpass request fails** → set `HIKE_OVERPASS_UA`
-  to a real contact. The public server rejects the default Python User-Agent.
+  to a real contact. The public server rejects the default Python User-Agent. See
+  [step 5 of Getting started](#5-tell-openstreetmap-who-you-are-one-line--skip-it-and-nothing-works)
+  and [Contact, quotas and rate limits](#contact-quotas-and-rate-limits).
 - **No hikes returned** → widen the bbox or loosen the filters. Note that loops are
   genuinely sparse in KČT data (most relations are linear marked segments), so
   `circular=true` legitimately returns few results — try `--compose-loops` to stitch

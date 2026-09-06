@@ -48,9 +48,10 @@ The Web UI and CLI need **no LLM and no MCP client** — they're plain programs.
 pip install -e .
 ```
 
-(New to the repo entirely? The [README's "Getting started (from a fresh
-clone)"](README.md#getting-started-from-a-fresh-clone) covers Python, git, clone,
-and venv first. Come back here once `pip install -e .` succeeds.)
+(New to the repo entirely? The [README's "Getting started (new machine, from
+zero)"](README.md#getting-started-new-machine-from-zero) covers Python, git, clone,
+venv and the required OSM contact address first. Come back here once
+`pip install -e .` succeeds.)
 
 **Why** — the base install gives you the `hike-finder` CLI and the
 `hike-finder-web` UI with only one dependency (`requests`). The MCP server, the
