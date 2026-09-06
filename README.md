@@ -111,6 +111,10 @@ To make it permanent, add that line to your PowerShell profile
 command with `--user-agent you@example.com`, or type it into the Contact box in
 the web UI.
 
+**Despite the name, this one address identifies you to every service the tool
+touches** — the trail data (Overpass), place-name lookup (Nominatim) and the
+elevation API all send it. There is only ever one to set.
+
 > **There is no signup, and no email registration that raises your limits.** The
 > address is not sent to any account system — it just travels with each request so
 > the volunteer server operators can email you instead of silently blocking you if
