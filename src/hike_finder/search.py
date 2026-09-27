@@ -1204,6 +1204,12 @@ def download_area(
     # n/a just because its max_route_factor is looser than this download's.
     kept = {h.osm_id for h in hikes}
     area.routes = [r for r in area.routes if r.get("id") in kept]
+    # The walking network stays out of the file. Loops and point routes built on it need
+    # elevation along the whole network, which a download cannot afford to pre-sample
+    # (~80k samples, ~800 API requests for a 400 km² box — most of a day's quota), so a
+    # snapshot could not answer them offline anyway; it would only be ten times larger.
+    # `None`, not `[]`: the file never recorded paths, which is not "there are none".
+    area.paths = None
     places: dict = {}
     if _wants_geocode(name_places, cfg):
         # Bake place names for the unnamed survivors, recording every point->place the

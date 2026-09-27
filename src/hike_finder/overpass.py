@@ -1,9 +1,15 @@
 """Fetch hiking routes — plus parking and chairlift features — from OSM.
 
-We target route RELATIONS (route=hiking/foot), not raw highway=path ways.
-Relations are the signed, named, maintained trails — including the Czech KČT
-network that mapy.cz renders — which is what gives results the "mapy.cz feel"
-instead of every unmarked path.
+Two layers of trail come back, and they do different jobs:
+
+  - route RELATIONS (route=hiking/foot) — the signed, named, maintained trails,
+    including the Czech KČT network that mapy.cz renders. These are listed as hikes
+    in their own right and are what names a stretch of trail.
+  - every walkable WAY (``WALK_HIGHWAYS``: paths, footways, tracks, bridleways,
+    steps) — the network loops and point-to-point routes are built on. Many regions
+    map their trails only this way (Japan's North Alps: 824 paths, zero relations),
+    so building on relations alone left whole ranges blank. These never become a
+    listed hike on their own: a single way is a fragment, not a walk.
 
 In ONE Overpass round-trip we also pull the features the other filters need:
   - amenity=parking  (car access; ``out center`` gives a representative coord)
@@ -15,6 +21,9 @@ In ONE Overpass round-trip we also pull the features the other filters need:
     member geometry WITHOUT member tags, so this second statement is the only way to
     see them. It costs about +22 % response size (measured: 712 KB -> 866 KB on a
     Krkonoše box) and returns no geometry, only tags to join back by way id.
+  - the walkable ways themselves (``out tags geom``), into ``AreaData.paths``.
+    The heaviest part of the response — measured 10.1 MB on a 400 km² Krkonoše box
+    against ~0.9 MB without them.
   - every registered point of interest (poi.POI_KINDS — churches, ruins, peaks…;
     ``out center`` again). These come along on EVERY query, not only when a POI
     filter is set: one query shape means one Overpass cache key and a snapshot that
@@ -58,6 +67,46 @@ USER_AGENT = (
     f"hike-finder-mcp/{_VERSION} "
     "(OSM hiking route search; set HIKE_OVERPASS_UA with your contact)"
 )
+
+# The ways that make up the walking network (see ``AreaData.paths``). Deliberately
+# no roads: a loop that finds its way through a village on tarmac would be one nobody
+# asked for, and a relation that genuinely follows a road still brings that road in as
+# one of its own members.
+WALK_HIGHWAYS: tuple[str, ...] = ("path", "footway", "track", "bridleway", "steps")
+
+# `footway=` values that are part of a street, not a walk. Dropped IN THE QUERY rather
+# than after it: a town centre is mostly sidewalks, and fetching them only to throw them
+# away would bloat the path download over any settlement.
+_STREET_FOOTWAYS: tuple[str, ...] = ("sidewalk", "crossing")
+
+# Access values that close a way to walkers — unless `foot=` opens it again, which is
+# why this is decided in ``way_is_walkable`` and not in the query (Overpass QL has no
+# cheap "A unless B" filter).
+_CLOSED_ACCESS = frozenset({"no", "private"})
+_OPEN_FOOT = frozenset({"yes", "designated", "permissive", "official"})
+
+
+def way_is_walkable(tags: dict | None) -> bool:
+    """True if a way belongs in the walking network.
+
+    The query already narrowed to ``WALK_HIGHWAYS`` minus street footways; this is the
+    part it cannot say. ``foot=`` wins over ``access=`` in both directions — a private
+    forestry track with ``foot=yes`` is walkable, a public one with ``foot=no`` is not.
+    ``area=yes`` drops a pedestrian plaza drawn as a closed outline: walking its
+    perimeter would be a loop around a square.
+    """
+    tags = tags or {}
+    if tags.get("highway") not in WALK_HIGHWAYS:
+        return False
+    if tags.get("footway") in _STREET_FOOTWAYS or tags.get("area") == "yes":
+        return False
+    foot = tags.get("foot")
+    if foot in _CLOSED_ACCESS:
+        return False
+    if foot in _OPEN_FOOT:
+        return True
+    return tags.get("access") not in _CLOSED_ACCESS
+
 
 # The public instance frequently answers small queries with a transient 504/429
 # under load. A short bounded backoff makes the tool usable without hammering.
@@ -106,6 +155,13 @@ class AreaData:
     # `way_tags`, which covers every way a returned route can be built from. This list
     # exists so the minority that belong to no relation are still browsable.
     ferrata_ways: list[dict] | None = None
+    # The walking network (see ``WALK_HIGHWAYS``): {"id", "coords", "tags"} per way.
+    # In a list of its own for the reason `ferrata_routes` is — `find_hikes` lists every
+    # entry of `routes`, and a single path way is a fragment, never a hike. Only graph
+    # builders read it (search._network). `None` is the tri-state "never fetched": a
+    # snapshot (which drops paths to stay small), or data from before this field. A live
+    # parse always sets a list, empty when the box genuinely has no walkable ways.
+    paths: list[dict] | None = None
 
 
 def _tag_filter(key: str, values: tuple[str, ...]) -> str:
@@ -161,7 +217,8 @@ def _transit_clauses(bbox: str) -> str:
 def build_query(
     south: float, west: float, north: float, east: float, timeout_s: int = 60
 ) -> str:
-    """Overpass QL: hiking routes + parking + aerialways + transit stops + POIs + ferrata.
+    """Overpass QL: hiking routes + walkable ways + parking + aerialways + transit
+    stops + POIs + ferrata.
 
     ``route=via_ferrata`` rides in the SAME union as the hiking relations, rather than
     in a clause of its own, so the existing ``way(r); out tags;`` picks up its member
@@ -170,6 +227,8 @@ def build_query(
     """
     bbox = f"{south},{west},{north},{east}"
     lift_re = "|".join(sorted(RIDE_UP_AERIALWAYS))
+    walk_re = "|".join(WALK_HIGHWAYS)
+    street_re = "|".join(_STREET_FOOTWAYS)
     return f"""
     [out:json][timeout:{timeout_s}];
     (
@@ -185,6 +244,8 @@ def build_query(
       way["{_ferrata.SCALE_KEY}"]({bbox});
     );
     out geom;
+    way["highway"~"^({walk_re})$"]["footway"!~"^({street_re})$"]({bbox});
+    out tags geom;
     nwr["amenity"="parking"]({bbox});
     out center;
     way["aerialway"~"^({lift_re})$"]({bbox});
@@ -245,11 +306,13 @@ def parse_area(elements: list[dict]) -> AreaData:
     transit_stops: list[dict] = []
     ferrata_routes: list[dict] = []
     ferrata_ways: list[dict] = []
+    paths: list[dict] = []
     area = AreaData(
         transit=transit_stops,
         poi_kinds=_poi.all_kinds(),
         ferrata_routes=ferrata_routes,
         ferrata_ways=ferrata_ways,
+        paths=paths,
     )
     # FIRST: the tag-only member-way records from `way(r); out tags;`, keyed by way id
     # so the relation branch below can join them onto its members. They must also be
@@ -269,10 +332,36 @@ def parse_area(elements: list[dict]) -> AreaData:
     # A cabled way matches BOTH ferrata clauses when it carries a grade and the highway
     # value, and Overpass emits an element once per matching statement.
     seen_ferrata_ways: set[object] = set()
+    seen_paths: set[object] = set()
     for el in elements:
         if _is_tag_only_way(el):
             continue  # already harvested into way_tags above
         tags = el.get("tags", {}) or {}
+        # The walking network, harvested BEFORE the branch chain. A way can be two things
+        # at once — a path that also carries a POI tag, or is graded as cabled — and each
+        # of those statements emits it AGAIN on its own, so the path copy must not reach
+        # the other branches: the path statement runs before the POI ones, and a POI filed
+        # from it would sit at the way's first vertex instead of the `out center` point it
+        # has always had. Only a POI/transit/parking emission carries `center` rather than
+        # `geometry`, so the geometry test is what tells the copies apart.
+        #
+        # The ferrata branch is the exception and is let through: its own statement is
+        # `out geom` too, the two copies are indistinguishable, and it already dedups by
+        # way id — so whichever copy arrives first files the cabled way exactly once.
+        if el.get("type") == "way" and "geometry" in el and way_is_walkable(tags):
+            ident = el.get("id")
+            geom = el["geometry"] or []
+            if len(geom) >= 2 and ident not in seen_paths:
+                seen_paths.add(ident)
+                paths.append(
+                    {
+                        "id": ident,
+                        "coords": [(pt["lat"], pt["lon"]) for pt in geom],
+                        "tags": tags,
+                    }
+                )
+            if not _ferrata.way_is_ferrata(tags):
+                continue
         route_kind = tags.get("route") if el.get("type") == "relation" else None
         if route_kind in ("hiking", "foot", _ferrata.FERRATA_ROUTE):
             ways: list[list[Coord]] = []

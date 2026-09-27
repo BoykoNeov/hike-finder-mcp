@@ -321,6 +321,20 @@ def _area_to_json(area: AreaData) -> dict:
             }
             for w in area.ferrata_ways
         ]
+    # The walking network (overpass.AreaData.paths). Conditional, like the two above:
+    # `None` means "never fetched" and must not round-trip into "fetched, none here".
+    # In practice this key lives in the Overpass CACHE, which stores areas through this
+    # same function; a saved snapshot has `paths=None` (see search.download_area), so
+    # the file on disk stays the size it always was.
+    if area.paths is not None:
+        out["paths"] = [
+            {
+                "id": w.get("id"),
+                "coords": [[lat, lon] for lat, lon in w["coords"]],
+                "tags": w.get("tags", {}),
+            }
+            for w in area.paths
+        ]
     return out
 
 
@@ -395,6 +409,15 @@ def _area_from_json(d: dict) -> AreaData:
                 "scale": w.get("scale"),
             }
             for w in (d.get("ferrata_ways") or [])
+        ]
+    if "paths" in d:
+        area.paths = [
+            {
+                "id": w.get("id"),
+                "coords": [(lat, lon) for lat, lon in w["coords"]],
+                "tags": w.get("tags", {}) or {},
+            }
+            for w in (d.get("paths") or [])
         ]
     return area
 
