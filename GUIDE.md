@@ -154,7 +154,8 @@ MCP protocol to a client.
   (on Windows, `-- powershell -NoProfile -ExecutionPolicy Bypass -File C:\path\to\scripts\mcp.ps1`).
   The MCP launcher is silent on stdout on purpose — stdout is the JSON-RPC
   channel, and any banner there would corrupt the handshake.
-- All three are regression-pinned by `tests/test_launchers.py`.
+- All three are regression-pinned by `tests/test_launchers.py`, as is the Windows
+  double-click file `start-hike-finder.cmd` (see Step 3A).
 
 ---
 

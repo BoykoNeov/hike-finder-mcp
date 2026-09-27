@@ -7,6 +7,10 @@ unset) and forwards to the matching pyproject entry point —
   scripts/web.{sh,ps1}  -> hike-finder-web     (long-running map server)
   scripts/mcp.{sh,ps1}  -> hike-finder-mcp     (stdio JSON-RPC; stdout MUST stay clean)
 
+Plus the repo-root ``start-hike-finder.cmd`` (Windows double-click), which is NOT
+thin in the same way: it finds its own Python and runs the web UI from ``src``
+with no install, so it is pinned separately at the bottom of this file.
+
 How each is pinned, matched to its shape:
 
   - CLI/web wrappers: forward ``--help``. argparse exits 0 and the usage text
