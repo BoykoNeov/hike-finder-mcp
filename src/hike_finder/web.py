@@ -45,6 +45,7 @@ from .search import (
     route_via,
     routes_between,
     routes_to_poi,
+    saved_area_loops_caveat,
     search_hikes,
     search_snapshot,
     snapshot_kinds_missing_message,
@@ -1052,6 +1053,12 @@ def _area_notices(area, criteria: Criteria) -> list[dict]:
         gap = ferrata_gap_message(area, finding=criteria.ferrata is True)
         if gap is not None:
             notices.append({"kind": "ferrata_gap", "message": gap})
+    # Rendered like the ferrata gap — its own box, shown with a non-empty list — since a
+    # saved area answering with named routes alone is shorter than the live search and
+    # says nothing about it otherwise.
+    loops_gap = saved_area_loops_caveat(area, criteria)
+    if loops_gap is not None:
+        notices.append({"kind": "saved_no_loops", "message": loops_gap})
     return notices
 
 

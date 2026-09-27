@@ -63,6 +63,7 @@ from .search import (
     route_via,
     routes_between,
     routes_to_poi,
+    saved_area_loops_caveat,
     search_hikes,
     search_snapshot,
     snapshot_kinds_missing_message,
@@ -1216,6 +1217,11 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
     # that might. Recomputed rather than plumbed out of `search_snapshot`, which already
     # logs it — a log line reaches a terminal, not a client's reply text.
     caveat = _ferrata_caveat(saved, criteria) if saved is not None else ""
+    # The saved-area loops gap rides on the same caveat, and for the same reason: an LLM
+    # handed only the named routes will report them as "the hikes in that area".
+    loops_gap = saved_area_loops_caveat(saved.area, criteria) if saved is not None else None
+    if loops_gap is not None:
+        caveat += f"{loops_gap}\n"
 
     if not hikes:
         composing = arguments.get("compose_loops") and not area_path

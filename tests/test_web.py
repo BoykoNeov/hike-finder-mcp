@@ -80,6 +80,14 @@ def _make_snapshot(path, pois=None, poi_kinds=None, way_tags=None, ferrata=False
     )
 
 
+def _besides_loops(notices):
+    """Every notice except the saved-area loops note. A saved area keeps named routes
+    only, so nearly every saved-area search here carries that note too — the tests that
+    use this are about the OTHER kinds, and `test_a_saved_area_says_loops_need_a_live_
+    search` pins the note itself."""
+    return [n for n in notices if n["kind"] != "saved_no_loops"]
+
+
 @pytest.fixture
 def server(tmp_path, monkeypatch):
     monkeypatch.setenv("HIKE_SNAPSHOT_DIR", str(tmp_path))
@@ -260,7 +268,7 @@ def test_hikes_answers_with_an_envelope_not_a_bare_array(server):
     assert isinstance(body, dict) and set(body) == {"hikes", "notices"}
     # A search that asked nothing the file cannot answer says nothing extra: a channel
     # that always has something in it is one nobody reads.
-    assert len(body["hikes"]) == 1 and body["notices"] == []
+    assert len(body["hikes"]) == 1 and _besides_loops(body["notices"]) == []
 
 
 def test_a_ferrata_filter_on_an_unreadable_area_says_so_rather_than_returning_nothing(server):
@@ -277,8 +285,8 @@ def test_a_ferrata_filter_on_an_unreadable_area_says_so_rather_than_returning_no
     # mean anything), so the list really is empty and the notice really is all there is.
     status, body = _get(server + "/api/hikes?area=webtest&ferrata=false")
     assert status == 200 and body["hikes"] == []
-    assert [n["kind"] for n in body["notices"]] == ["ferrata_gap"]
-    msg = body["notices"][0]["message"]
+    assert [n["kind"] for n in _besides_loops(body["notices"])] == ["ferrata_gap"]
+    msg = _besides_loops(body["notices"])[0]["message"]
     # The UNREADABLE sentence, not the "avoiding still works here" one — that promise is
     # false on a file with no member-way tags, and choosing between the two is
     # `search.ferrata_gap_message`'s whole job. Asserting on which one arrived is what
@@ -296,12 +304,12 @@ def test_the_two_ferrata_flags_get_different_answers_from_the_same_file(server):
     on one that cannot deliver it — the wording bug that only showed up when this was run.
     """
     _, avoiding = _get(server + "/api/hikes?area=webtagged&ferrata=false")
-    assert len(avoiding["hikes"]) == 1 and avoiding["notices"] == []
+    assert len(avoiding["hikes"]) == 1 and _besides_loops(avoiding["notices"]) == []
 
     _, finding = _get(server + "/api/hikes?area=webtagged&ferrata=true")
     assert finding["hikes"] == []
-    assert [n["kind"] for n in finding["notices"]] == ["ferrata_gap"]
-    msg = finding["notices"][0]["message"]
+    assert [n["kind"] for n in _besides_loops(finding["notices"])] == ["ferrata_gap"]
+    msg = _besides_loops(finding["notices"])[0]["message"]
     assert "predates cabled-route fetching" in msg
     # ...and here the closing promise IS true, because this file has the tags avoidance
     # is measured from. On `webtest`, which has neither, the other sentence is sent.
@@ -312,7 +320,7 @@ def test_a_readable_area_answers_the_ferrata_question_with_no_caveat_at_all(serv
     """The other direction, which is what makes the notice a signal instead of noise:
     an area whose routes carry member-way tags returns routes and says nothing."""
     _, body = _get(server + "/api/hikes?area=webferrata&ferrata=false")
-    assert len(body["hikes"]) == 1 and body["notices"] == []
+    assert len(body["hikes"]) == 1 and _besides_loops(body["notices"]) == []
 
 
 def test_the_ferrata_caveat_is_decided_without_ever_seeing_the_results(server):
@@ -329,7 +337,7 @@ def test_the_ferrata_caveat_is_decided_without_ever_seeing_the_results(server):
 
     area = AreaData(routes=[{"id": 1, "ways": [[(50.0, 14.0), (50.1, 14.0)]], "tags": {}}])
     assert web._area_notices(area, Criteria(ferrata=False))[0]["kind"] == "ferrata_gap"
-    assert web._area_notices(area, Criteria()) == []       # nothing asked, nothing said
+    assert _besides_loops(web._area_notices(area, Criteria())) == []  # nothing asked
     assert "hikes" not in inspect.signature(web._area_notices).parameters
 
 
@@ -339,8 +347,8 @@ def test_an_area_with_no_route_relations_blames_the_map_not_the_filters(server):
     the advice this message exists to delete — the CLI and MCP server say the same."""
     status, body = _get(server + "/api/hikes?area=webempty")
     assert status == 200 and body["hikes"] == []
-    assert [n["kind"] for n in body["notices"]] == ["no_routes"]
-    assert "not your filters" in body["notices"][0]["message"]
+    assert [n["kind"] for n in _besides_loops(body["notices"])] == ["no_routes"]
+    assert "not your filters" in _besides_loops(body["notices"])[0]["message"]
 
 
 def test_the_live_search_carries_the_no_routes_fact_too(server, monkeypatch):
@@ -353,7 +361,7 @@ def test_the_live_search_carries_the_no_routes_fact_too(server, monkeypatch):
     monkeypatch.setattr(web, "search_hikes", _stub)
     _, body = _get(server + "/api/hikes?south=50.7&west=15.5&north=50.8&east=15.7")
     assert body["hikes"] == []
-    assert [n["kind"] for n in body["notices"]] == ["no_routes"]
+    assert [n["kind"] for n in _besides_loops(body["notices"])] == ["no_routes"]
 
 
 def test_gpx_unknown_area_is_404(server):
@@ -743,8 +751,8 @@ def test_a_point_mode_over_an_unmapped_region_blames_the_map_not_your_point(
     monkeypatch.setattr(web, fn, _stub)
     status, body = _get(server + "/api/hikes?" + query)
     assert status == 200 and body["hikes"] == []
-    assert [n["kind"] for n in body["notices"]] == ["no_routes"]
-    assert "not your filters" in body["notices"][0]["message"]
+    assert [n["kind"] for n in _besides_loops(body["notices"])] == ["no_routes"]
+    assert "not your filters" in _besides_loops(body["notices"])[0]["message"]
 
 
 @pytest.mark.parametrize("mode", sorted(_POINT_MODES))
@@ -769,7 +777,7 @@ def test_a_point_mode_over_a_mapped_region_says_nothing(server, monkeypatch, mod
     monkeypatch.setattr(web, fn, _stub)
     status, body = _get(server + "/api/hikes?" + query)
     assert status == 200 and len(body["hikes"]) == 1
-    assert body["notices"] == []
+    assert _besides_loops(body["notices"]) == []
 
 
 @pytest.mark.parametrize("mode", sorted(_POINT_MODES))
@@ -790,7 +798,7 @@ def test_a_point_mode_never_carries_a_ferrata_notice(server, monkeypatch, mode):
 
     monkeypatch.setattr(web, fn, _stub)
     _, body = _get(server + "/api/hikes?" + query + "&ferrata=false")
-    assert [n["kind"] for n in body["notices"]] == []
+    assert [n["kind"] for n in _besides_loops(body["notices"])] == []
 
 
 def test_the_live_and_saved_paths_word_no_routes_from_one_function(server):
@@ -905,3 +913,25 @@ def test_a_port_held_by_another_program_fails_with_a_sentence(monkeypatch):
         other.close()
     assert "--port" in str(exc.value.code)
     assert opened == []
+
+
+def test_a_saved_area_says_loops_need_a_live_search(server):
+    """A saved area keeps named routes only. Its search returns them — and says, WITH the
+    non-empty list, that the loops a live search would add are not in the file. Gated on
+    nothing but the file and the question: never on an empty result."""
+    _, body = _get(server + "/api/hikes?area=webtest")
+    assert len(body["hikes"]) == 1
+    loops = [n for n in body["notices"] if n["kind"] == "saved_no_loops"]
+    assert len(loops) == 1 and "live" in loops[0]["message"]
+
+
+def test_a_routes_only_question_owes_no_loops_note(server):
+    """`circular=false` could show no loop even live, so there is nothing to disclaim."""
+    _, body = _get(server + "/api/hikes?area=webtest&circular=false")
+    assert [n for n in body["notices"] if n["kind"] == "saved_no_loops"] == []
+
+
+def test_loops_switched_off_owe_no_loops_note(server, monkeypatch):
+    monkeypatch.setenv("HIKE_AREA_LOOPS", "0")
+    _, body = _get(server + "/api/hikes?area=webtest")
+    assert [n for n in body["notices"] if n["kind"] == "saved_no_loops"] == []

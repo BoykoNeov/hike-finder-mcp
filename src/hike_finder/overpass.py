@@ -108,6 +108,18 @@ def way_is_walkable(tags: dict | None) -> bool:
     return tags.get("access") not in _CLOSED_ACCESS
 
 
+class OverpassIncomplete(RuntimeError):
+    """Overpass answered 200 but stopped part-way — a timeout or memory abort.
+
+    It says so only in a ``remark`` beside the elements it DID send, so the status code
+    alone reads as success. Parsing that would turn "the server never got to the parking
+    statement" into "there is no parking here" — and the cache would keep that answer
+    for its whole lifetime. Measured live: the 400 km² Krkonoše query with a 2 s limit
+    came back 200, 10 MB, "runtime error: Query timed out in "print" at line 17", and
+    not one parking, transit or POI element.
+    """
+
+
 # The public instance frequently answers small queries with a transient 504/429
 # under load. A short bounded backoff makes the tool usable without hammering.
 _TRANSIENT_STATUS = {429, 502, 503, 504}
@@ -220,6 +232,11 @@ def build_query(
     """Overpass QL: hiking routes + walkable ways + parking + aerialways + transit
     stops + POIs + ferrata.
 
+    The walkable ways come LAST, and the order is load-bearing: they are most of the
+    response, and a query that runs out of time is cut off wherever it had got to (see
+    ``OverpassIncomplete``). Last, a cut can only ever cost paths — never the parking,
+    transit or POI lists, whose emptiness the rest of the app reads as "none here".
+
     ``route=via_ferrata`` rides in the SAME union as the hiking relations, rather than
     in a clause of its own, so the existing ``way(r); out tags;`` picks up its member
     ways for free — one statement, no second join. It is split back out by tag in
@@ -244,14 +261,14 @@ def build_query(
       way["{_ferrata.SCALE_KEY}"]({bbox});
     );
     out geom;
-    way["highway"~"^({walk_re})$"]["footway"!~"^({street_re})$"]({bbox});
-    out tags geom;
     nwr["amenity"="parking"]({bbox});
     out center;
     way["aerialway"~"^({lift_re})$"]({bbox});
     out geom;
 {_transit_clauses(bbox)}
 {_poi_clauses(bbox)}
+    way["highway"~"^({walk_re})$"]["footway"!~"^({street_re})$"]({bbox});
+    out tags geom;
     """
 
 
@@ -340,10 +357,11 @@ def parse_area(elements: list[dict]) -> AreaData:
         # The walking network, harvested BEFORE the branch chain. A way can be two things
         # at once — a path that also carries a POI tag, or is graded as cabled — and each
         # of those statements emits it AGAIN on its own, so the path copy must not reach
-        # the other branches: the path statement runs before the POI ones, and a POI filed
-        # from it would sit at the way's first vertex instead of the `out center` point it
-        # has always had. Only a POI/transit/parking emission carries `center` rather than
-        # `geometry`, so the geometry test is what tells the copies apart.
+        # the other branches: a POI filed from it would sit at the way's first vertex
+        # instead of the `out center` point it has always had (and whether it arrived
+        # first would depend on statement order, which is not this branch's to rely on).
+        # Only a POI/transit/parking emission carries `center` rather than `geometry`, so
+        # the geometry test is what tells the copies apart.
         #
         # The ferrata branch is the exception and is let through: its own statement is
         # `out geom` too, the two copies are indistinguishable, and it already dedups by
@@ -498,5 +516,14 @@ def fetch_area(
         raise ValueError("max_retries must be >= 1")
     resp.raise_for_status()
 
-    elements = resp.json().get("elements", [])
-    return parse_area(elements)
+    data = resp.json()
+    remark = data.get("remark") or ""
+    if "error" in remark.lower():
+        # Raised, not retried: the same query against the same load is likely to stop
+        # at the same place, and a user can narrow the box. Nothing is cached — the
+        # caller only stores what this function returns.
+        raise OverpassIncomplete(
+            f"Overpass stopped before finishing ({remark.strip()}) — the area is too "
+            "large or the server too busy; try a smaller area or try again later."
+        )
+    return parse_area(data.get("elements", []))

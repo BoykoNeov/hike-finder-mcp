@@ -246,7 +246,16 @@ def _area_hikes(
         graph, area, criteria, cfg, provider, bbox, near_miss=near_miss, point_anchor=None
     )
     listed = {h.ref or h.name for h in hikes if not h.composed}
-    return hikes + [h for h in loops if not _relation_ring(h, listed)]
+    combined = hikes + [h for h in loops if not _relation_ring(h, listed)]
+    # Two passes each ran their own near-miss rule, so re-apply it to the ONE list the
+    # user sees: every strict match (named routes, then loops) before any near-miss, and
+    # under "auto" near-misses only when nothing at all matched. Left alone, an area whose
+    # named routes all missed would list their near-misses AHEAD of loops that match.
+    strict = [h for h in combined if not h.near_miss]
+    misses = [h for h in combined if h.near_miss]
+    if near_miss == "auto" and strict:
+        misses = []
+    return strict + misses
 
 
 def _relation_ring(h: Hike, listed: set) -> bool:
@@ -554,7 +563,11 @@ def _compose_from_graph(
         if result.distinct > len(result.loops) else ""
     )
     capped_note = (
-        " [cycle search capped — results may be incomplete; narrow the distance band]"
+        # Since the budget is shared per start node, this fires whenever ANY junction ran
+        # out of its share — routine on a dense path network, and not a failure: the rest
+        # of the map was still searched. Worded as the modest fact it now is.
+        " [the loop search stopped early at some junctions, so a few loops may be "
+        "missing; a narrower distance band lets it search deeper]"
         if result.capped else ""
     )
     sliver_note = (
@@ -1350,6 +1363,37 @@ def no_routes_message(area: AreaData | None = None) -> str:
     )
 
 
+def saved_area_loops_caveat(
+    area: AreaData, criteria: Criteria, cfg: Config | None = None
+) -> str | None:
+    """The sentence a SAVED area owes every search it answers: it lists named routes only.
+
+    A live area search returns named routes AND loops built from the walking network; a
+    saved area keeps relations only (``download_area`` sets ``paths=None``), so the same
+    search offline is silently shorter. Not gated on an empty result — the project's rule
+    (see ``snapshot_poi_gap``, ``web._area_notices``): a short list with routes on it is
+    exactly when the gap is hardest to notice.
+
+    ``None`` when there is nothing to disclaim: the data did record paths, loops are
+    switched off (``HIKE_AREA_LOOPS=0``), the search is ``circular=False`` (it could show
+    no loop anyway), or the area holds nothing at all — ``no_routes_message(area)``
+    already says this, in the one place that empty result is worded.
+    """
+    cfg = cfg or _config.load()
+    if (
+        area.paths is not None
+        or not cfg.area_loops
+        or criteria.circular is False
+        or area_has_no_routes(area)
+    ):
+        return None
+    return (
+        "loops: this is a saved area, which keeps the named routes only — the loops a "
+        "live search builds from individual paths are not in it. Search the same place "
+        "live to get them."
+    )
+
+
 def snapshot_poi_gap(snapshot: AreaSnapshot, kinds=()) -> tuple[str, tuple[str, ...] | None]:
     """How far a saved area can answer a question about ``kinds`` — one place decides.
 
@@ -1711,6 +1755,9 @@ def search_snapshot(
         gap = ferrata_gap_message(snapshot.area, finding=criteria.ferrata is True)
         if gap is not None:
             _log.warning("%s", gap)
+    loops_gap = saved_area_loops_caveat(snapshot.area, criteria, cfg)
+    if loops_gap is not None:
+        _log.warning("%s", loops_gap)
     hikes = find_hikes(
         snapshot.area,
         provider,

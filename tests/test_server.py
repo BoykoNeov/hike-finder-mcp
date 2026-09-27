@@ -45,6 +45,7 @@ from mcp.shared.memory import create_client_server_memory_streams
 from hike_finder import server
 from hike_finder.filters import Criteria, Hike
 from hike_finder.format import format_hike
+from hike_finder.overpass import AreaData
 
 _SRC = str(Path(__file__).resolve().parent.parent / "src")
 
@@ -204,10 +205,20 @@ def test_call_tool_area_searches_snapshot_offline(monkeypatch):
         raise AssertionError("search_hikes should not be called in offline mode")
 
     monkeypatch.setattr(server, "search_hikes", _fail_live)
-    monkeypatch.setattr(server, "load_snapshot", lambda path: f"SNAP:{path}")
+
+    class _Saved:
+        """Stands in for a loaded snapshot. The server reads `.area` off it to decide
+        its caveats; an area that recorded paths owes the loops note nothing, so the
+        reply below stays exactly the formatted hikes."""
+
+        def __init__(self, path):
+            self.path = path
+            self.area = AreaData(routes=[{"id": 1}], paths=[])
+
+    monkeypatch.setattr(server, "load_snapshot", lambda path: _Saved(f"SNAP:{path}"))
 
     def _stub_snapshot(snap, criteria, cfg=None, *, near_miss=False, name_places=None):
-        captured["snap"] = snap
+        captured["snap"] = snap.path
         captured["near_miss"] = near_miss
         captured["name_places"] = name_places
         captured["circular"] = criteria.circular

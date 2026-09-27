@@ -345,3 +345,19 @@ def test_a_relation_mapped_as_a_ring_is_not_listed_twice(monkeypatch):
     hikes = S.search_hikes(BBOX, Criteria(min_distance_km=0.5), Config())
     assert hikes[0].name == "ring" and not hikes[0].composed
     assert any(h.composed and h.marked_frac < 0.99 for h in hikes)
+
+
+def test_near_misses_never_rank_above_a_matching_loop(monkeypatch):
+    """The named trail (~1 km) misses a 1.5 km minimum; the loop it is part of (~2 km)
+    matches. The two passes each ran their own near-miss rule: under "auto" (the default)
+    the named pass saw zero matches and added its near-miss — which then sat ABOVE the
+    real match. One rule over the combined list: matches first, near-misses after, and
+    under "auto" none at all once anything matched."""
+    _live(monkeypatch, _linear_relation_plus_paths())
+    crit = Criteria(min_distance_km=1.5)
+
+    auto = S.search_hikes(BBOX, crit, Config(), near_miss="auto")
+    assert [(h.composed, h.near_miss) for h in auto] == [(True, False)]
+
+    always = S.search_hikes(BBOX, crit, Config(), near_miss=True)
+    assert [(h.composed, h.near_miss) for h in always] == [(True, False), (False, True)]
