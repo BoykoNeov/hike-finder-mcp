@@ -111,8 +111,11 @@ retry.
 
 ## Shortcut — launcher scripts (one per interface)
 
-Don't want to set the contact (Step 2) every time? There's one small launcher
-per interface in [`scripts/`](scripts/), in both shells.
+There's one small launcher per interface in [`scripts/`](scripts/), in both
+shells. They do **not** set the contact for you — the repo ships no one's address
+— so do Step 2 first (or, for the web UI, type it into the page's Contact box).
+On Windows the double-click file `start-hike-finder.cmd` (Step 3A) is the one
+launcher that asks for it and remembers it.
 
 **Do** — run the launcher for the frontend you want:
 
@@ -130,10 +133,9 @@ per interface in [`scripts/`](scripts/), in both shells.
 .\scripts\mcp.ps1
 ```
 
-**Why** — each launcher does two things and nothing more: it sets a **default
-Overpass contact** (only if you haven't set `HIKE_OVERPASS_UA` yourself — so Step
-2 becomes optional), then hands every argument straight to the real entry point
-(`hike-finder` / `hike-finder-web` / `hike-finder-mcp`). They're deliberately
+**Why** — each launcher does one thing: it hands every argument straight to the
+real entry point (`hike-finder` / `hike-finder-web` / `hike-finder-mcp`), so you
+can run the tool from the repo folder with a short path. They're deliberately
 *thin* wrappers, not re-implementations, so when the tool changes they stay
 correct for free.
 
@@ -144,13 +146,12 @@ MCP protocol to a client.
 
 **Read it**
 
-- **Override the contact** any time by setting it first — the launcher won't
-  clobber your value:
+- **Set the contact** in the same line if you haven't done Step 2:
   ```powershell
   $env:HIKE_OVERPASS_UA = "you@example.com"; .\scripts\cli.ps1 --bbox ...
   ```
-- **Point an MCP client at the launcher** instead of the bare command, so the
-  contact is always set: `claude mcp add hike-finder -- /abs/path/to/scripts/mcp.sh`
+- **Point an MCP client at the launcher** if you like, and give it the contact in
+  the client's env config: `claude mcp add hike-finder --env HIKE_OVERPASS_UA=you@example.com -- /abs/path/to/scripts/mcp.sh`
   (on Windows, `-- powershell -NoProfile -ExecutionPolicy Bypass -File C:\path\to\scripts\mcp.ps1`).
   The MCP launcher is silent on stdout on purpose — stdout is the JSON-RPC
   channel, and any banner there would corrupt the handshake.
@@ -171,9 +172,11 @@ Then open **http://127.0.0.1:8765** in a browser (or run `hike-finder-web --open
 and it opens itself).
 
 > **Windows, no terminal:** double-click **`start-hike-finder.cmd`** in the repo
-> folder instead. It finds Python, starts the UI straight from the checkout (no
-> `pip install` needed), opens your browser, and stops when you close its window.
-> Double-clicking it again while it runs just reopens the page.
+> folder instead. The first time, it asks for your email (the contact from Step 2)
+> and remembers it in your own user folder, never in the repo. It then finds
+> Python, starts the UI straight from the checkout (no `pip install` needed), opens
+> your browser, and stops when you close its window. Double-clicking it again
+> while it runs just reopens the page.
 
 In the page:
 

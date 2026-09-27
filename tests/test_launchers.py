@@ -1,7 +1,8 @@
 """Pin the per-interface launcher scripts in ``scripts/``.
 
-Each launcher is a THIN wrapper: it sets a default Overpass contact (only when
-unset) and forwards to the matching pyproject entry point —
+Each launcher is a THIN wrapper that forwards to the matching pyproject entry
+point — and ships NO default contact (the repo is public; whoever runs it sets
+their own ``HIKE_OVERPASS_UA``):
 
   scripts/cli.{sh,ps1}  -> hike-finder        (one-shot; results on stdout)
   scripts/web.{sh,ps1}  -> hike-finder-web     (long-running map server)
@@ -9,13 +10,13 @@ unset) and forwards to the matching pyproject entry point —
 
 Plus the repo-root ``start-hike-finder.cmd`` (Windows double-click), which is NOT
 thin in the same way: it finds its own Python and runs the web UI from ``src``
-with no install, so it is pinned separately at the bottom of this file.
+with no install, asking for the contact itself (``hike_finder.launch``, pinned in
+``test_launch.py``), so it is pinned separately at the bottom of this file.
 
 How each is pinned, matched to its shape:
 
   - CLI/web wrappers: forward ``--help``. argparse exits 0 and the usage text
-    comes from the REAL entry point, proving the wrapper reached it (and that a
-    default contact env-var doesn't get in the way).
+    comes from the REAL entry point, proving the wrapper reached it.
   - MCP wrapper: a REAL stdio MCP handshake (initialize + list_tools) against
     the launcher, exactly like ``test_server.py`` pins the server itself. A
     passing handshake is the load-bearing check that the wrapper wrote NOTHING
@@ -157,3 +158,14 @@ def test_click_launcher_is_checked_out_with_crlf():
     pin being dropped (or an editor saving LF) before a user double-clicks it."""
     data = (_ROOT / "start-hike-finder.cmd").read_bytes()
     assert b"\n" in data and data.count(b"\r\n") == data.count(b"\n")
+
+
+def test_no_launcher_ships_a_real_contact():
+    """The launchers once defaulted HIKE_OVERPASS_UA to the maintainer's address, so
+    every stranger's searches went out under it. Only placeholders may appear now."""
+    import re
+
+    files = [*SCRIPTS.iterdir(), _ROOT / "start-hike-finder.cmd"]
+    for f in files:
+        for addr in re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", f.read_text(encoding="utf-8")):
+            assert addr.endswith("@example.com"), f"{f.name} carries {addr}"

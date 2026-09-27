@@ -12,7 +12,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   finds a usable Python (3.10+ with `requests`; `.venv\`, then `python`, then `py -3`, each
   probed so the Microsoft Store placeholder is skipped), runs the UI from the checkout's `src\`
   with no `pip install`, and opens the browser. If `requests` is missing it says so and offers
-  to install it; any failure keeps the window open so the message can be read.
+  to install it; any failure keeps the window open so the message can be read. On first run it
+  asks for your contact address (unless `HIKE_OVERPASS_UA` is set) and remembers it in your
+  per-user folder (`%LOCALAPPDATA%\hike-finder\contact.txt`), never in the checkout; Enter
+  skips. The question is asked by Python (`hike_finder.launch`), not the batch file, so a
+  typed `&` or `"` stays text instead of becoming a shell command.
 - **`hike-finder-web --open`** opens the UI in your browser once the server is listening. A
   wildcard `--host` (`0.0.0.0`/`::`) opens the loopback address instead.
 
@@ -64,6 +68,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   cannot catch the gap — it tables `Criteria` fields, and a place name is not one.
 
 ### Changed
+
+- **The `scripts/` launchers no longer set a contact address.** They defaulted
+  `HIKE_OVERPASS_UA` to the maintainer's email, so anyone who ran them sent their searches
+  under that address. They now only forward arguments: set `HIKE_OVERPASS_UA` yourself (or
+  type it into the web UI's Contact box), otherwise the tool's generic identifier is sent. A
+  test keeps any real address out of the launchers.
 
 - **The README now opens with a six-step setup for a machine that has nothing on it.**
   Three overlapping onboarding sections ("Getting started (from a fresh clone)",

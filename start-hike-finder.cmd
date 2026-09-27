@@ -5,8 +5,11 @@ rem Finds a Python, runs the map server straight from this checkout's src\ (no
 rem `pip install` needed - the UI's only dependency is `requests`), and opens it in
 rem your browser. Close this window to stop the server.
 rem
-rem Like scripts\web.ps1 it sets a default Overpass contact only if you haven't set
-rem HIKE_OVERPASS_UA yourself, and forwards any arguments (e.g. --port 9000).
+rem The first time, it asks for your email: the OpenStreetMap servers want a contact
+rem address from every program. The answer is remembered in your own user folder
+rem (%LOCALAPPDATA%\hike-finder\contact.txt), never in this folder. A HIKE_OVERPASS_UA
+rem you set yourself wins and skips the question. Any arguments are forwarded
+rem (e.g. --port 9000).
 rem Double-clicking it again while it runs just reopens the page.
 rem
 rem Python is taken from, in order: .venv\ in this folder, `python`, `py -3` - the
@@ -15,12 +18,10 @@ rem may be the Microsoft Store placeholder that only opens the Store.
 setlocal
 cd /d "%~dp0"
 
-if not exist "src\hike_finder\web.py" (
+if not exist "src\hike_finder\launch.py" (
     echo This file has to stay in the hike-finder folder, next to "src".
     goto :fail
 )
-
-if not defined HIKE_OVERPASS_UA set "HIKE_OVERPASS_UA=boikoneov@gmail.com"
 
 set "HF_SRC=%CD%\src"
 if defined PYTHONPATH set "HF_SRC=%HF_SRC%;%PYTHONPATH%"
@@ -60,8 +61,9 @@ if errorlevel 1 goto :fail
 set "PY=%HF_ANY%"
 
 :run
-echo Starting hike-finder - your browser will open. Close this window to stop it.
-%PY% -m hike_finder.web --open %*
+echo hike-finder - your browser will open shortly. Close this window to stop it.
+echo.
+%PY% -m hike_finder.launch %*
 if errorlevel 1 goto :fail
 exit /b 0
 

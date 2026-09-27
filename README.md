@@ -157,8 +157,9 @@ area again is much faster.
   `hike-finder-web`, open <http://127.0.0.1:8765>, pan the map to where you want to
   walk, click search. No coordinates to type. **On Windows you can skip the
   terminal entirely:** double-click `start-hike-finder.cmd` in the repo folder — it
-  finds Python, starts the UI and opens it in your browser (close its window to
-  stop). It only needs Python 3.10+ with `requests`; it offers to install
+  asks for your email once (step 5; it's remembered in your user folder, not the
+  repo), finds Python, starts the UI and opens it in your browser (close its window
+  to stop). It only needs Python 3.10+ with `requests`; it offers to install
   `requests` if that's missing, and doesn't need step 4.
 - **[Command line](#option-b--command-line)** — `hike-finder --place "…"` plus
   filters. Everything the tool can do, scriptable, with `--json` output.
@@ -919,10 +920,10 @@ them, live or against a downloaded area.
 
 ### Launcher scripts (one file per interface)
 
-Thin wrappers in [`scripts/`](scripts/) start each frontend with a default
-Overpass contact already set, then forward your arguments to the entry point
-above — so they never go stale. Override the contact by exporting
-`HIKE_OVERPASS_UA` first. One file per interface, both shells:
+Thin wrappers in [`scripts/`](scripts/) forward your arguments to the entry point
+above — so they never go stale. They set **no** contact: export
+`HIKE_OVERPASS_UA` yourself first (step 5 above). One file per interface, both
+shells:
 
 | Interface | Linux / macOS | Windows |
 |-----------|---------------|---------|
@@ -931,7 +932,10 @@ above — so they never go stale. Override the contact by exporting
 | MCP server | `./scripts/mcp.sh` | `.\scripts\mcp.ps1` |
 
 **Double-click (Windows):** `start-hike-finder.cmd` at the repo root starts the web
-UI with no terminal and no `pip install`. It picks the first Python that is 3.10+
+UI with no terminal and no `pip install`. Unless `HIKE_OVERPASS_UA` is already set,
+it asks for your contact on first run and saves it to
+`%LOCALAPPDATA%\hike-finder\contact.txt` (delete that file to be asked again).
+It picks the first Python that is 3.10+
 and has `requests` (`.venv\` in the repo, then `python`, then `py -3`), runs the
 server from this checkout's `src\`, and passes `--open` so the browser opens once
 it is listening. Double-clicking it again while it runs just reopens the page. Arguments are forwarded
