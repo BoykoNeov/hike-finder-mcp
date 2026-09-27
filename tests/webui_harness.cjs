@@ -193,7 +193,23 @@ const FERRATA_GAP = { kind: 'ferrata_gap', message:
 const NO_ROUTES = { kind: 'no_routes', message:
   'No hiking route relations are mapped in that area — this is about the map data, '
   + 'not your filters.' };
+// Two loops built from the walking network (since 2026-09): one on bare paths only —
+// no trail to name, 0 % waymarked — and one that mixes a named trail with paths.
+const PATH_LOOPS = [
+  { osm_id: null, name: 'Composed loop', ref: null, unnamed: false, place_name: null,
+    distance_km: 5.45, gain_m: 1025, loss_m: 1023, circular: true, car_access: false,
+    chairlift_access: false, lift_type: null, start: { lat: 36.27, lon: 137.64 },
+    near_miss: false, notes: [], composed: true, composed_of: [], marked_frac: 0.0,
+    pois: [], destination: null, geometry: [[[36.27, 137.64], [36.28, 137.65]]] },
+  { osm_id: null, name: 'Composed loop', ref: null, unnamed: false, place_name: null,
+    distance_km: 9.2, gain_m: 368, loss_m: 363, circular: true, car_access: false,
+    chairlift_access: false, lift_type: null, start: { lat: 50.77, lon: 15.54 },
+    near_miss: false, notes: [], composed: true, composed_of: ['1801', '4201'],
+    marked_frac: 0.65, pois: [], destination: null,
+    geometry: [[[50.77, 15.54], [50.78, 15.55]]] },
+];
 function hikesReply(url) {
+  if (/area=pathloops/.test(url)) return { hikes: PATH_LOOPS, notices: [] };
   // `nofer` answers with routes AND the gap: the browser's rule is that the caveat is
   // shown regardless of what came back, so the case worth driving is the one where a
   // result exists to hide behind.
@@ -562,6 +578,20 @@ const fire = (ev, latlng) => (handlers[ev] || []).forEach(f => f({ latlng }));
         !/widen the map/.test(el('status').textContent), el('status').textContent);
   check('that one is not ALSO rendered as a notice',
         el('notices')._children.length === 0, el('notices')._children.length);
+
+  // Loops from the walking network say how much of them is waymarked — and a loop on
+  // bare paths names no trail rather than rendering a dangling "composed of ".
+  el('area').value = 'pathloops';
+  el('notices')._children.length = 0;
+  el('results')._children.length = 0;
+  await search();
+  const shown = el('results')._children.map(c => c.innerHTML);
+  check('two path loops listed', shown.length === 2, shown.length);
+  check('a bare-path loop says so and names no trail',
+        /composed loop; unmarked paths only/.test(shown[0]) && !/composed of/.test(shown[0]),
+        shown[0]);
+  check('a mixed loop names its trails and its waymarked share',
+        /composed of 1801 \+ 4201; 65% on waymarked trails/.test(shown[1]), shown[1]);
 
   // And the quiet direction, which is what makes either one a signal: a search with
   // nothing to caveat renders no notice at all.

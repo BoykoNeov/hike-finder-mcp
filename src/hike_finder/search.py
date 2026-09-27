@@ -169,7 +169,8 @@ def search_hikes(
     name_places: bool | None = None,
     diagnostics: dict | None = None,
 ) -> list[Hike]:
-    """Fetch OSM data for ``bbox`` and return measured, filtered hikes.
+    """Fetch OSM data for ``bbox`` and return measured, filtered hikes: every named
+    route relation that matches, then loops composed from the walking network.
 
     ``bbox`` is ``(south, west, north, east)``. Keyword overrides (used by the
     CLI's flags / the web form) win over ``cfg``; ``cfg`` defaults to the
@@ -200,6 +201,24 @@ def search_hikes(
     if diagnostics is not None:
         diagnostics["no_routes"] = area_has_no_routes(area)
     provider = _provider(cfg, elevation_mode, dem_dir, cache)
+    hikes = _area_hikes(area, provider, criteria, cfg, bbox, near_miss=near_miss)
+    if _wants_geocode(name_places, cfg):
+        enrich_names(hikes, _geocoder(cfg, cache))
+    return hikes
+
+
+def _area_hikes(
+    area: AreaData, provider, criteria: Criteria, cfg: Config, bbox: Bbox, *, near_miss
+) -> list[Hike]:
+    """The named routes that match, then (``cfg.area_loops``) loops composed from the
+    walking network — the plain area search's answer.
+
+    Loops come AFTER the relations, so every named trail still reads first. They are
+    skipped when the search can only reject them anyway (``circular=False``) — each loop
+    costs elevation — and when the network is empty, so an empty area logs nothing
+    about composing. A loop that merely re-traces ONE listed relation's own ring is
+    dropped (``_relation_ring``): that trail is already in the list under its name.
+    """
     hikes = find_hikes(
         area,
         provider,
@@ -218,9 +237,31 @@ def search_hikes(
         poi_radius_m=cfg.poi_radius_m,
         **_near_miss_kwargs(cfg),
     )
-    if _wants_geocode(name_places, cfg):
-        enrich_names(hikes, _geocoder(cfg, cache))
-    return hikes
+    if not cfg.area_loops or criteria.circular is False:
+        return hikes
+    graph = _network(area, bbox)
+    if not graph.segments:
+        return hikes
+    loops = _compose_from_graph(
+        graph, area, criteria, cfg, provider, bbox, near_miss=near_miss, point_anchor=None
+    )
+    listed = {h.ref or h.name for h in hikes if not h.composed}
+    return hikes + [h for h in loops if not _relation_ring(h, listed)]
+
+
+def _relation_ring(h: Hike, listed: set) -> bool:
+    """True when composed loop ``h`` is just one listed relation's own ring.
+
+    A relation mapped as a closed loop is found twice — listed by name, and composed
+    again as a ring of its own member ways. The composed copy names exactly that one
+    trail and rides on it for (all but float noise of) its length; anything that leaves
+    it — a shortcut on a path, a second trail — is a different walk and stays.
+    """
+    return (
+        len(h.composed_of) == 1
+        and h.composed_of[0] in listed
+        and (h.marked_frac is None or h.marked_frac >= 0.99)
+    )
 
 
 def _measure_composed(

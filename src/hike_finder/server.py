@@ -193,10 +193,14 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
         Tool(
             name="find_hikes",
             description=(
-                "Find marked OSM hiking routes in a bounding box, filtered by real "
-                "computed elevation gain and distance, plus shape and access. Data is "
-                "OpenStreetMap route relations (same source family as mapy.cz); "
-                "gain/distance are computed locally, not scraped.\n\n"
+                "Find hikes in a bounding box, filtered by real computed elevation gain "
+                "and distance, plus shape and access. Returns the named OSM hiking "
+                "route relations first (same source family as mapy.cz), then loops "
+                "built from the whole walking network — every mapped path, footway and "
+                "track — so an area mapped only as paths still gets results. A built "
+                "loop is marked `composed` and says how much of it follows waymarked "
+                "trails (`marked_frac`). Gain/distance are computed locally, not "
+                "scraped.\n\n"
                 "Filters (all optional): elevation gain (m), distance (km), `circular` "
                 "(loop vs point-to-point), `car_access` (parking mapped near a trail "
                 "end), `chairlift_access` (a ride-up aerialway — chairlift/gondola/"
@@ -209,11 +213,9 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                 "Bounding box: pass south/west/north/east for a live search, OR `area` "
                 "(a snapshot path from download_area) to search offline with no API calls "
                 "— then the box is taken from the snapshot.\n\n"
-                "Set `compose_loops` true to SYNTHESISE loops by combining connected "
-                "marked trails inside the box, instead of reporting each OSM relation "
-                "as-is — useful for day-loops that aren't mapped as a single relation. "
-                "Target length comes from min/max_distance_km (default 3-15 km); results "
-                "are stitched from several trails and have no single relation id."
+                "Set `compose_loops` true for the built loops ONLY, without the named "
+                "routes. Loop length comes from min/max_distance_km (default 3-15 km); "
+                "a built loop has no single relation id."
             ),
             input_schema={
                 "type": "object",
@@ -265,9 +267,9 @@ async def list_tools(_ctx=None, _params=None) -> ListToolsResult:
                     },
                     "compose_loops": {
                         "type": "boolean",
-                        "description": "true = synthesise loops from connected marked trails "
-                        "inside the box (live only; ignored with `area`). Target length from "
-                        "min/max_distance_km. Results are stitched from several trails.",
+                        "description": "true = ONLY loops built from the walking network, "
+                        "no named routes (a plain search returns both). Live only; ignored "
+                        "with `area`. Target length from min/max_distance_km.",
                     },
                     "name_places": {
                         "type": "boolean",

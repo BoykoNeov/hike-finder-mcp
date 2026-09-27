@@ -220,7 +220,7 @@ INDEX_HTML = """<!doctype html>
       <div><label>Max dist (km)</label><input id="max_distance_km" type="number" step="0.1"></div>
     </div>
 
-    <label style="margin-top:12px;"><input type="checkbox" id="compose_loops" style="width:auto; vertical-align:middle;"> Compose loops from connected trails</label>
+    <label style="margin-top:12px;"><input type="checkbox" id="compose_loops" style="width:auto; vertical-align:middle;"> Loops only (skip the named routes)</label>
     <p class="muted">Stitch several marked trails into day-loops of your target distance (uses min/max dist above; default 3–15 km). Live map only.</p>
 
     <label><input type="checkbox" id="name_places" style="width:auto; vertical-align:middle;"> Name unnamed routes from places</label>
@@ -864,9 +864,16 @@ function render(hikes){
     // A composed loop has no single relation id — name its constituent trails. An
     // unnamed route given a place label is marked "unnamed OSM relation" so the
     // geocoded label is never mistaken for the route's signed trail name.
-    const ident = h.composed
-      ? ('composed of ' + esc((h.composed_of || []).join(' + ')))
+    // Same wording as format.format_hike: a loop on bare paths names no trail, and the
+    // waymarked share is said only when some of the route leaves the signed network.
+    const trails = h.composed_of || [];
+    let ident = h.composed
+      ? (trails.length ? 'composed of ' + esc(trails.join(' + ')) : 'composed loop')
       : ((h.place_name ? 'unnamed OSM relation ' : 'OSM relation ') + h.osm_id);
+    if (h.composed && h.marked_frac != null && h.marked_frac < 0.995) {
+      const pct = Math.round(h.marked_frac * 100);
+      ident += pct === 0 ? '; unmarked paths only' : '; ' + pct + '% on waymarked trails';
+    }
     const el = document.createElement('div');
     el.className = h.near_miss ? 'hike near' : 'hike';
     el.innerHTML = '<div class="name">' + esc(dispName) + '</div>'

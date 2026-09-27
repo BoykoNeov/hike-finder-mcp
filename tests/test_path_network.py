@@ -283,3 +283,65 @@ def test_point_to_point_routes_run_on_paths_too(monkeypatch):
     _live(monkeypatch, area)
     hikes = S.routes_between(SW, NE, Criteria(), Config())
     assert hikes and hikes[0].marked_frac == 0.0
+
+
+# ------------------------------------------------------------ the plain area search
+
+
+def test_an_area_mapped_only_as_paths_is_no_longer_empty(monkeypatch):
+    """The headline: zero relations, a ring of paths — the plain area search (no
+    compose flag) returns a loop, where it used to say "nothing mapped here"."""
+    ring = [SW, NW, NE, SE, SW]
+    _live(monkeypatch, AreaData(routes=[], paths=[_path(1, ring[:3]), _path(2, ring[2:])]))
+    diag: dict = {}
+    hikes = S.search_hikes(BBOX, Criteria(min_distance_km=1, max_distance_km=5), Config(),
+                           diagnostics=diag)
+    assert diag["no_routes"] is False
+    assert [h.composed for h in hikes] == [True]
+
+
+def _linear_relation_plus_paths():
+    """A linear named trail (west side) and paths closing it into a ring."""
+    rel = _relation([[MID_S, SW, NW, MID_N]])
+    return AreaData(routes=[rel], paths=[_path(10, [MID_N, NE, SE, MID_S])])
+
+
+def test_named_routes_come_first_then_loops(monkeypatch):
+    _live(monkeypatch, _linear_relation_plus_paths())
+    hikes = S.search_hikes(BBOX, Criteria(min_distance_km=0.5), Config())
+    assert [h.composed for h in hikes] == [False, True]
+    assert hikes[0].name == "red" and hikes[1].composed_of == ("red",)
+
+
+def test_loops_can_be_switched_off(monkeypatch):
+    _live(monkeypatch, _linear_relation_plus_paths())
+    hikes = S.search_hikes(BBOX, Criteria(min_distance_km=0.5), Config(area_loops=False))
+    assert [h.composed for h in hikes] == [False]
+
+
+def test_a_linear_only_search_spends_nothing_on_loops(monkeypatch):
+    """`circular=False` rejects every loop; composing them first would only spend
+    elevation lookups on results that cannot be shown."""
+    _live(monkeypatch, _linear_relation_plus_paths())
+    monkeypatch.setattr(S, "_compose_from_graph", _boom)
+    hikes = S.search_hikes(BBOX, Criteria(circular=False, min_distance_km=0.5), Config())
+    assert [h.composed for h in hikes] == [False]
+
+
+def _boom(*a, **k):
+    raise AssertionError("composed loops for a search that cannot show one")
+
+
+def test_a_relation_mapped_as_a_ring_is_not_listed_twice(monkeypatch):
+    """A closed relation is listed by name; composing its own ring again would show the
+    same walk twice. A loop that LEAVES it (onto a path shortcut) is a different walk."""
+    ring = _relation([[SW, NW, NE, SE, SW]], ref="ring")
+    _live(monkeypatch, AreaData(routes=[ring], paths=[]))
+    hikes = S.search_hikes(BBOX, Criteria(min_distance_km=0.5), Config())
+    assert [(h.composed, h.name) for h in hikes] == [(False, "ring")]
+
+    shortcut = _path(20, [NW, SE])  # a diagonal: cuts the ring into two triangles
+    _live(monkeypatch, AreaData(routes=[ring], paths=[shortcut]))
+    hikes = S.search_hikes(BBOX, Criteria(min_distance_km=0.5), Config())
+    assert hikes[0].name == "ring" and not hikes[0].composed
+    assert any(h.composed and h.marked_frac < 0.99 for h in hikes)

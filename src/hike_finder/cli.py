@@ -60,7 +60,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="hike-finder",
         description=(
-            "Find marked OSM hiking routes in a bounding box, with locally computed "
+            "Find hikes in a bounding box — the named OSM hiking routes, then loops "
+            "built from every mapped path and track — with locally computed "
             "elevation gain/distance plus shape and access filters. No LLM or MCP "
             "client required."
         ),
@@ -157,11 +158,13 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument(
         "--compose-loops",
         action="store_true",
-        help="Synthesise loops by combining connected marked trails, instead of "
-        "reporting each OSM relation as-is — finds day-loops that aren't mapped as a "
-        "single relation. Target length comes from --min-distance/--max-distance "
-        "(default 3-15 km). Each result is stitched from several trails (shown as "
-        "'composed of ...'). Loops are kept inside the --bbox area. Combine with "
+        help="Only loops, without the named routes. A plain search already returns "
+        "the named routes AND loops built from the walking network (every path, "
+        "footway and track, plus the marked trails; HIKE_AREA_LOOPS=0 turns that "
+        "off). Target length comes from --min-distance/--max-distance "
+        "(default 3-15 km). Each loop names the marked trails it follows ('composed "
+        "of ...') and how much of it is waymarked. Loops are kept inside the --bbox "
+        "area. Combine with "
         "--car-access / --chairlift-access to get only loops reachable from a parking "
         "lot / lift, each started at that trailhead ('a loop from where I park').",
     )

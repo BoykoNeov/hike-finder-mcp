@@ -475,7 +475,7 @@ def fetch_area(
     overpass_url: str = DEFAULT_OVERPASS_URL,
     timeout_s: float = 90.0,
     user_agent: str | None = None,
-    max_retries: int = 3,
+    max_retries: int = 4,
 ) -> AreaData:
     """Fetch routes + parking + lift features for a bounding box (one request)."""
     query = build_query(south, west, north, east)
@@ -489,7 +489,11 @@ def fetch_area(
         if resp.status_code not in _TRANSIENT_STATUS:
             break
         if attempt < max_retries - 1:
-            time.sleep(2 ** attempt)  # 1s, 2s, ... brief backoff on overload
+            # 2 s, 4 s, 8 s. Longer than it used to be (1 s, 2 s) since the query carries
+            # the walking network: a 504 from the public instance is its front end giving
+            # up under load, and live it answered on the next try some seconds later —
+            # not one second later.
+            time.sleep(2 * 2 ** attempt)
     if resp is None:  # max_retries < 1 sent nothing — fail cleanly, not AttributeError
         raise ValueError("max_retries must be >= 1")
     resp.raise_for_status()

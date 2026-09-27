@@ -72,6 +72,9 @@
   HIKE_GEOCODE_CACHE_TTL_DAYS  how long a cached place name stays fresh, days
                         (default 365; place names change slowly). 0 disables.
 
+  HIKE_AREA_LOOPS       a plain area search also returns loops built from the walking
+                        network, after the named routes (default on). 0 = named routes
+                        only — faster, and no elevation spent on loops
   HIKE_COMPOSE_MIN_KM   compose mode: default min loop length when no --min-distance (3)
   HIKE_COMPOSE_MAX_KM   compose mode: default max loop length when no --max-distance (15)
   HIKE_COMPOSE_MAX_SEGMENTS  compose mode: max trail segments per composed loop (12)
@@ -193,6 +196,10 @@ class Config:
     # Loop composition (compose.py): default target length band when the user gives no
     # --min/--max-distance, plus the cycle-search bounds (segments per loop, near-
     # duplicate overlap fraction). The expansion budget is an internal runaway guard.
+    # A plain area search also composes loops from the walking network (see
+    # search.search_hikes). On by default: it is what makes an area mapped only as paths
+    # return anything at all. Off gives the old named-routes-only search.
+    area_loops: bool = _b("HIKE_AREA_LOOPS", True)
     compose_min_km: float = _f("HIKE_COMPOSE_MIN_KM", "3")
     compose_max_km: float = _f("HIKE_COMPOSE_MAX_KM", "15")
     compose_max_segments: int = _i("HIKE_COMPOSE_MAX_SEGMENTS", "12")

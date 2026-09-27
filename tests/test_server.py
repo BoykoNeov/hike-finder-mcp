@@ -496,9 +496,13 @@ def test_call_tool_runs_the_real_engine_on_fixture(monkeypatch):
     assert not result.is_error
 
     lines = result.content[0].text.splitlines()
-    assert len(lines) >= 5                                  # 11 survive on this bbox
-    assert all("OSM relation" in ln for ln in lines)        # all real formatted hikes
-    assert any("OSM relation 6282999" in ln for ln in lines)  # the known Spindl loop
+    named = [ln for ln in lines if "OSM relation" in ln]
+    composed = [ln for ln in lines if "composed of" in ln]
+    assert len(named) >= 5                                  # 11 survive on this bbox
+    assert any("OSM relation 6282999" in ln for ln in named)  # the known Spindl loop
+    # A plain area search also returns loops built from the network, AFTER every named
+    # route — and nothing that is neither.
+    assert composed and lines == named + composed
 
 
 # --- the REAL stdio transport: spawn the server as a subprocess ---------------
