@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import urllib.request
+import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -1488,6 +1491,36 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
+class _Server(ThreadingHTTPServer):
+    # http.server turns SO_REUSEADDR on, and on Windows that lets a SECOND process bind
+    # a port that is already listening — no error, and the two servers then take
+    # requests at random. Double-clicking the launcher twice did exactly that. Off on
+    # Windows, a clash is a clean OSError; POSIX keeps the quick-restart convenience
+    # (there SO_REUSEADDR never lets anyone share a live listener).
+    allow_reuse_address = os.name != "nt"
+
+
+def _browse_host(host: str) -> str:
+    """The address a browser on THIS machine should use. A wildcard bind is where the
+    server listens, not somewhere you can navigate to."""
+    if host in ("", "0.0.0.0"):
+        return "127.0.0.1"
+    if host == "::":
+        return "[::1]"
+    return host
+
+
+def _is_hike_finder(url: str) -> bool:
+    """True if the page at ``url`` is this UI — so a second launch can hand you the one
+    already running instead of failing, without mistaking some other program on the
+    port for it."""
+    try:
+        with urllib.request.urlopen(url + "/", timeout=2) as resp:
+            return "<title>hike-finder</title>" in resp.read().decode("utf-8", "replace")
+    except (OSError, ValueError):
+        return False
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(
         prog="hike-finder-web",
@@ -1495,11 +1528,31 @@ def main(argv: list[str] | None = None) -> None:
     )
     p.add_argument("--host", default="127.0.0.1", help="Bind address (default 127.0.0.1).")
     p.add_argument("--port", type=int, default=8765, help="Port (default 8765).")
+    p.add_argument(
+        "--open", action="store_true",
+        help="Open the UI in your web browser once the server is listening.",
+    )
     args = p.parse_args(argv)
 
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
-    url = f"http://{args.host}:{args.port}"
+    try:
+        server = _Server((args.host, args.port), Handler)
+    except OSError as exc:
+        url = f"http://{_browse_host(args.host)}:{args.port}"
+        if _is_hike_finder(url):
+            print(f"hike-finder web UI is already running on {url}")
+            if args.open:
+                webbrowser.open(url)
+            return
+        raise SystemExit(
+            f"cannot start the web UI on port {args.port}: {exc}\n"
+            "Another program is using it — pick a free one with --port, e.g. --port 8766."
+        ) from None
+    # The socket is already listening once the constructor returns, so a browser opened
+    # now is queued, not refused — no guessed start-up delay needed.
+    url = f"http://{_browse_host(args.host)}:{server.server_address[1]}"
     print(f"hike-finder web UI on {url}  (Ctrl+C to stop)")
+    if args.open:
+        webbrowser.open(url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

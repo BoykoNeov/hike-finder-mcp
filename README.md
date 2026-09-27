@@ -155,7 +155,11 @@ area again is much faster.
 
 - **[Web UI](#option-a--web-ui-easiest-no-coordinates-to-type)** — easiest. Run
   `hike-finder-web`, open <http://127.0.0.1:8765>, pan the map to where you want to
-  walk, click search. No coordinates to type.
+  walk, click search. No coordinates to type. **On Windows you can skip the
+  terminal entirely:** double-click `start-hike-finder.cmd` in the repo folder — it
+  finds Python, starts the UI and opens it in your browser (close its window to
+  stop). It only needs Python 3.10+ with `requests`; it offers to install
+  `requests` if that's missing, and doesn't need step 4.
 - **[Command line](#option-b--command-line)** — `hike-finder --place "…"` plus
   filters. Everything the tool can do, scriptable, with `--json` output.
 - **[MCP server](#option-c--mcp-server-drive-it-from-an-llm-client)** — optional;
@@ -925,6 +929,13 @@ above — so they never go stale. Override the contact by exporting
 | CLI | `./scripts/cli.sh --bbox 50.72 15.58 50.74 15.62` | `.\scripts\cli.ps1 --bbox 50.72 15.58 50.74 15.62` |
 | Web UI | `./scripts/web.sh` | `.\scripts\web.ps1` |
 | MCP server | `./scripts/mcp.sh` | `.\scripts\mcp.ps1` |
+
+**Double-click (Windows):** `start-hike-finder.cmd` at the repo root starts the web
+UI with no terminal and no `pip install`. It picks the first Python that is 3.10+
+and has `requests` (`.venv\` in the repo, then `python`, then `py -3`), runs the
+server from this checkout's `src\`, and passes `--open` so the browser opens once
+it is listening. Double-clicking it again while it runs just reopens the page. Arguments are forwarded
+like the other launchers (`start-hike-finder.cmd --port 9000`).
 
 The MCP launcher keeps **stdout clean** (stdout is the JSON-RPC channel), so a
 client can point straight at it instead of `hike-finder-mcp`:

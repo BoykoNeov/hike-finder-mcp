@@ -8,6 +8,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Double-click to start the web UI on Windows.** `start-hike-finder.cmd` at the repo root
+  finds a usable Python (3.10+ with `requests`; `.venv\`, then `python`, then `py -3`, each
+  probed so the Microsoft Store placeholder is skipped), runs the UI from the checkout's `src\`
+  with no `pip install`, and opens the browser. If `requests` is missing it says so and offers
+  to install it; any failure keeps the window open so the message can be read.
+- **`hike-finder-web --open`** opens the UI in your browser once the server is listening. A
+  wildcard `--host` (`0.0.0.0`/`::`) opens the loopback address instead.
+
 - **Place names instead of coordinates.** Every mode now takes a name wherever it took
   numbers: `--place "Spindleruv Mlyn"` in place of four `--bbox` corners, and a name given to
   `--around`, `--from`, `--to` or `--via` in place of a `LAT LON` pair. Over MCP the same
@@ -134,6 +142,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   those types instead of `Any`.
 
 ### Fixed
+
+- **Starting the web UI twice on Windows no longer runs two servers on one port.**
+  `http.server` enables `SO_REUSEADDR`, which on Windows let a second copy bind a port already
+  in use without error. The two then shared requests at random. The address reuse is now off
+  on Windows. A second launch finds the running UI and reopens it. A port held by some other
+  program fails with a message suggesting `--port`, not a traceback.
 
 - **`zip` over pairs that must be the same length is now checked** (`strict=True`) at the
   seams where a mismatch would be silent and wrong: one elevation per point in the cache

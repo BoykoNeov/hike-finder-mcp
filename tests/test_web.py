@@ -807,3 +807,91 @@ def test_the_live_and_saved_paths_word_no_routes_identically(server):
     )
     assert web._live_notices({}) == []          # absent key is not a claim
     assert web._live_notices({"no_routes": False}) == []
+
+
+# --- main(): the double-click launcher's contract --------------------------------
+#
+# start-hike-finder.cmd runs `python -m hike_finder.web --open`. What it relies on:
+# the browser opens on an address you can navigate to, a second launch hands you the
+# running page instead of starting a rival server, and a port held by something else
+# fails with a sentence rather than a traceback.
+
+
+def _no_serve(monkeypatch):
+    """Let main() bind and announce, then return instead of serving forever."""
+    def _stop(self, *a, **kw):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(web._Server, "serve_forever", _stop)
+
+
+def test_open_flag_opens_the_browser_on_the_bound_port(monkeypatch, capsys):
+    opened = []
+    monkeypatch.setattr(web.webbrowser, "open", opened.append)
+    _no_serve(monkeypatch)
+    web.main(["--port", "0", "--open"])
+    # --port 0 binds an ephemeral port; the URL must name the REAL one, not ":0".
+    assert len(opened) == 1 and opened[0].startswith("http://127.0.0.1:")
+    assert not opened[0].endswith(":0")
+    assert opened[0] in capsys.readouterr().out
+
+
+def test_no_open_flag_leaves_the_browser_alone(monkeypatch):
+    opened = []
+    monkeypatch.setattr(web.webbrowser, "open", opened.append)
+    _no_serve(monkeypatch)
+    web.main(["--port", "0"])
+    assert opened == []
+
+
+def test_a_wildcard_bind_opens_a_navigable_address():
+    assert web._browse_host("0.0.0.0") == "127.0.0.1"
+    assert web._browse_host("") == "127.0.0.1"
+    assert web._browse_host("::") == "[::1]"
+    assert web._browse_host("192.168.1.5") == "192.168.1.5"
+
+
+def test_a_second_server_cannot_share_a_live_port():
+    """On Windows http.server's SO_REUSEADDR let a second bind succeed silently (measured),
+    and the two servers then split requests at random."""
+    first = web._Server(("127.0.0.1", 0), web.Handler)
+    try:
+        with pytest.raises(OSError):
+            web._Server(("127.0.0.1", first.server_address[1]), web.Handler)
+    finally:
+        first.server_close()
+
+
+def test_second_launch_reopens_the_running_ui(monkeypatch, capsys):
+    running = web._Server(("127.0.0.1", 0), web.Handler)
+    t = threading.Thread(target=running.serve_forever, daemon=True)
+    t.start()
+    port = running.server_address[1]
+    opened = []
+    monkeypatch.setattr(web.webbrowser, "open", opened.append)
+    # Patched AFTER the running server's thread took its bound method, so only a rival
+    # main() is affected: if the bind wrongly succeeds, this FAILS instead of hanging.
+    _no_serve(monkeypatch)
+    try:
+        web.main(["--port", str(port), "--open"])  # returns: no rival server started
+    finally:
+        running.shutdown()
+        running.server_close()
+    assert opened == [f"http://127.0.0.1:{port}"]
+    assert "already running" in capsys.readouterr().out
+
+
+def test_a_port_held_by_another_program_fails_with_a_sentence(monkeypatch):
+    import socket
+
+    other = socket.socket()
+    other.bind(("127.0.0.1", 0))
+    other.listen()  # accepts, never answers: not hike-finder
+    opened = []
+    monkeypatch.setattr(web.webbrowser, "open", opened.append)
+    try:
+        with pytest.raises(SystemExit) as exc:
+            web.main(["--port", str(other.getsockname()[1]), "--open"])
+    finally:
+        other.close()
+    assert "--port" in str(exc.value.code)
+    assert opened == []

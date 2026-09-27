@@ -166,7 +166,15 @@ MCP protocol to a client.
 hike-finder-web
 ```
 
-Then open **http://127.0.0.1:8765** in a browser. In the page:
+Then open **http://127.0.0.1:8765** in a browser (or run `hike-finder-web --open`
+and it opens itself).
+
+> **Windows, no terminal:** double-click **`start-hike-finder.cmd`** in the repo
+> folder instead. It finds Python, starts the UI straight from the checkout (no
+> `pip install` needed), opens your browser, and stops when you close its window.
+> Double-clicking it again while it runs just reopens the page.
+
+In the page:
 
 1. Fill the **Contact** field (top of the right panel) with your email.
 2. **Pan and zoom the map** so it frames the area you want to search — or press

@@ -121,3 +121,35 @@ def test_mcp_launcher_keeps_stdout_clean(suffix):
         "find_hikes", "circular_routes", "routes_between", "route_via", "routes_to_poi",
         "list_pois", "list_ferrata", "download_area", "list_areas",
     }
+
+
+def test_click_launcher_reaches_this_checkouts_web_ui():
+    """``start-hike-finder.cmd`` — the double-click launcher at the repo root.
+
+    Unlike scripts/, it needs NO pip install: it finds a Python itself and runs
+    ``hike_finder.web`` from this checkout's ``src``. So it is run with PYTHONPATH
+    cleared, and ``--open`` in the usage text proves it reached THIS source rather
+    than an older pip-installed copy that predates the flag. stdin is closed so an
+    error path's ``pause`` can't hang the suite.
+    """
+    import os
+
+    if os.name != "nt":
+        pytest.skip("Windows-only launcher")
+    script = _ROOT / "start-hike-finder.cmd"
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    proc = subprocess.run(
+        ["cmd", "/c", str(script), "--help"], env=env, stdin=subprocess.DEVNULL,
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "usage: hike-finder-web" in proc.stdout
+    assert "--open" in proc.stdout
+
+
+def test_click_launcher_is_checked_out_with_crlf():
+    """cmd.exe can mis-parse ``goto``/``call`` labels in an LF batch file, and the
+    launcher is built on them. .gitattributes pins *.cmd to CRLF; this catches the
+    pin being dropped (or an editor saving LF) before a user double-clicks it."""
+    data = (_ROOT / "start-hike-finder.cmd").read_bytes()
+    assert b"\n" in data and data.count(b"\r\n") == data.count(b"\n")
