@@ -90,6 +90,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is the fix.
 - **Overpass downloads are larger** (about 10 MB for a 400 km² box, was about 0.9 MB), and
   retries after a busy-server error now wait 2, 4 and 8 seconds.
+- **A download the server cut off part-way is refused** instead of being read as "no parking,
+  no stops, no points of interest here" (and cached that way). Overpass reports its own timeout
+  as a success with a note attached; the note is now checked, and the heaviest part of the query
+  runs last so a cut can only ever cost paths.
+- **A saved area says, with every result, that loops need a live search** — saved areas keep
+  named routes only, so the same search offline is shorter.
 
 - **The `scripts/` launchers no longer set a contact address.** They defaulted
   `HIKE_OVERPASS_UA` to the maintainer's email, so anyone who ran them sent their searches

@@ -92,6 +92,9 @@ named routes in Krkonoše.
 - Deviations from the design above: the per-start budget floor is capped at the caller's
   budget (so `budget=0` still reports `capped`); the web checkbox is relabelled
   "Loops only".
+- Review fixes (`85fa571`): a cut-off Overpass answer (HTTP 200 + error `remark`) is
+  refused, paths moved to the end of the query; saved areas carry a "loops need a live
+  search" note with every result; near-misses re-ranked over the combined list.
 - Open, not blocking: long "composed of …" lists on big loops; no difficulty filter for
   demanding unmarked alpine paths (`sac_scale`); offline loops would need a local-DEM
   download path.

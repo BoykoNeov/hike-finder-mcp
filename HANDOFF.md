@@ -908,6 +908,15 @@ skip without the `mcp` extra).
   - **Cost:** a 400 km² response is ~10 MB (was ~0.9 MB) and the public instance 504s the
     heavier query more often under load; retries now wait 2/4/8 s. A 10 km box with loops
     ran in ~40 s on the elevation API (43 requests).
+  - **Three review catches, each now pinned by a test:** (1) Overpass reports a mid-query
+    timeout as HTTP 200 + a `remark`, with whatever it had printed — measured: 10 MB of
+    paths and NO parking/transit/POI element. Parsed, that is "none here", cached for the
+    TTL. `fetch_area` raises `OverpassIncomplete` on an error remark, and the path statement
+    is LAST so a cut can only cost paths. (2) The saved-area "no loops" fact was only said on
+    an empty result; `saved_area_loops_caveat` now rides with every saved-area search (web
+    kind `saved_no_loops`). (3) Under `near_miss="auto"` the named pass added near-misses
+    whenever no NAMED route matched, listing them above matching loops; `_area_hikes`
+    re-applies the rule to the combined list.
   - **Open:** "composed of …" can now list a dozen trail names on a long loop in a dense
     network — honest, but long. Unmarked paths include demanding alpine ones (`sac_scale`
     T4–T6); nothing filters on difficulty yet.
