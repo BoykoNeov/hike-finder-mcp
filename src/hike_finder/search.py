@@ -42,6 +42,8 @@ from .compose import (
     clip_routes_to_bbox,
     find_loops,
     k_shortest_paths,
+    marked_length_m,
+    paths_as_routes,
     resample_segments,
     snap_points,
 )
@@ -107,6 +109,21 @@ def _fetch_area(
     if cache_on:
         cache.put_area(key, area)
     return area
+
+
+def _network(area: AreaData, bbox: Bbox):
+    """The walking network every synthesising mode searches: route relations AND every
+    walkable way, clipped to ``bbox``, as one contracted graph.
+
+    The ONE place that decides what the network is made of, so loops, point-to-point
+    routes, via-routes and routes-to-a-POI can never disagree about it. Relations come
+    first in the list on purpose: where a relation member and a bare path are the same
+    OSM way, the dedup in ``build_trail_graph`` keeps the first owner's tags, and the
+    relation's member-way record is the one the rest of the app has always read.
+    """
+    return build_trail_graph(
+        clip_routes_to_bbox(area.routes + paths_as_routes(area.paths), bbox)
+    )
 
 
 def _geocoder(cfg: Config, cache):
@@ -354,6 +371,9 @@ def _measure_composed(
             if dest is not None:
                 h.destination = dest
             _attach_composed_surface(graph, route, h)
+            marked = marked_length_m(graph, route)
+            if marked is not None and route.length_m > 0:
+                h.marked_frac = min(1.0, marked / route.length_m)
     return hikes
 
 
@@ -426,7 +446,7 @@ def compose_loops(
     if diagnostics is not None:
         diagnostics["no_routes"] = area_has_no_routes(area)
 
-    graph = build_trail_graph(clip_routes_to_bbox(area.routes, bbox))
+    graph = _network(area, bbox)
     provider = _provider(cfg, elevation_mode, dem_dir, cache)
     return _compose_from_graph(
         graph, area, criteria, cfg, provider, bbox, near_miss=near_miss, point_anchor=None
@@ -575,7 +595,7 @@ def compose_loops_around(
     )
     if diagnostics is not None:
         diagnostics["no_routes"] = area_has_no_routes(area)
-    graph = build_trail_graph(clip_routes_to_bbox(area.routes, bbox))
+    graph = _network(area, bbox)
     provider = _provider(cfg, elevation_mode, dem_dir, cache)
     return _compose_from_graph(
         graph, area, criteria, cfg, provider, bbox,
@@ -640,7 +660,7 @@ def routes_between(
     )
     if diagnostics is not None:
         diagnostics["no_routes"] = area_has_no_routes(area)
-    graph = build_trail_graph(clip_routes_to_bbox(area.routes, bbox))
+    graph = _network(area, bbox)
     graph, snapped = snap_points(graph, [start, finish])
     (src, src_d), (dst, dst_d) = snapped
     if src < 0 or dst < 0:
@@ -757,7 +777,7 @@ def route_via(
     )
     if diagnostics is not None:
         diagnostics["no_routes"] = area_has_no_routes(area)
-    graph = build_trail_graph(clip_routes_to_bbox(area.routes, bbox))
+    graph = _network(area, bbox)
     graph, snapped = snap_points(graph, points)
     nodes = [n for (n, _) in snapped]
     if any(n < 0 for n in nodes):
@@ -1003,7 +1023,7 @@ def routes_to_poi(
     excluded_crow_m = scored[keep][0] if len(scored) > keep else math.inf
     candidates = scored[:keep]
 
-    graph = build_trail_graph(clip_routes_to_bbox(area.routes, bbox))
+    graph = _network(area, bbox)
     if not graph.segments:
         _log.warning("route to POI: no trails found in the area around your point")
         return []
@@ -1241,7 +1261,8 @@ _SNAPSHOT_NO_POIS = (
 
 
 def area_has_no_routes(area: AreaData) -> bool:
-    """True when an area carries no hiking route relations AT ALL.
+    """True when an area carries nothing to walk on: no hiking route relations AND no
+    walkable ways (or, for data that never fetched ways, no relations).
 
     The one distinction an empty result cannot make on its own. "Your criteria excluded
     everything" and "nothing here is mapped as a hiking route" are different facts about
@@ -1252,30 +1273,39 @@ def area_has_no_routes(area: AreaData) -> bool:
     Not a hypothetical: measured over a ~400 km² box on Japan's North Alps (Kamikōchi),
     OSM carries **zero** `route=hiking`/`route=foot` relations, against 138 in the
     Krkonoše box the project was built on. The terrain there is mapped in detail — as
-    individual ways, which this app does not read (see overpass.build_query) — so every
-    search over it comes back empty and, before this, said so as though the filters were
-    at fault.
+    individual ways — and since 2026-09 the app reads those too (``AreaData.paths``), so
+    a live search there builds loops from them and this is False. It stays True for a
+    SAVED area over the same place, which keeps relations only (see ``download_area``);
+    ``no_routes_message(area)`` words that case differently.
     """
-    return not area.routes
+    return not area.routes and not area.paths
 
 
-def no_routes_message() -> str:
-    """The one sentence every frontend says when an area has no route relations.
+def no_routes_message(area: AreaData | None = None) -> str:
+    """The one sentence every frontend says when an area has nothing to walk on.
 
     Shared for the same reason as ``snapshot_kinds_missing_message``: the CLI, the web UI
     and the MCP server are answering one question about one area, and three phrasings of
     "this is about the map, not your filters" is three chances for one of them to imply
     otherwise.
 
-    Deliberately does NOT quote how many paths are mapped there instead, tempting as that
-    is — the app never fetches `highway=path`, and adding it to the query to word an
-    error message would widen every request and invalidate every cached area.
+    Two wordings, because there are two different facts. A LIVE area reads relations
+    and individual paths both, so empty means OSM genuinely maps nothing walkable there.
+    A SAVED area (``area.paths is None`` — see ``download_area``) keeps named routes
+    only, so empty means "no named routes", and the paths may well be there: the fix is
+    a live search, not a different place. Pass the area to get the right one; the
+    no-argument form is the live wording.
     """
+    if area is not None and area.paths is None:
+        return (
+            "No hiking route relations are saved in this area — this is about what the "
+            "file holds, not your filters. A saved area keeps the named routes only, not "
+            "the individual paths that loops are built from; run a live search over the "
+            "same place to get loops made from its paths."
+        )
     return (
-        "No hiking route relations are mapped in that area — this is about the map data, "
-        "not your filters. The search reads OSM route=hiking / route=foot relations, and "
-        "some regions map their trails as individual paths without collecting them into "
-        "route relations. Try a nearby area or a wider bounding box."
+        "No hiking routes or walkable paths are mapped in that area — this is about "
+        "the map data, not your filters. Try a nearby area or a wider bounding box."
     )
 
 

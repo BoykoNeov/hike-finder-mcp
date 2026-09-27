@@ -122,9 +122,29 @@ def test_determinism_identical_across_runs():
            [(round(L.length_m, 6), L.coords, L.refs) for L in b]
 
 
+def _theta(lat, rid0=1):
+    """Three parallel trails between two junctions P and Q: P and Q stay degree 3 after
+    pruning, so finding its loops genuinely needs the DFS."""
+    P, Q = (lat, 15.00), (lat, 15.02)
+    return [
+        _route(f"t{rid0}", [[P, (lat + 0.01, 15.01), Q]], rid=rid0),
+        _route(f"t{rid0 + 1}", [[P, (lat - 0.01, 15.01), Q]], rid=rid0 + 1),
+        _route(f"t{rid0 + 2}", [[P, (lat + 0.02, 15.01), Q]], rid=rid0 + 2),
+    ]
+
+
 def test_budget_cap_is_reported_not_silent():
     # With a graph that needs DFS expansion, a zero budget aborts the search and is
     # flagged (capped=True) rather than silently returning a truncated list.
+    res = find_loops(build_trail_graph(_theta(50.0)), min_m=0, max_m=1e9, budget=0)
+    assert res.capped is True
+    assert res.loops == []
+
+
+def test_a_ring_whose_junctions_were_only_stems_is_one_loop_without_search():
+    """The core re-contraction. After the two dead-end stems are pruned, P and Q are
+    pass-throughs, so the ring is ONE chain closing on itself — found even with no
+    search budget at all, because no choice is left to search."""
     P, Q = (50.00, 15.00), (50.00, 15.02)
     A, B = (50.01, 15.01), (49.99, 15.01)
     S1, S2 = (50.00, 14.99), (50.00, 15.03)
@@ -135,7 +155,33 @@ def test_budget_cap_is_reported_not_silent():
         _route("sQ", [[Q, S2]], rid=4),
     ]
     res = find_loops(build_trail_graph(routes), min_m=0, max_m=1e9, budget=0)
-    assert res.capped is True
+    assert res.capped is False
+    assert len(res.loops) == 1
+    assert res.loops[0].refs == ("p1", "p2")  # the stems are not part of it
+    assert res.loops[0].coords[0] == res.loops[0].coords[-1]
+
+
+def test_stem_junctions_do_not_count_against_max_segments():
+    """A square ring with a dead-end spur at every corner and mid-side: eight raw
+    segments, but after pruning it is one chain — so even `max_segments=1` finds it.
+    Before re-contraction each spur junction cost one of the allowed segments."""
+    ring = [(50.00, 15.00), (50.00, 15.01), (50.00, 15.02), (50.01, 15.02),
+            (50.02, 15.02), (50.02, 15.01), (50.02, 15.00), (50.01, 15.00), (50.00, 15.00)]
+    spurs = [[pt, (pt[0] + 0.003, pt[1] + 0.003)] for pt in ring[:-1]]
+    g = build_trail_graph([_route("R", [ring], rid=1), _route("S", spurs, rid=2)])
+    assert len(g.segments) == 16  # 8 ring pieces + 8 spurs
+    res = find_loops(g, min_m=0, max_m=1e9, max_segments=1)
+    assert [L.refs for L in res.loops] == [("R",)]
+
+
+def test_the_search_budget_is_shared_across_starts():
+    """Two separate theta graphs. The first one's start node sorts first; with a single
+    global pot of 2 expansions it spent all of them and the second network was never
+    searched. Shared per start, both are."""
+    routes = _theta(50.0, rid0=1) + _theta(51.0, rid0=10)
+    res = find_loops(build_trail_graph(routes), min_m=0, max_m=1e9, budget=2)
+    lats = {round(L.coords[0][0]) for L in res.loops}
+    assert lats == {50, 51}
 
 
 def test_near_duplicate_collapse_keeps_one():

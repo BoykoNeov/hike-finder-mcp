@@ -109,6 +109,11 @@ class Hike:
     # ordinary route.
     composed: bool = False
     composed_of: tuple[str, ...] = ()
+    # How much of a SYNTHESISED route follows a route relation (a waymarked, named
+    # trail), as a fraction of its length; the rest is bare walkable ways. None for an
+    # ordinary relation route (it IS the waymarked trail) and whenever the graph kept no
+    # marking record. Set by search._measure_composed, like `composed_of`.
+    marked_frac: float | None = None
     # Route geometry: the member ways as ordered (lat, lon) polylines, exactly as
     # mapped (a composed loop carries its single synthesised ring). This is the RAW
     # member-way geometry, NOT the stitched line — `stitch_ways` silently drops members

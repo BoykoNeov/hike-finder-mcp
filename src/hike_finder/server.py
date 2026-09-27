@@ -1248,7 +1248,7 @@ async def _call_find_hikes(arguments: dict) -> list[TextContent]:
             else diagnostics.get("no_routes")
         )
         if no_routes:
-            msg = no_routes_message()
+            msg = no_routes_message(saved.area if saved is not None else None)
         # Both can be true at once and both are said: an area with no route relations,
         # asked to FIND cable, is a file that never fetched ferrata objects AND a stretch
         # of map with nothing to filter. The web UI's `_area_notices` produces exactly

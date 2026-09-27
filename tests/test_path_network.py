@@ -15,6 +15,17 @@ This file pins the wiring the rest leans on:
 """
 import json
 
+from hike_finder import search as S
+from hike_finder.compose import (
+    build_trail_graph,
+    find_loops,
+    marked_length_m,
+    paths_as_routes,
+    snap_points,
+)
+from hike_finder.config import Config
+from hike_finder.filters import Criteria
+from hike_finder.format import format_hike
 from hike_finder.overpass import AreaData, build_query, parse_area, way_is_walkable
 from hike_finder.snapshot import AreaSnapshot, snapshot_from_json, snapshot_to_json
 
@@ -148,3 +159,127 @@ def test_never_fetched_and_none_here_stay_apart_through_the_serialiser():
     assert _round_trip(AreaData()).paths is None
     assert "paths" not in snapshot_to_json(_snap(AreaData()))["area"]
     assert _round_trip(parse_area([])).paths == []
+
+
+# ------------------------------------------------------------------------- the graph
+#
+# A 1 km square, west half on a named relation, east half on bare paths. Coordinates
+# are ~0.005° apart (≈ 350–550 m at 50° N), far above the 1 m weld.
+
+SW, NW, NE, SE = (50.000, 15.000), (50.005, 15.000), (50.005, 15.007), (50.000, 15.007)
+MID_N, MID_S = (50.005, 15.0035), (50.000, 15.0035)
+
+
+def _relation(ways, rid=1, ref="red"):
+    return {"id": rid, "name": ref, "ref": ref, "tags": {}, "ways": ways,
+            "way_tags": [{"highway": "path"} for _ in ways]}
+
+
+def _path(pid, coords, **tags):
+    return {"id": pid, "coords": coords, "tags": {"highway": "path", **tags}}
+
+
+def _square():
+    rel = _relation([[MID_S, SW, NW, MID_N]])
+    paths = [_path(10, [MID_N, NE, SE, MID_S], surface="gravel")]
+    return rel, paths
+
+
+def test_a_path_adds_geometry_but_no_name():
+    rel, paths = _square()
+    g = build_trail_graph([rel, *paths_as_routes(paths)])
+    (loop,) = find_loops(g, min_m=0, max_m=1e9).loops
+    assert loop.refs == ("red",)  # the path contributes no provenance label
+
+
+def test_the_same_way_fetched_twice_is_one_marked_edge():
+    """A relation member and the bare path copy of the same OSM way weld to the same
+    node pairs: one edge, still marked, not doubled into a parallel sliver."""
+    rel, _ = _square()
+    dup = _path(99, [MID_S, SW, NW, MID_N])
+    g = build_trail_graph([rel, *paths_as_routes([dup])])
+    assert len(g.segments) == 1
+    assert all(g.segments[0].step_marked)
+
+
+def test_marked_length_counts_only_the_relation_half():
+    rel, paths = _square()
+    g = build_trail_graph([rel, *paths_as_routes(paths)])
+    (loop,) = find_loops(g, min_m=0, max_m=1e9).loops
+    frac = marked_length_m(g, loop) / loop.length_m
+    assert 0.45 < frac < 0.55
+
+
+def test_a_split_keeps_the_marking_aligned_with_the_steps():
+    """`snap_points` cuts a segment mid-way; the marking must be sliced by the same rule
+    as the tags, or a cut would smear "unmarked" onto a relation stretch."""
+    rel, paths = _square()
+    g = build_trail_graph([rel, *paths_as_routes(paths)])
+    g2, _ = snap_points(g, [(50.0025, 14.9999)])  # on the relation's west side
+    assert len(g2.segments) == 2  # the one ring piece, cut at the point
+    for s in g2.segments:
+        assert len(s.step_marked) == len(s.coords) - 1
+        steps = zip(s.coords, s.coords[1:], strict=False)
+        for (p, q), marked in zip(steps, s.step_marked, strict=True):
+            # Ground truth by geometry: the relation is the west half (lon ≤ MID).
+            assert marked == (max(p[1], q[1]) <= MID_N[1]), (p, q, marked)
+
+
+# --------------------------------------------------------------- through the search
+
+
+class _Flat:
+    def lookup(self, points):
+        return [0.0] * len(points)
+
+
+def _live(monkeypatch, area):
+    monkeypatch.setattr(S, "_fetch_area", lambda *a, **k: area)
+    monkeypatch.setattr(S, "_provider", lambda *a, **k: _Flat())
+    monkeypatch.setattr(S._cache, "from_config", lambda cfg: None)
+
+
+BBOX = (49.99, 14.99, 50.01, 15.02)
+
+
+def test_loops_come_from_paths_where_no_relation_is_mapped(monkeypatch):
+    """The Kamikōchi case in miniature: zero relations, a ring of paths — a loop, and
+    the area is not reported as empty."""
+    ring = [SW, NW, NE, SE, SW]
+    area = AreaData(routes=[], paths=[_path(1, ring[:3]), _path(2, ring[2:])])
+    _live(monkeypatch, area)
+    diag: dict = {}
+    hikes = S.compose_loops(BBOX, Criteria(min_distance_km=1, max_distance_km=5),
+                            Config(), diagnostics=diag)
+    assert diag["no_routes"] is False
+    (h,) = hikes
+    assert h.composed and h.composed_of == () and h.marked_frac == 0.0
+    assert "unmarked paths only" in format_hike(h)
+
+
+def test_a_mixed_loop_says_how_much_is_waymarked(monkeypatch):
+    rel, paths = _square()
+    _live(monkeypatch, AreaData(routes=[rel], paths=paths))
+    (h,) = S.compose_loops(BBOX, Criteria(min_distance_km=1, max_distance_km=5), Config())
+    assert h.composed_of == ("red",)
+    assert 0.45 < h.marked_frac < 0.55
+    assert "% on waymarked trails" in format_hike(h)
+
+
+def test_a_relation_only_loop_reads_exactly_as_before(monkeypatch):
+    """No paths at all (a saved area, or data from before paths): fully marked, and the
+    rendered line carries no waymarking clause — byte-identical to the old output."""
+    rel = _relation([[MID_S, SW, NW, MID_N], [MID_N, NE, SE, MID_S]])
+    _live(monkeypatch, AreaData(routes=[rel]))
+    (h,) = S.compose_loops(BBOX, Criteria(min_distance_km=1, max_distance_km=5), Config())
+    assert h.marked_frac == 1.0
+    assert "waymarked" not in format_hike(h) and "unmarked" not in format_hike(h)
+
+
+def test_point_to_point_routes_run_on_paths_too(monkeypatch):
+    """Every synthesising mode builds its graph in `search._network`, so the paths reach
+    `--from/--to` exactly as they reach loops."""
+    area = AreaData(routes=[], paths=[_path(1, [SW, NW, NE])])
+    _live(monkeypatch, area)
+    hikes = S.routes_between(SW, NE, Criteria(), Config())
+    assert hikes and hikes[0].marked_frac == 0.0

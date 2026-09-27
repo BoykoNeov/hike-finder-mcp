@@ -1038,7 +1038,7 @@ def _area_notices(area, criteria: Criteria) -> list[dict]:
     """
     notices: list[dict] = []
     if area_has_no_routes(area):
-        notices.append({"kind": "no_routes", "message": no_routes_message()})
+        notices.append({"kind": "no_routes", "message": no_routes_message(area)})
     if criteria.ferrata is not None:
         # ONE function picks between the two ferrata sentences, and the order it picks
         # them in is what keeps each true (see search.ferrata_gap_message).

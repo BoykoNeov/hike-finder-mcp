@@ -93,7 +93,7 @@ def test_hike_to_dict_shape():
         "osm_id", "name", "ref", "distance_km", "gain_m", "loss_m",
         "circular", "car_access", "chairlift_access", "lift_type", "start",
         "transit_access", "transit_type", "transit_label", "surface", "tracktype",
-        "near_miss", "notes", "composed", "composed_of", "unnamed", "place_name",
+        "near_miss", "notes", "composed", "composed_of", "marked_frac", "unnamed", "place_name",
         "pois", "destination", "ferrata",
     }
     # Transit is null, not false, on a Hike whose area never recorded it — the JSON

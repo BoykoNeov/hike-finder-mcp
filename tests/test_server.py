@@ -1079,7 +1079,7 @@ def test_no_routes_and_the_ferrata_gap_are_both_said_when_both_are_true(tmp_path
     path = _ferrata_snapshot(tmp_path / "noroutes.json", routes=[])
     both = _call("find_hikes", {"area": path, "ferrata": True}).content[0].text
     assert "predates cabled-route fetching" in both
-    assert "No hiking route relations are mapped in that area" in both
+    assert "No hiking route relations are saved in this area" in both
     assert "No matching hikes found in that area." not in both   # no_routes outranks it
     # Reading this reply is what turned up a wording bug the CLI and the web UI had been
     # hiding by splitting the two sentences across streams and boxes: the unrecorded
@@ -1093,7 +1093,7 @@ def test_no_routes_and_the_ferrata_gap_are_both_said_when_both_are_true(tmp_path
     # `no_routes` stands alone. Telling someone to re-download would be advice against
     # a problem the download cannot solve.
     alone = _call("find_hikes", {"area": path, "ferrata": False}).content[0].text
-    assert alone == server.no_routes_message()
+    assert alone == server.no_routes_message(server.load_snapshot(path).area)
     assert "ferrata" not in alone.lower()
 
 

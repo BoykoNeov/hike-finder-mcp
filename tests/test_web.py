@@ -793,18 +793,28 @@ def test_a_point_mode_never_carries_a_ferrata_notice(server, monkeypatch, mode):
     assert [n["kind"] for n in body["notices"]] == []
 
 
-def test_the_live_and_saved_paths_word_no_routes_identically(server):
-    """One fact, one sentence, whichever branch produced it.
+def test_the_live_and_saved_paths_word_no_routes_from_one_function(server):
+    """One function words both, whichever branch produced the fact.
 
     `_area_notices` reads a saved file and `_live_notices` reads a fetch's diagnostics;
     they are separate functions because they answer different questions (only a file can
-    fall short on cable), and the one question they share must not drift apart.
+    fall short on cable). Since the path network (2026-09) they also state different
+    FACTS when empty — a live area read relations and paths and found neither; a saved
+    one keeps relations only — so they are no longer the same sentence. What must not
+    drift is who writes it: both come from `search.no_routes_message`.
     """
     from hike_finder.overpass import AreaData
+    from hike_finder.search import no_routes_message
 
-    assert web._live_notices({"no_routes": True}) == web._area_notices(
-        AreaData(routes=[]), Criteria()
-    )
+    live = web._live_notices({"no_routes": True})
+    assert live == [{"kind": "no_routes", "message": no_routes_message()}]
+    saved = AreaData(routes=[])
+    assert web._area_notices(saved, Criteria()) == [
+        {"kind": "no_routes", "message": no_routes_message(saved)}
+    ]
+    # A saved area whose file DID record paths (none today, but the format allows it)
+    # reads as live data would.
+    assert web._area_notices(AreaData(routes=[], paths=[]), Criteria()) == live
     assert web._live_notices({}) == []          # absent key is not a claim
     assert web._live_notices({"no_routes": False}) == []
 

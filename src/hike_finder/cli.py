@@ -1254,7 +1254,7 @@ def run(args: argparse.Namespace) -> int:
         # snapshot of a region with no route relations saves cleanly and simply holds none.
         _emit(
             hikes, args.json,
-            no_routes_message() if area_has_no_routes(snap.area)
+            no_routes_message(snap.area) if area_has_no_routes(snap.area)
             else _POI_EMPTY if criteria.poi_kinds
             else "No matching hikes found in that area.",
         )

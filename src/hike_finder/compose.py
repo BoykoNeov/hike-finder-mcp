@@ -1,11 +1,13 @@
-"""Compose loops from connected marked-trail segments.
+"""Compose loops (and point-to-point routes) from the connected trail network.
 
 Most KČT ``route=hiking`` relations are *linear* marked segments (a coloured
 trail A→B); a circular day-hike is usually an ad-hoc combination of several
 connected segments. The rest of the engine reports each relation as-is, so
 ``circular=true`` only surfaces the few loops mapped as a single relation. This
 module synthesises loops: it builds one graph from every relation's member ways
-and searches it for cycles of a target length.
+plus every walkable way in the area (``paths_as_routes``) and searches it for cycles
+of a target length. Relations are what NAME a stretch (``Segment.refs``) and mark it
+waymarked (``Segment.step_marked``); a bare path carries geometry and tags only.
 
 Pure and network-free, like the other geometry math — the trust anchor. The
 build is in two stages:
@@ -93,6 +95,13 @@ class Segment:
     length_m: float
     refs: tuple[str, ...] = ()
     step_tags: tuple[dict, ...] = ()  # parallel to the STEPS of `coords`: len(coords) - 1
+    # Parallel to `step_tags`: did this step ride on a route RELATION (a waymarked, named
+    # trail) rather than only on a bare walkable way? Per step and not per segment for the
+    # reason surface is: a contracted segment can run on a relation for half its length
+    # and on an unmarked path for the rest, with no junction between (the relation simply
+    # stops there). `refs` is the union over the segment and would call the whole of it
+    # marked. Empty only on a hand-built Segment; every builder here fills it.
+    step_marked: tuple[bool, ...] = ()
 
 
 @dataclass
@@ -114,13 +123,41 @@ class TrailGraph:
         return len(self.adj.get(node, []))
 
 
-def _route_ref(route: dict) -> str:
-    """Short provenance label for a route: its ref, else name, else osm id."""
+def _route_ref(route: dict) -> str | None:
+    """Short provenance label for a route: its ref, else name, else osm id.
+
+    ``None`` for a bare walkable way (``paths_as_routes``): it contributes geometry to
+    the graph but is not a trail anybody named, so it must never appear in a composed
+    route's "composed of …" list — and a step it alone covers is unmarked.
+    """
+    if route.get("path"):
+        return None
     return (
         route.get("ref")
         or route.get("name")
         or f"route/{route.get('id')}"
     )
+
+
+def paths_as_routes(paths: list[dict] | None) -> list[dict]:
+    """``AreaData.paths`` records in the route-dict shape the graph builders read.
+
+    One single-way "route" per path, flagged ``path: True`` so ``_route_ref`` gives it no
+    name. Its tags ride along as that way's ``way_tags``, so surface and cabled-section
+    detection see a path exactly as they see a relation member. A way that is ALSO a
+    relation member welds onto the same node pairs and is deduped per micro-edge in
+    ``build_trail_graph`` — the relation's name and mark survive, nothing is doubled.
+    ``None`` (data that never fetched paths) is simply no extra ways.
+    """
+    return [
+        {
+            "id": p.get("id"),
+            "path": True,
+            "ways": [p["coords"]],
+            "way_tags": [p.get("tags") or {}],
+        }
+        for p in (paths or ())
+    ]
 
 
 def clip_routes_to_bbox(routes: list[dict], bbox: tuple[float, float, float, float]) -> list[dict]:
@@ -232,13 +269,18 @@ def build_trail_graph(routes: list[dict], weld_m: float = WELD_M) -> TrailGraph:
     micro_ends: list[tuple[int, int]] = sorted(edge_routes)
     micro_routes: list[set[int]] = [edge_routes[k] for k in micro_ends]
     micro_tags: list[dict] = [edge_tags.get(k, _NO_TAGS) for k in micro_ends]
+    refs = [_route_ref(r) for r in routes]
+    # A micro-edge is marked when ANY route relation claims it — a bare path claiming the
+    # same edge (the same OSM way, fetched both ways) does not unmark it.
+    micro_marked: list[bool] = [
+        any(refs[r] is not None for r in owners) for owners in micro_routes
+    ]
     micro_adj: dict[int, list[tuple[int, int]]] = {}
     for eid, (u, v) in enumerate(micro_ends):
         micro_adj.setdefault(u, []).append((v, eid))
         micro_adj.setdefault(v, []).append((u, eid))
 
     degree = {n: len(adj) for n, adj in micro_adj.items()}
-    refs = [_route_ref(r) for r in routes]
 
     segments: list[Segment] = []
     adj: dict[int, list[int]] = {}
@@ -256,6 +298,7 @@ def build_trail_graph(routes: list[dict], weld_m: float = WELD_M) -> TrailGraph:
         node (or back to ``start`` for an isolated loop)."""
         seg_coords = [coords[start]]
         seg_steps: list[dict] = []  # one per step of seg_coords, so len(coords) - 1
+        seg_marked: list[bool] = []  # parallel to seg_steps
         seg_routes: set[int] = set()
         length = 0.0
         cur, other, eid = start, first_other, first_eid
@@ -263,6 +306,7 @@ def build_trail_graph(routes: list[dict], weld_m: float = WELD_M) -> TrailGraph:
             consumed[eid] = True
             seg_coords.append(coords[other])
             seg_steps.append(micro_tags[eid])
+            seg_marked.append(micro_marked[eid])
             length += haversine_m(coords[cur], coords[other])
             seg_routes |= micro_routes[eid]
             if degree.get(other, 0) != 2 or other == start:
@@ -271,8 +315,11 @@ def build_trail_graph(routes: list[dict], weld_m: float = WELD_M) -> TrailGraph:
                     b=other,
                     coords=seg_coords,
                     length_m=length,
-                    refs=tuple(sorted({refs[r] for r in seg_routes})),
+                    refs=tuple(sorted({
+                        ref for r in seg_routes if (ref := refs[r]) is not None
+                    })),
                     step_tags=tuple(seg_steps),
+                    step_marked=tuple(seg_marked),
                 )
             # Continue through the degree-2 node to its other micro-edge.
             nxt_other, nxt_eid = next(
@@ -391,6 +438,69 @@ def _active_segments(graph: TrailGraph) -> set[int]:
             }
             changed = True
     return alive
+
+
+# The least expansion budget any one start node gets, however many there are. The
+# share `budget / starts` alone would shrink towards nothing on a very large network,
+# and a start that cannot look two or three junctions deep finds no loop at all. So
+# the true ceiling is `max(budget, starts * _MIN_START_BUDGET)` — measured ~1.3 s on
+# a 400 km² Krkonoše path network (1,675 starts), well inside an interactive search.
+_MIN_START_BUDGET = 2_000
+
+
+class _Chain(NamedTuple):
+    """A junction-to-junction stretch of the 2-edge-connected core: one or more raw
+    segments in walking order from ``a`` to ``b``. ``a == b`` is a ring with no junction
+    left on it."""
+
+    a: int
+    b: int
+    segs: tuple[int, ...]
+    length_m: float
+
+
+def _core_chains(graph: TrailGraph, active: set[int]) -> list[_Chain]:
+    """Re-contract the pruned core: merge runs of ``active`` segments through every node
+    that has exactly two active segments left.
+
+    ``build_trail_graph`` contracts degree-2 chains of the FULL graph, so a junction where
+    a dead-end stem joined still ends a segment. ``_active_segments`` then prunes the stem
+    and leaves that node with two incident segments — a pass-through that the loop search
+    would otherwise spend a unit of ``max_segments`` (and a visited-node slot) on. Walking
+    order is deterministic: seeds in sorted node order, each seed's segments in id order.
+    """
+    inc: dict[int, list[int]] = {}
+    for i in sorted(active):
+        s = graph.segments[i]
+        inc.setdefault(s.a, []).append(i)
+        inc.setdefault(s.b, []).append(i)
+    used: set[int] = set()
+    chains: list[_Chain] = []
+
+    def walk(start: int, first: int) -> _Chain:
+        segs: list[int] = []
+        length = 0.0
+        cur, idx = start, first
+        while True:
+            used.add(idx)
+            s = graph.segments[idx]
+            segs.append(idx)
+            length += s.length_m
+            nxt = s.b if s.a == cur else s.a
+            if len(inc[nxt]) != 2 or nxt == start:
+                return _Chain(start, nxt, tuple(segs), length)
+            idx = inc[nxt][0] if inc[nxt][1] == idx else inc[nxt][1]
+            cur = nxt
+
+    for node in sorted(n for n, segs in inc.items() if len(segs) != 2):
+        for i in inc[node]:
+            if i not in used:
+                chains.append(walk(node, i))
+    # Whatever is left sits on a ring of pass-through nodes only.
+    for i in sorted(active):
+        if i not in used:
+            chains.append(walk(graph.segments[i].a, i))
+    return chains
 
 
 def _assemble(graph: TrailGraph, start: int, seg_ids: list[int]) -> ComposedLoop:
@@ -518,6 +628,25 @@ def assemble_tag_runs(graph: TrailGraph, route: ComposedLoop):
     return runs
 
 
+def marked_length_m(graph: TrailGraph, route: ComposedLoop) -> float | None:
+    """How much of a synthesised route rides on a route relation (a waymarked trail).
+
+    Walked per step over ``ordered_segs`` — the same traversal ``assemble_tag_runs``
+    uses, so a retraced segment counts once per pass, as it does in the route's length.
+    ``None`` when a segment carries no marking record (a hand-built graph), rather than
+    guessing either way.
+    """
+    total = 0.0
+    for idx in route.ordered_segs:
+        s = graph.segments[idx]
+        if len(s.step_marked) != len(s.coords) - 1:
+            return None
+        for (p, q), marked in zip(pairwise(s.coords), s.step_marked, strict=True):
+            if marked:
+                total += haversine_m(p, q)
+    return total
+
+
 def _anchor_vertex(
     coords: list[Coord],
     anchors: list[tuple[list[Coord], float]],
@@ -584,9 +713,21 @@ def find_loops(
         direction (the two directions are then collapsed by edge-set identity);
       * **length prune** — a partial path is abandoned the moment it exceeds
         ``max_m`` (a simple cycle only gets longer), the key tractability lever;
-      * **segment cap** — at most ``max_segments`` segments per loop (real day loops
-        are a handful of junctions), and a **global expansion budget** that aborts
-        with ``capped=True`` rather than running away on a dense graph;
+      * **core re-contraction** — the search runs on :func:`_core_chains`, not on raw
+        segments: once dead-end stems are pruned, a junction that only existed because
+        a stem hung off it is a plain pass-through, and the stretch through it is ONE
+        choice, not two. On a path network (spurs to every viewpoint, hut and car park)
+        this halves the edge count and doubles the typical edge length — measured on a
+        10 km Krkonoše box: 1,126 segments → 511 chains, median 159 m → 271 m, and 4 →
+        26 loops of 10–15 km found. Pure bookkeeping on adjacency: no coordinate moves,
+        nothing is welded, so it cannot invent a cycle;
+      * **segment cap** — at most ``max_segments`` junction-to-junction chains per loop
+        (real day loops are a handful of junctions), and an **expansion budget** that
+        aborts with ``capped=True`` rather than running away on a dense graph. The
+        budget is SHARED across start nodes (each gets ``budget / starts``, at least
+        ``_MIN_START_BUDGET``): one global pot let the first few starts of a dense
+        network spend all of it, so every later part of the map was never searched —
+        raising ``max_segments`` to 30 on that same box returned *zero* loops;
       * **edge-set dedup** — cycles are keyed by their frozenset of segment ids, so
         the two traversal directions (and any rotation) collapse to one;
       * **near-duplicate collapse** — among the in-band cycles (shortest first), a
@@ -629,55 +770,77 @@ def find_loops(
     run — required by the project's byte-for-byte ethos.
     """
     active = _active_segments(graph)
+    chains = _core_chains(graph, active)
 
-    # Already-closed loops (a single relation mapping a ring) within the band.
+    # Already-closed loops within the band: a single segment mapping a ring, or a core
+    # chain that closes on itself (a ring whose only junctions were dead-end stems).
     selfloops = [
         _assemble(graph, s.a, [i])
         for i, s in enumerate(graph.segments)
         if s.a == s.b and min_m <= s.length_m <= max_m
     ]
+    selfloops.extend(
+        _assemble(graph, c.a, list(c.segs))
+        for c in chains
+        if c.a == c.b and min_m <= c.length_m <= max_m
+    )
 
-    # Incidence over active segments only, neighbours sorted for determinism.
+    # Incidence over the non-ring chains, neighbours sorted for determinism.
     inc: dict[int, list[int]] = {}
-    for i in active:
-        s = graph.segments[i]
-        inc.setdefault(s.a, []).append(i)
-        inc.setdefault(s.b, []).append(i)
+    for ci, c in enumerate(chains):
+        if c.a == c.b:
+            continue
+        inc.setdefault(c.a, []).append(ci)
+        inc.setdefault(c.b, []).append(ci)
     for n in inc:
-        inc[n].sort(key=lambda i: (graph.segments[i].b if graph.segments[i].a == n
-                                   else graph.segments[i].a, i))
+        inc[n].sort(key=lambda ci: (chains[ci].b if chains[ci].a == n else chains[ci].a, ci))
 
+    def expand(start: int, path: list[int]) -> list[int]:
+        """A chain path walked from ``start`` → the ordered raw segment ids."""
+        out: list[int] = []
+        cur = start
+        for ci in path:
+            c = chains[ci]
+            out.extend(c.segs if c.a == cur else reversed(c.segs))
+            cur = c.b if c.a == cur else c.a
+        return out
+
+    starts = sorted(inc)
+    # The floor never exceeds the budget asked for, so a caller's small budget still means
+    # what it says (and `budget=0` still reports `capped` rather than quietly searching).
+    per_start = max(min(_MIN_START_BUDGET, budget), budget // max(1, len(starts)))
     seen: set[frozenset[int]] = set()
     found: list[ComposedLoop] = []
-    # `exp` counts expansions, `capped` records hitting the budget. One dict so the
-    # nested `dfs` can mutate both without a `nonlocal` per counter; typed loosely
-    # because the two values are not the same kind of thing.
+    # `exp` counts this start's expansions, `capped` records ANY start hitting its share.
+    # One dict so the nested `dfs` can mutate both without a `nonlocal` per counter;
+    # typed loosely because the two values are not the same kind of thing.
     state: dict[str, Any] = {"exp": 0, "capped": False}
 
     def dfs(start: int, cur: int, path: list[int], length: float, visited: set[int]) -> None:
-        if state["exp"] >= budget:
+        if state["exp"] >= per_start:
             state["capped"] = True
             return
-        for idx in inc.get(cur, ()):
-            s = graph.segments[idx]
-            other = s.b if s.a == cur else s.a
+        for ci in inc.get(cur, ()):
+            c = chains[ci]
+            other = c.b if c.a == cur else c.a
             if other < start:
                 continue  # the cycle's min node must be `start`
-            new_len = length + s.length_m
+            new_len = length + c.length_m
             if new_len > max_m:
                 continue  # prune: a simple cycle only grows from here
             if other == start:
-                key = frozenset([*path, idx])
+                key = frozenset([*path, ci])
                 if len(key) == len(path) + 1 and new_len >= min_m and key not in seen:
                     seen.add(key)
-                    found.append(_assemble(graph, start, [*path, idx]))
+                    found.append(_assemble(graph, start, expand(start, [*path, ci])))
                 continue
             if other in visited or len(path) >= max_segments:
                 continue
             state["exp"] += 1
-            dfs(start, other, [*path, idx], new_len, visited | {other})
+            dfs(start, other, [*path, ci], new_len, visited | {other})
 
-    for start in sorted(inc):
+    for start in starts:
+        state["exp"] = 0
         dfs(start, start, [], 0.0, {start})
 
     # Access anchoring (optional): keep only loops reachable from a requested access
@@ -773,11 +936,16 @@ def _project_point(line: list[Coord], p: Coord) -> tuple[float, _Pos, Coord]:
 
 
 def _subpolyline(
-    line: list[Coord], p1: _Pos, p2: _Pos, step_tags: tuple[dict, ...] = ()
-) -> tuple[list[Coord], tuple[dict, ...]]:
+    line: list[Coord],
+    p1: _Pos,
+    p2: _Pos,
+    step_tags: tuple[dict, ...] = (),
+    step_marked: tuple[bool, ...] = (),
+) -> tuple[list[Coord], tuple[dict, ...], tuple[bool, ...]]:
     """The ordered coords of ``line`` between positions ``p1`` and ``p2`` (``p1`` before
-    ``p2``), with the interpolated boundary points at each end, plus the matching slice of
-    ``step_tags``. Consecutive duplicates (a boundary landing exactly on a vertex) are
+    ``p2``), with the interpolated boundary points at each end, plus the matching slices of
+    ``step_tags`` and ``step_marked`` (both step-aligned, so both sliced by the one rule
+    below). Consecutive duplicates (a boundary landing exactly on a vertex) are
     collapsed — along with the zero-length step leading into each one.
 
     The tags slice is EXACT, not prorated by piece length: a cut lands inside edge ``e1``,
@@ -791,14 +959,18 @@ def _subpolyline(
     pts.extend(line[e1 + 1 : e2 + 1])  # interior vertices strictly between p1 and p2
     pts.append(_interp(line, p2))
     steps = list(step_tags[e1 : e2 + 1]) if step_tags else []
+    marks = list(step_marked[e1 : e2 + 1]) if step_marked else []
     out = [pts[0]]
     out_steps: list[dict] = []
+    out_marks: list[bool] = []
     for j, q in enumerate(pts[1:]):
         if q != out[-1]:
             out.append(q)
             if steps:
                 out_steps.append(steps[j])
-    return out, tuple(out_steps)
+            if marks:
+                out_marks.append(marks[j])
+    return out, tuple(out_steps), tuple(out_marks)
 
 
 def snap_points(
@@ -882,7 +1054,9 @@ def snap_points(
         marks.extend(sorted(cuts, key=lambda pn: pn[0]))
         marks.append(((last - 1, 1.0), s.b))
         for (pa, na), (pb, nb) in pairwise(marks):
-            piece, piece_tags = _subpolyline(s.coords, pa, pb, s.step_tags)
+            piece, piece_tags, piece_marked = _subpolyline(
+                s.coords, pa, pb, s.step_tags, s.step_marked
+            )
             segments.append(
                 Segment(
                     a=na,
@@ -891,6 +1065,7 @@ def snap_points(
                     length_m=polyline_length_m(piece),
                     refs=s.refs,
                     step_tags=piece_tags,
+                    step_marked=piece_marked,
                 )
             )
 

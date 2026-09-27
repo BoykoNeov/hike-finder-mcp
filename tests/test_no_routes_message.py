@@ -73,8 +73,30 @@ def test_an_area_with_routes_is_not_a_no_routes_area():
 def test_the_message_does_not_blame_the_user_s_filters():
     msg = S.no_routes_message()
     assert "map data" in msg and "not your filters" in msg
-    # Names the actual data source, so the reader can check the claim themselves.
-    assert "route=hiking" in msg
+    # Names BOTH layers it read, so "nothing here" cannot be mistaken for "no signed
+    # trails here" — since 2026-09 an area with paths but no relations is not empty.
+    assert "hiking routes" in msg and "walkable paths" in msg
+
+
+def test_a_saved_area_says_what_the_file_lacks_not_what_the_map_lacks():
+    """A snapshot keeps relations only (`paths is None`), so an empty one says nothing
+    about the map — Kamikōchi saved is empty, Kamikōchi live has loops. The fix it names
+    is a live search, not a different place."""
+    saved = AreaData(routes=[])
+    assert saved.paths is None
+    msg = S.no_routes_message(saved)
+    assert "not your filters" in msg and "live search" in msg
+    assert "walkable paths are mapped" not in msg
+    # A LIVE area passed explicitly gets the live wording, same as the no-arg form.
+    assert S.no_routes_message(AreaData(routes=[], paths=[])) == S.no_routes_message()
+
+
+def test_paths_alone_are_something_to_walk_on():
+    """The whole point of the path network: no relations, but paths — not empty."""
+    path = {"id": 1, "coords": [(36.25, 137.6), (36.26, 137.6)], "tags": {"highway": "path"}}
+    assert S.area_has_no_routes(AreaData(routes=[], paths=[path])) is False
+    assert S.area_has_no_routes(AreaData(routes=[], paths=[])) is True
+    assert S.area_has_no_routes(AreaData(routes=[])) is True  # never fetched, none saved
 
 
 def test_the_message_is_frontend_neutral():
@@ -117,7 +139,7 @@ def test_offline_snapshot_of_an_unmapped_region_says_so(tmp_path, capsys):
     _snapshot(path, [])
     assert run(_parse("--area", str(path))) == 0
     out = capsys.readouterr().out
-    assert "No hiking route relations are mapped" in out
+    assert "No hiking route relations are saved in this area" in out
     assert "No matching hikes found" not in out
 
 
@@ -234,7 +256,7 @@ def test_cli_point_modes_blame_the_map_not_your_point(monkeypatch, capsys, mode)
     _live_stub(monkeypatch, [])
     assert run(_parse(*_CLI_POINT_MODES[mode])) == 0
     out = capsys.readouterr().out
-    assert "No hiking route relations are mapped" in out
+    assert "No hiking routes or walkable paths are mapped" in out
     assert _CLI_ADVICE[mode] not in out          # displaced, not printed beside it
 
 

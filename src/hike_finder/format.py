@@ -139,6 +139,14 @@ def format_hike(h: Hike) -> str:
     # label is never mistaken for the route's signed trail name (which it has none of).
     if h.composed:
         ident = f"composed of {' + '.join(h.composed_of)}" if h.composed_of else "composed loop"
+        # Said only when some of it is NOT waymarked. A route built from relations alone
+        # is 100 % marked and keeps reading exactly as it always has; one that leaves the
+        # signed network says how far, since nobody will have painted the way for you.
+        if h.marked_frac is not None and h.marked_frac < 0.995:
+            pct = round(h.marked_frac * 100)
+            ident += (
+                "; unmarked paths only" if pct == 0 else f"; {pct}% on waymarked trails"
+            )
         display_name = h.name
     elif h.place_name:
         ident = f"unnamed OSM relation {h.osm_id}"
@@ -199,6 +207,9 @@ def hike_to_dict(h: Hike, *, geometry: bool = False) -> dict:
         "notes": list(h.notes),
         "composed": h.composed,
         "composed_of": list(h.composed_of),
+        # Fraction of a synthesised route on waymarked (relation) trails; null for an
+        # ordinary relation route, which is the waymarked trail itself.
+        "marked_frac": None if h.marked_frac is None else round(h.marked_frac, 3),
         # Reached points of interest (empty unless a POI filter was set). Each carries
         # its own coordinate so a client can pin it without a second lookup.
         "pois": [p.to_dict() for p in h.pois],
