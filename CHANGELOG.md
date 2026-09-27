@@ -8,6 +8,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Hikes from individual paths, not only named routes.** Every search now reads the whole
+  walking network — every mapped path, footway, track, bridleway and flight of steps
+  (sidewalks and private ways left out) — and builds loops and point-to-point routes on it,
+  with the named OSM route relations laid on top. Areas mapped only as paths now return
+  results: Japan's North Alps around Kamikōchi (hundreds of paths, zero named routes) went
+  from "No hiking route relations are mapped" to 7 loops. A plain area search lists the
+  matching named routes first, then built loops; `HIKE_AREA_LOOPS=0` restores the named-routes-
+  only search. Each built route reports how much of it follows waymarked trails
+  (`marked_frac` in JSON; "65% on waymarked trails" / "unmarked paths only" in text).
+
 - **Double-click to start the web UI on Windows.** `start-hike-finder.cmd` at the repo root
   finds a usable Python (3.10+ with `requests`; `.venv\`, then `python`, then `py -3`, each
   probed so the Microsoft Store placeholder is skipped), runs the UI from the checkout's `src\`
@@ -68,6 +78,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   cannot catch the gap — it tables `Criteria` fields, and a place name is not one.
 
 ### Changed
+
+- **`--compose-loops` (web "Loops only", MCP `compose_loops`) now means loops only.** A plain
+  search already includes the loops.
+- **Loop search finds far more long loops.** Junctions left behind by pruned dead-end paths
+  no longer count against the per-loop segment limit, and the search effort is shared across
+  starting points instead of being spent by the first few. On a 10 km Krkonoše box, 10–15 km
+  loops found went from 4 to 26.
+- **The "nothing mapped here" message** now fires only when an area has neither named routes
+  nor walkable paths. On a saved area (which keeps named routes only) it says a live search
+  is the fix.
+- **Overpass downloads are larger** (about 10 MB for a 400 km² box, was about 0.9 MB), and
+  retries after a busy-server error now wait 2, 4 and 8 seconds.
 
 - **The `scripts/` launchers no longer set a contact address.** They defaulted
   `HIKE_OVERPASS_UA` to the maintainer's email, so anyone who ran them sent their searches

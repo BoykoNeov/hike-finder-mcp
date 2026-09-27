@@ -858,20 +858,59 @@ skip without the `mcp` extra).
   are left listed rather than fixed because closing one changes what the MCP surface
   advertises to every client, which is a decision, not a cleanup.
 
-- **The app is only as good as `route=hiking`/`route=foot` coverage, and that varies by
-  region far more than by terrain.** Every mode — area search, `--around`, `--from/--to`,
-  `--via`, `--to-poi`, `--compose-loops` — builds its graph from relation member ways, so
-  relation sparsity is a *whole-app* failure, not a per-feature degradation. Measured with
+- **(Resolved 2026-09-27 — kept for the measurements.) The app used to be only as good as
+  `route=hiking`/`route=foot` coverage.** The user chose to build on the walking network
+  instead; see "The walking network" below. What follows is the measurement that motivated
+  it. Every mode — area search, `--around`, `--from/--to`,
+  `--via`, `--to-poi`, `--compose-loops` — built its graph from relation member ways, so
+  relation sparsity was a *whole-app* failure, not a per-feature degradation. Measured with
   `out count;` over six ~400 km² boxes (CZ Krkonoše = the control at 138 relations):
   IT Dolomites **207** (1.50× — the app works better there than where it was built),
   BG Rila 28, US Rocky Mtn NP 13, JP Kumano Kodo 6, **JP N. Alps / Kamikōchi 0**.
   Relation *count* is not comparable across regions and the live runs prove it: CZ's are
   short A→B fragments while Kumano's 6 are long trunk pilgrimage routes (~128 km of trail
   between them) — Kumano and Rocky Mtn both work fine. Kamikōchi's zero is immune to that
-  caveat: 824 path ways mapped, none collected into a route. A `highway=path` fallback is
-  the obvious answer and is deliberately NOT taken — it widens every query, invalidates
-  the Overpass cache, and changes what "a route" means. Decide that on purpose, not as a
-  side effect.
+  caveat: 824 path ways mapped, none collected into a route. A `highway=path` fallback was
+  the obvious answer and was held back because it widens every query, invalidates the
+  Overpass cache, and changes what "a route" means — and it was then decided on purpose,
+  wider than a fallback (every area, not only empty ones). Live now: Kamikōchi returns 7
+  loops from a plain area search.
+- **The walking network (2026-09-27; plan `docs/plans/2026-09-27-path-network.md`).**
+  The one query also fetches `highway=path|footway|track|bridleway|steps` ways
+  (sidewalks/crossings dropped in the query; `foot=` beats `access=` in
+  `overpass.way_is_walkable`) into `AreaData.paths` — a list of its own, like
+  `ferrata_routes`, because `find_hikes` lists every entry of `routes` and a single path is
+  a fragment, never a hike. Every graph is built in ONE place, `search._network`
+  (relations first, then `compose.paths_as_routes`). Worth not re-deriving:
+  - **A path has no ref.** `_route_ref` returns None for it, so `composed_of` still lists
+    only named trails. What a relation adds is per STEP (`Segment.step_marked`, sliced with
+    `step_tags` by `_subpolyline`), because a contracted segment can run half on a relation
+    and half on a bare path with no junction between; the per-segment `refs` union would
+    call all of it marked. `Hike.marked_frac` comes from that; the text line mentions it
+    only below 100 %, so relation-only output stayed byte-identical.
+  - **Two loop-search fixes were needed, both measured before being written.** (1) The
+    finder pruned dead-end stems but did not re-join the chain they split, so each old
+    spur junction still ended a segment and ate one of the 12 allowed — on paths, spurs
+    are everywhere (`compose._core_chains`: 1,126 → 511 edges on a 10 km Krkonoše box, 10–15
+    km loops found 4 → 26). (2) One global expansion budget let the first start nodes of a
+    dense network spend all of it; raising the segment cap to 30 found ZERO loops. It is
+    now shared per start (`_MIN_START_BUDGET` floor, never above the caller's budget).
+    Both flaws existed on relation data too; paths exposed them. The suspicion that short
+    round loops would be town-block walks was checked and false (60–100 % path/track).
+  - **Snapshots drop paths** (`download_area` sets `paths=None`): offline loops would need
+    the whole network's elevation pre-sampled — ~800 API requests for 400 km². So a saved
+    area searches named routes only, and its empty message (`no_routes_message(area)`)
+    says a live search is the fix rather than blaming the map.
+  - **The plain area search returns relations, then loops** (`search._area_hikes`;
+    `HIKE_AREA_LOOPS=0` for the old behaviour). A closed relation's own composed ring is
+    dropped (`_relation_ring`) or it would be listed twice. `circular=False` skips composing
+    entirely — every loop would be rejected after paying for its elevation.
+  - **Cost:** a 400 km² response is ~10 MB (was ~0.9 MB) and the public instance 504s the
+    heavier query more often under load; retries now wait 2/4/8 s. A 10 km box with loops
+    ran in ~40 s on the elevation API (43 requests).
+  - **Open:** "composed of …" can now list a dozen trail names on a long loop in a dense
+    network — honest, but long. Unmarked paths include demanding alpine ones (`sac_scale`
+    T4–T6); nothing filters on difficulty yet.
 - **`/api/hikes` answers with an object now, and the reason is worth keeping.** It
   returned a bare JSON array for four releases, which had nowhere to put a sentence about
   what the *source* could not answer — so the web UI showed a silent empty list where the

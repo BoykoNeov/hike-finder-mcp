@@ -193,7 +193,10 @@ still needs the internet to draw the page. Vendor Leaflet 1.9.4 (~150 KB JS+CSS)
 the package under `hike_finder/static/` and serve it locally. Map tiles stay online
 (unavoidable); say so in the page when they fail to load.
 
-### 3.4 Regions with no route relations (L) — needs a deliberate decision
+### 3.4 Regions with no route relations (L) — needs a deliberate decision — SUPERSEDED
+
+> Decided 2026-09-27, wider than proposed here: the walking network is the base
+> everywhere, not an opt-in fallback. See `2026-09-27-path-network.md`.
 
 Kamikōchi has 824 mapped paths and zero route relations, so every mode returns
 nothing there. `HANDOFF.md` rejects a silent `highway=path` fallback (it widens every

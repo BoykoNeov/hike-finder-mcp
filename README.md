@@ -3,10 +3,11 @@
 [![CI](https://github.com/BoykoNeov/hike-finder-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/BoykoNeov/hike-finder-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Find **marked hiking routes from OpenStreetMap** and filter them by **real,
-locally-computed elevation gain and distance** — not numbers scraped from
-trail-description websites — plus **shape and access**: whether a route is a loop,
-and whether you can reach it by **car**, **chairlift** or **public transport**.
+Find **hikes from OpenStreetMap** — the named, waymarked routes *and* loops built
+from every mapped path and track — and filter them by **real, locally-computed
+elevation gain and distance** — not numbers scraped from trail-description websites —
+plus **shape and access**: whether a route is a loop, and whether you can reach it by
+**car**, **chairlift** or **public transport**.
 
 It runs three ways on one engine: a **command-line tool**, a **local web UI** (a
 map you pan to your area), or an **MCP server** for LLM clients. The CLI and web
@@ -175,10 +176,20 @@ area again is much faster.
 
 ## Why this exists
 
-It targets OSM route *relations* (`route=hiking`/`foot`), the same signed,
-maintained trail data — including the Czech **KČT** network — that **mapy.cz**
-renders. Distance and elevation gain are computed in this codebase, so the
-numbers are consistent and tunable instead of inherited from a third party.
+It reads two layers of OpenStreetMap trail data:
+
+- **Named routes** — OSM route *relations* (`route=hiking`/`foot`), the same signed,
+  maintained trail data — including the Czech **KČT** network — that **mapy.cz**
+  renders. Each is listed as a hike under its own name.
+- **The walking network** — every mapped path, footway, track, bridleway and flight of
+  steps (street sidewalks and private ways left out). Loops and point-to-point routes are
+  built on this, with the named routes laid on top, so each built route says which named
+  trails it follows and **how much of it is waymarked**. This is what makes the tool work
+  where people map trails only as individual paths: Japan's North Alps around Kamikōchi
+  has hundreds of mapped paths and **zero** named routes, and used to return nothing.
+
+Distance and elevation gain are computed in this codebase, so the numbers are consistent
+and tunable instead of inherited from a third party.
 
 Trail sites (AllTrails, Komoot, mapy.cz) all report *different* gain for the
 same trail because elevation gain depends entirely on how you sample and
@@ -507,21 +518,31 @@ plumbing. A `--download` snapshot stays the way to search a fixed area fully off
 Most KČT relations are *linear* marked segments (a coloured trail A→B); a circular
 day-hike is usually an ad-hoc combination of several connected segments. So
 `circular=true` only finds the few loops mapped as a single relation, and legitimately
-returns little. **Compose mode** instead builds one graph from *every* relation's member
-ways and searches it for cycles of a target length — synthesising loops that aren't
-mapped as a single trail:
+returns little. So the tool also builds one graph from the **whole walking network** —
+every relation's member ways plus every mapped path, footway and track — and searches it
+for cycles of a target length, synthesising loops that aren't mapped as a single trail.
+
+**A plain area search already does this:** it lists the matching named routes first, then
+the built loops. `--compose-loops` asks for the loops **only**. `HIKE_AREA_LOOPS=0` turns
+the loops off again (faster, and no elevation spent on them).
 
 ```bash
 hike-finder --bbox 50.72 15.58 50.74 15.62 --compose-loops \
             --min-distance 5 --max-distance 12 --user-agent you@example.com
 ```
 
-Each result is stitched from several marked trails, so it has **no single OSM relation
-id** — it's rendered with its constituent trails instead:
+A built loop has **no single OSM relation id** — it's rendered with the named trails it
+follows, and, when part of it is on unmarked paths, how much of it is waymarked:
 
 ```text
 Composed loop — 9.86 km, +540 m / -538 m [loop, car] (start 50.73,15.61, composed of 0402 + 1801 + Medvědí okruh)
+Composed loop — 9.24 km, +368 m / -363 m [loop] (start 50.7706,15.5467, composed of 1801 + 4201 + 7203; 65% on waymarked trails)
+Composed loop — 5.45 km, +1025 m / -1023 m [loop] (start 36.2763,137.6473, composed loop; unmarked paths only)
 ```
+
+> **Unmarked means unmarked.** Nobody has painted the unmarked part of a loop for you.
+> It is a mapped path, and OSM paths range from forest roads to faint alpine traces — check
+> the map before you rely on one, especially above the tree line.
 
 The target length comes from `--min-distance`/`--max-distance` (default 3–15 km).
 Composed loops are kept **inside the searched bbox** (a loop that would wander out on a
@@ -532,8 +553,8 @@ then the tool returns the **15 most loop-like** of the rest (ranked by compactne
 shapes sink — tune with `HIKE_COMPOSE_MAX_LOOPS`) and logs how many distinct loops it found
 (and how many slivers it dropped). Elevation, distance, and car/lift access are
 computed exactly as for a real route, and a composed loop is circular by construction
-(gain ≈ loss). The web UI exposes this as a **"Compose loops from connected trails"**
-checkbox; MCP via a `compose_loops` argument on `find_hikes`.
+(gain ≈ loss). The web UI's **"Loops only"** checkbox and MCP's `compose_loops` argument on
+`find_hikes` ask for the loops without the named routes.
 
 Add `--car-access` (or `--chairlift-access`) to get **"a loop from where I park"**: only
 loops reachable from a mapped parking lot / lift survive, each started at that trailhead.
@@ -1052,6 +1073,7 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
 | `HIKE_PLACE_MATCHES` | `--place`: how many candidate places to fetch, so an ambiguous name can list its alternatives instead of silently picking one | `5` |
 | `HIKE_NOMINATIM_MIN_INTERVAL` | Min seconds between Nominatim requests (the public server caps at ~1 req/sec) | `1.1` |
 | `HIKE_GEOCODE_CACHE_TTL_DAYS` | How long a cached place name stays fresh, days (place names change slowly). `0` disables geocode caching | `365` |
+| `HIKE_AREA_LOOPS` | A plain area search also returns loops built from the walking network, after the named routes. `0` = named routes only | on |
 | `HIKE_COMPOSE_MIN_KM` | Compose mode: default min loop length when no `--min-distance` | `3` |
 | `HIKE_COMPOSE_MAX_KM` | Compose mode: default max loop length when no `--max-distance` | `15` |
 | `HIKE_COMPOSE_MAX_SEGMENTS` | Compose mode: max trail segments stitched per loop | `12` |
@@ -1074,11 +1096,12 @@ All optional except where noted; defaults come from `src/hike_finder/config.py`.
   to a real contact. The public server rejects the default Python User-Agent. See
   [step 5 of Getting started](#5-tell-openstreetmap-who-you-are-one-line--skip-it-and-nothing-works)
   and [Contact, quotas and rate limits](#contact-quotas-and-rate-limits).
-- **No hikes returned** → widen the bbox or loosen the filters. Note that loops are
-  genuinely sparse in KČT data (most relations are linear marked segments), so
-  `circular=true` legitimately returns few results — try `--compose-loops` to stitch
-  connected trails into loops instead (see
-  [Composing loops](#composing-loops-stitch-connected-trails-into-a-day-loop)).
+- **No hikes returned** → widen the bbox or loosen the filters. Loops are built to fit
+  inside the searched area and inside the distance band (default 3–15 km), so a small box
+  or a narrow band can hold none. If the message says **no hiking routes or walkable paths
+  are mapped**, it is about the map, not your filters — try a nearby area. On a **saved
+  area** (`--area`) the same message means the file holds no named routes: saved areas keep
+  named routes only, so loops built from paths need a live search.
 - **`--compose-loops` returns few/no loops** → the target loop must fit *inside* the
   searched bbox; widen the area or the `--min/--max-distance` band.
 - **Slow / occasional `504`** → public Overpass overload; the client retries with

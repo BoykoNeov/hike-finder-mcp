@@ -77,3 +77,21 @@ named routes in Krkonoše.
    + fair budget; `marked_frac`; no-routes semantics.
 3. Frontends: area search returns named routes + loops (CLI, web, MCP) + parity test.
 4. Docs: README/GUIDE/HANDOFF/CHANGELOG; live validation in Krkonoše and Kamikōchi.
+
+## Status — all four stages DONE (2026-09-27, unreleased)
+
+- Stage 1 `4b52bf6`, stage 2 `b5a60cf`, stage 3 `3a0fc44`, stage 4 = the docs commit.
+- Live, public Overpass + elevation API:
+  - Kamikōchi 10 km box, plain area search (no flag): **7 loops** (was the "No hiking
+    route relations are mapped" message), 3–12 km, all "unmarked paths only", gain ≈ loss
+    on every one (e.g. 5.45 km, +1025/−1023 m).
+  - Krkonoše 10 km box, `--compose-loops --min-distance 8 --max-distance 15`: **44
+    distinct loops**, 15 shown, 45–99 % waymarked, 41 s, 43 elevation requests.
+- Two 504s from the public instance on the heavier query, each answered on a retry a few
+  seconds later — retries now wait 2/4/8 s.
+- Deviations from the design above: the per-start budget floor is capped at the caller's
+  budget (so `budget=0` still reports `capped`); the web checkbox is relabelled
+  "Loops only".
+- Open, not blocking: long "composed of …" lists on big loops; no difficulty filter for
+  demanding unmarked alpine paths (`sac_scale`); offline loops would need a local-DEM
+  download path.
